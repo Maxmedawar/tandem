@@ -80,9 +80,45 @@ export async function startServer(opts: ServerOpts): Promise<void> {
       return;
     }
 
+    // tandem authenticates with a static TANDEM_TOKEN and runs no OAuth service.
+    // Without this, the token gate below answers discovery probes with 401, which
+    // reads to a client as "OAuth exists, keep going" and sends it into dynamic
+    // client registration. A flat 404 says there is no OAuth here.
+    if (url.pathname.startsWith("/.well-known/")) {
+      res.writeHead(404, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: "not found: tandem uses a static bearer token, not OAuth" }));
+      return;
+    }
+
     if (!tokenMatches(extractToken(req, url), opts.token)) {
       res.writeHead(401, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: "unauthorized: missing or invalid token" }));
+      return;
+    }
+
+    // claude.ai's add-connector flow validates the endpoint with a bare GET
+    // probe (no body, Accept: text/html or */*). The MCP streamable-http transport
+    // requires GETs to list text/event-stream in Accept and otherwise rejects them
+    // with 406, which stalls connector registration. We answer ONLY that exact
+    // probe shape — a GET with no request body whose Accept lacks text/event-stream
+    // — with a benign 200. Every POST (real JSON-RPC traffic), every GET carrying a
+    // body, and any GET that does accept text/event-stream falls straight through to
+    // the transport's normal handling, including an honest 406 on a malformed
+    // request. This never intercepts real MCP requests.
+    const accept = String(req.headers["accept"] ?? "");
+    const hasBody =
+      "transfer-encoding" in req.headers ||
+      (req.headers["content-length"] !== undefined && req.headers["content-length"] !== "0");
+    if (req.method === "GET" && !hasBody && !accept.includes("text/event-stream")) {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          name: "tandem",
+          transport: "streamable-http",
+          hint: "POST JSON-RPC with Accept: application/json, text/event-stream",
+        }),
+      );
       return;
     }
 
