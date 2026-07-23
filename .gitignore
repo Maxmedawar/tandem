@@ -52,3 +52,4 @@ AGENTS.md
 # internal launch/distribution planning (contains local paths + strategy) — never publish
 LAUNCH_LOG.md
 LAUNCH_QUEUE.md
+*.bak
