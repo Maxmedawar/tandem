@@ -22,7 +22,7 @@
  * parameter carrying the token-in-path connector URL). Strangers who find the
  * tunnel URL cannot complete the flow.
  *
- * The tool surface (6 tools) is defined once in ./mcp-server.ts and shared with
+ * The tool surface (7 tools) is defined once in ./mcp-server.ts and shared with
  * the local stdio transport (src/stdio-server.ts).
  */
 import crypto from "node:crypto";

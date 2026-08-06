@@ -12,10 +12,11 @@ const EXPECTED_TOOLS = [
   "interrupt_session",
   "close_session",
   "relay",
+  "completions",
 ];
 
 describe("buildMcpServer (shared tool surface)", () => {
-  it("registers exactly the 6 consolidated tools", async () => {
+  it("registers exactly the 7 consolidated tools", async () => {
     const server = buildMcpServer();
     const client = new Client({ name: "test", version: "0.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

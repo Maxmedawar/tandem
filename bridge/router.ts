@@ -43,6 +43,7 @@ import {
 } from './sessions.ts'
 import * as relay from './relay.ts'
 import { emitCompletion, summarize } from './events.ts'
+import { readCompletions } from './completions.ts'
 
 // ---- config ---------------------------------------------------------------
 
@@ -138,6 +139,17 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
     const limit = req.query.get('limit') ? Number(req.query.get('limit')) : undefined
     const project = req.query.get('project') ?? undefined
     return ok(await listSessions({ limit, project }))
+  }
+
+  // GET /completions — read-only view of the Stop-hook completion feed.
+  if (m === 'GET' && parts.length === 1 && parts[0] === 'completions') {
+    const rawLimit = req.query.get('limit')
+    const since = req.query.get('since') ?? undefined
+    const session = req.query.get('session') ?? undefined
+    const allTurns = req.query.get('all_turns') === 'true' || req.query.get('all_turns') === '1'
+    const limit = rawLimit !== null && Number.isFinite(Number(rawLimit)) ? Number(rawLimit) : undefined
+    audit({ route: 'GET /completions', since, session, limit, allTurns })
+    return ok(readCompletions({ since, session, limit, allTurns }))
   }
 
   // POST /sessions/open

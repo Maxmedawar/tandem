@@ -1,7 +1,7 @@
 /**
  * Shared MCP server builder for tandem.
  *
- * Defines the ONE tool surface (6 tools) used by BOTH transports:
+ * Defines the ONE tool surface (7 tools) used by BOTH transports:
  *   - src/http-mcp.ts   — Streamable-HTTP behind TANDEM_TOKEN (web/tunnel use)
  *   - src/stdio-server.ts — stdio for local desktop apps (no tunnel, no token)
  *
@@ -14,7 +14,8 @@
  * TANDEM_* env vars to the engine's CCM_* names BEFORE importing this module
  * (both entrypoints use a dynamic `await import(...)` after env setup).
  *
- * Tool surface is consolidated (phase 3): 6 tools. read_session is folded into
+ * Tool surface is consolidated (phase 3): 6 tools, plus `completions` (phase 4,
+ * a read-only reader over the Stop-hook completion feed) = 7. read_session is folded into
  * send_to_session (empty text = poll mode); the four relay tools are folded into
  * one `relay` tool with an `action`. The underlying routes are unchanged, so the
  * full capability set remains reachable.
@@ -107,6 +108,19 @@ export function buildMcpServer(): McpServer {
     `${BLAST_RADIUS}\n\nKill the live tmux session (ends the interactive TUI). Idempotent. Returns { ok, name }.`,
     { name: z.string() },
     async ({ name }) => call("POST", `/sessions/${encodeURIComponent(name)}/close`),
+  );
+
+  server.tool(
+    "completions",
+    `Read the completion feed written by the Stop hook — "what finished since I last looked", in ONE call. Read-only; touches no session and runs nothing.\n\nThe hook fires at every TURN END, not once per session, so by default this COLLAPSES to the newest record per session_id (set all_turns=true for the raw per-turn feed). Returns { completions:[{ session_id, brand, cwd, finished_at }], cursor, truncated }, newest first.\n\nCURSOR LOOP: pass the returned 'cursor' back as 'since' next time to get only what finished since — the compare is strict, so nothing repeats. Records carry NO tmux session name: join 'cwd' (or 'session_id') against list_sessions to tie a completion back to a live session. 'truncated' means more exists beyond the tail window or the limit.`,
+    {
+      since: z.string().optional().describe("ISO-8601 Z timestamp or a prior cursor; returns only records strictly newer."),
+      session: z.string().optional().describe("Exact session_id, or a substring matched against brand/cwd."),
+      limit: z.number().int().positive().optional().describe("Max records, newest first (default 20, max 500)."),
+      all_turns: z.boolean().optional().describe("true = every raw turn-end record; default false = newest per session."),
+    },
+    async ({ since, session, limit, all_turns }) =>
+      call("GET", "/completions", {}, q({ since, session, limit, all_turns: all_turns ? "true" : undefined }).slice(1)),
   );
 
   /* ---- relay (one tool, five actions) ---- */
