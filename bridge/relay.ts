@@ -312,8 +312,23 @@ async function sendRaced(
   loop.active = session
   let watchdog: ReturnType<typeof setInterval> | undefined
   try {
-    const sendP = session.send(text).then(
-      (r: { report: string }) => ({ kind: 'report' as const, report: r.report }),
+    const sendP = (async () => {
+      const startCursor = session.currentCursor()
+      let result = await session.send(text)
+      // send() returns status:'running' at its soft cap (~25s) if the turn hasn't
+      // gone idle yet — a real Claude Code turn routinely takes longer than that.
+      // Treating that as a finished report (the original bug) hands the lead an
+      // EMPTY worker report and fires the next instruction into a still-busy pane,
+      // which the busy session then echoes back on the following turn. Keep
+      // polling the SAME turn (same startCursor, no re-submit) until it genuinely
+      // finishes or the outer race (deadline/stop, checked by `guard` below)
+      // interrupts it.
+      while (result.status === 'running' && loop.running && Date.now() < loop.deadline) {
+        result = await session.continueWaiting(startCursor)
+      }
+      return result.report
+    })().then(
+      (report: string) => ({ kind: 'report' as const, report }),
       (e: unknown) => ({ kind: 'report' as const, report: `(session error: ${e instanceof Error ? e.message : String(e)})` }),
     )
     const guard = new Promise<{ kind: 'deadline' } | { kind: 'stopped' }>((res) => {

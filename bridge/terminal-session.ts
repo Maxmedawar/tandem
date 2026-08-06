@@ -501,12 +501,36 @@ export class TerminalSession {
     // multi-line body).
     await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
 
-    const softDeadline = Date.now() + SEND_SOFT_CAP_MS
-    const hardDeadline = Date.now() + SEND_HARD_CAP_MS
-
     // Give the spinner a moment to appear so we don't read the pre-spinner
     // "looks idle" window as completion.
     await sleep(POLL_MS)
+
+    return this.waitForTurn(startCursor)
+  }
+
+  /**
+   * Keep waiting on an ALREADY-SUBMITTED turn (started by an earlier send() that
+   * returned status:'running' at its soft cap) WITHOUT injecting or submitting
+   * anything new. Callers that need the turn to genuinely finish — e.g. the relay,
+   * which must never treat a soft-cap timeout as a completed report — loop this
+   * until status:'done', passing the SAME startCursor each time so the harvested
+   * report always covers the whole turn from its original start.
+   */
+  async continueWaiting(startCursor: number): Promise<SendResult> {
+    return this.waitForTurn(startCursor)
+  }
+
+  /** Current transcript byte length = the read cursor (public wrapper). */
+  currentCursor(): number {
+    return this.cursor()
+  }
+
+  /** Shared idle-poll loop used by both send() (after submitting) and
+   *  continueWaiting() (resuming a poll on an already-submitted turn). Bounded by
+   *  the same soft/hard caps either way. */
+  private async waitForTurn(startCursor: number): Promise<SendResult> {
+    const softDeadline = Date.now() + SEND_SOFT_CAP_MS
+    const hardDeadline = Date.now() + SEND_HARD_CAP_MS
 
     let stablePolls = 0
     let lastPane = ''
