@@ -170,6 +170,33 @@ export function stripAnsi(input: string): string {
   )
 }
 
+/**
+ * Given chrome-cleaned pane lines and the text we just submitted to THIS
+ * session, drop everything up to and including the echoed submitted prompt so
+ * what's left is ONLY the assistant's reply. Right after Enter, Claude Code's
+ * TUI shows the just-submitted prompt echoed back above the response — that is
+ * normal chat rendering, but a caller that treats "the whole visible pane" as
+ * "the reply" (as reportSince() used to) ends up including our own prompt text
+ * in the report. Anchors on the LAST non-empty line of submittedText (closest
+ * to the reply) and keeps everything strictly after its FIRST match in `lines`
+ * (the echo renders before the reply). Falls back to returning `lines`
+ * unchanged when there's no submittedText or no match (e.g. the TUI rewrapped
+ * the echo differently) — degrades to the old behavior rather than losing real
+ * content.
+ */
+export function stripEchoedPrompt(lines: string[], submittedText?: string): string[] {
+  if (!submittedText) return lines
+  const submittedLines = submittedText
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+  const anchor = submittedLines[submittedLines.length - 1]
+  if (!anchor) return lines
+  const idx = lines.findIndex((l) => l.trim() === anchor)
+  if (idx === -1) return lines
+  return lines.slice(idx + 1)
+}
+
 /** A cwd-allowlist check mirroring sessions.ts (kept local so this module has no
  *  hard dependency cycle). The authoritative helpers live in sessions.ts; spawn
  *  callers should pass the same allowlist they built there. */
@@ -232,10 +259,14 @@ export class TerminalSession {
   private readonly _name: string
   private readonly _cwd: string
   private readonly logPath: string
-  /** Set by warmup(): did the TUI reach its prompt? */
+  /** Set by warmup()/ensureReady(): did the TUI reach its prompt? */
   private _ready = false
-  /** Set by warmup() when NOT ready: an actionable reason (load/blank/attach). */
+  /** Set when NOT ready: an actionable reason (load/blank/attach). */
   private _readinessWarning: string | undefined
+  /** The text most recently submitted via send() — reused by continueWaiting()
+   *  (which has no new text of its own) so the echoed-prompt strip in
+   *  reportSince() still has an anchor when resuming an already-submitted turn. */
+  private lastSubmittedText = ''
 
   // Explicit field assignment (NOT TS "parameter properties") — the bridge runs
   // under `node --experimental-strip-types`, whose strip-only mode rejects the
@@ -404,7 +435,29 @@ export class TerminalSession {
   /** Wait for the TUI to be ready: dismiss the first-run trust prompt if shown,
    *  then wait until the input box exists and nothing is working. */
   private async warmup(): Promise<void> {
-    const deadline = Date.now() + SPAWN_WARMUP_MS
+    await this.pollForReady(SPAWN_WARMUP_MS)
+  }
+
+  /**
+   * A second bounded chance to reach readiness for a caller about to DRIVE this
+   * session (inject text) that finds spawn()'s warmup() left it not-ready — e.g.
+   * the host was CPU-starved spawning two relay sessions back to back and has
+   * since caught up. No-op (and cheap) once already ready. Uses the EXACT same
+   * poll-for-prompt logic as warmup() rather than a fixed sleep, so a caller
+   * never has to guess how long to wait — it waits for the actual signal.
+   * Returns the resulting readiness.
+   */
+  async ensureReady(budgetMs = SPAWN_WARMUP_MS): Promise<boolean> {
+    if (this._ready) return true
+    await this.pollForReady(budgetMs)
+    return this._ready
+  }
+
+  /** Shared readiness-poll loop used by warmup() (at spawn) and ensureReady()
+   *  (a later second chance): dismiss first-run dialogs, then poll until the
+   *  prompt is visible and nothing is working, updating _ready/_readinessWarning. */
+  private async pollForReady(budgetMs: number): Promise<void> {
+    const deadline = Date.now() + budgetMs
     let trusted = false
     let bypassAccepted = false
     while (Date.now() < deadline) {
@@ -433,6 +486,7 @@ export class TerminalSession {
       // Ready = the prompt box marker present and not working.
       if (pane.includes('❯') && !this.isWorking(pane)) {
         this._ready = true
+        this._readinessWarning = undefined
         return
       }
       await sleep(POLL_MS)
@@ -495,6 +549,7 @@ export class TerminalSession {
    */
   async send(text: string): Promise<SendResult> {
     const startCursor = this.cursor()
+    this.lastSubmittedText = text
 
     await this.injectMultiline(text)
     // Separate Enter keypress submits the prompt (the single submit for the whole
@@ -505,7 +560,7 @@ export class TerminalSession {
     // "looks idle" window as completion.
     await sleep(POLL_MS)
 
-    return this.waitForTurn(startCursor)
+    return this.waitForTurn(startCursor, text)
   }
 
   /**
@@ -517,7 +572,7 @@ export class TerminalSession {
    * report always covers the whole turn from its original start.
    */
   async continueWaiting(startCursor: number): Promise<SendResult> {
-    return this.waitForTurn(startCursor)
+    return this.waitForTurn(startCursor, this.lastSubmittedText)
   }
 
   /** Current transcript byte length = the read cursor (public wrapper). */
@@ -525,18 +580,34 @@ export class TerminalSession {
     return this.cursor()
   }
 
-  /** Shared idle-poll loop used by both send() (after submitting) and
-   *  continueWaiting() (resuming a poll on an already-submitted turn). Bounded by
-   *  the same soft/hard caps either way. */
-  private async waitForTurn(startCursor: number): Promise<SendResult> {
+  /**
+   * Shared idle-poll loop used by both send() (after submitting) and
+   * continueWaiting() (resuming a poll on an already-submitted turn). Bounded by
+   * the same soft/hard caps either way.
+   *
+   * READY GUARD: a stable, non-working pane usually means the turn finished —
+   * EXCEPT when the session never actually ran a turn at all, e.g. it was still
+   * on its boot banner (not yet ready) when send() typed into it. That pane is
+   * ALSO stable and non-working from the very first poll, so without a guard it
+   * gets misread as a finished (empty) reply after just IDLE_STABLE_POLLS *
+   * POLL_MS (~2.25s) + the initial spinner-grace sleep (~3s total) — the exact
+   * "3 seconds later, still showing the startup banner" failure. Require having
+   * actually SEEN the turn run (the working marker at some point) or the
+   * transcript having grown since submission before trusting stability as
+   * completion; otherwise keep waiting up to the soft/hard cap like a genuinely
+   * slow turn would.
+   */
+  private async waitForTurn(startCursor: number, submittedText?: string): Promise<SendResult> {
     const softDeadline = Date.now() + SEND_SOFT_CAP_MS
     const hardDeadline = Date.now() + SEND_HARD_CAP_MS
 
     let stablePolls = 0
     let lastPane = ''
+    let sawWorking = false
     for (;;) {
       const pane = await this.capture()
       const working = this.isWorking(pane)
+      if (working) sawWorking = true
       const trimmed = pane.trimEnd()
 
       if (!working && trimmed === lastPane) {
@@ -546,13 +617,14 @@ export class TerminalSession {
       }
       lastPane = trimmed
 
-      const idle = !working && stablePolls >= IDLE_STABLE_POLLS
+      const producedOutput = sawWorking || this.cursor() > startCursor
+      const idle = !working && stablePolls >= IDLE_STABLE_POLLS && producedOutput
       if (idle) {
-        return { report: await this.reportSince(startCursor), cursor: this.cursor(), status: 'done' }
+        return { report: await this.reportSince(startCursor, submittedText), cursor: this.cursor(), status: 'done' }
       }
       if (Date.now() >= hardDeadline) {
         // Hard timeout: surface whatever we have and let the caller poll/read.
-        return { report: await this.reportSince(startCursor), cursor: this.cursor(), status: 'running' }
+        return { report: await this.reportSince(startCursor, submittedText), cursor: this.cursor(), status: 'running' }
       }
       if (Date.now() >= softDeadline) {
         return { report: '', cursor: this.cursor(), status: 'running' }
@@ -643,20 +715,28 @@ export class TerminalSession {
    * the input-box chrome and footer. If capture-pane is empty we fall back to a
    * de-duplicated, spinner-filtered slice of the transcript delta. The full raw
    * (ANSI-stripped) transcript is always available via readSince() for review.
+   *
+   * `submittedText`, when given, is what WE just typed into this session's own
+   * input box — the pane still shows it echoed above the reply (that's normal
+   * TUI chat rendering), so it's stripped via stripEchoedPrompt() before the
+   * result is treated as "the reply". Without this, a caller that forwards the
+   * report verbatim as the NEXT session's input (as the relay does) ends up
+   * re-injecting our own prompt text into that next session.
    */
-  private async reportSince(cursor: number): Promise<string> {
+  private async reportSince(cursor: number, submittedText?: string): Promise<string> {
     const pane = await this.capture()
-    const fromPane = this.cleanReportLines(pane.split('\n'))
+    const fromPane = this.cleanReportLines(pane.split('\n'), submittedText)
     if (fromPane) return fromPane
     const size = this.cursor()
     if (size <= cursor) return ''
     const stripped = stripAnsi(await this.readRaw(cursor, size))
-    return this.cleanReportLines(stripped.split('\n'))
+    return this.cleanReportLines(stripped.split('\n'), submittedText)
   }
 
   /** Drop blank/duplicate lines, spinner frames, progress lines, the input box,
-   *  the bordered rules, and the status footer. */
-  private cleanReportLines(lines: string[]): string {
+   *  the bordered rules, and the status footer; then strip the echoed submitted
+   *  prompt (see stripEchoedPrompt) so only the actual reply remains. */
+  private cleanReportLines(lines: string[], submittedText?: string): string {
     const out: string[] = []
     for (const line of lines) {
       const t = line.trimEnd()
@@ -674,7 +754,7 @@ export class TerminalSession {
       if (out.length && out[out.length - 1] === t) continue
       out.push(t)
     }
-    return out.join('\n').trim()
+    return stripEchoedPrompt(out, submittedText).join('\n').trim()
   }
 
   /** Interrupt a running turn: Escape (Claude Code's "esc to interrupt"), then

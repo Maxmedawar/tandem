@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { describeReadiness } from "../bridge/terminal-session.ts";
+import { describeReadiness, stripEchoedPrompt } from "../bridge/terminal-session.ts";
 
 // describeReadiness turns the #1 silent boot failure ("no banner / commands don't
 // go through") into an actionable message. It is pure (load/cpu injected), so we
@@ -45,5 +45,41 @@ describe("describeReadiness", () => {
     const msg = describeReadiness("", 50.0, 0, "x");
     expect(msg).not.toBeNull();
     expect(msg).not.toContain("overloaded");
+  });
+});
+
+// stripEchoedPrompt closes the relay's "wrong payload" bug: right after Enter,
+// the TUI's pane still shows the just-submitted prompt echoed back above the
+// actual reply. A caller (like the relay) that forwards the harvested report
+// verbatim as the NEXT session's input must not re-inject our own prompt text.
+describe("stripEchoedPrompt", () => {
+  it("drops everything up to and including the echoed submitted prompt", () => {
+    const pane = [
+      "Claude Code v2.1.223",
+      "❯ You are the lead.",
+      "Reply now with your FIRST instruction for the worker.",
+      "Run the tests in ./bridge and report the output.",
+    ];
+    const submitted = "You are the lead.\nReply now with your FIRST instruction for the worker.";
+    expect(stripEchoedPrompt(pane, submitted)).toEqual([
+      "Run the tests in ./bridge and report the output.",
+    ]);
+  });
+
+  it("passes lines through unchanged when there is no submittedText", () => {
+    const pane = ["banner", "some reply"];
+    expect(stripEchoedPrompt(pane)).toEqual(pane);
+  });
+
+  it("falls back to the full lines when the anchor is not found (no false strip)", () => {
+    const pane = ["banner", "a totally different reply"];
+    expect(stripEchoedPrompt(pane, "an instruction that was never echoed verbatim")).toEqual(pane);
+  });
+
+  it("anchors on the LAST non-empty line of a multi-line submission", () => {
+    const pane = ["header", "first echoed line", "last echoed line", "the actual reply"];
+    expect(stripEchoedPrompt(pane, "first echoed line\n\nlast echoed line")).toEqual([
+      "the actual reply",
+    ]);
   });
 });

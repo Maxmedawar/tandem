@@ -251,6 +251,29 @@ export async function startRelay(opts: StartRelayOptions): Promise<StartRelayRes
     throw e
   }
 
+  // Both TUIs must actually be at their prompt before we start typing into them.
+  // spawn()'s own warmup() may have left either NOT ready (e.g. the host was
+  // CPU-starved spawning two interactive sessions back to back) — TerminalSession
+  // still hands back the session in that case so a human can attach and kick it,
+  // but the relay has no human watching, so a not-ready worker previously got
+  // driven anyway: send() typed into its still-booting pane, and the frozen boot
+  // banner (stable, non-working) was misread as a finished, empty turn within a
+  // few seconds. Give each session one more bounded chance via the SAME
+  // readiness-poll logic warmup() uses (ensureReady()), and fail loudly instead
+  // of silently seeding a dead session if it still isn't ready.
+  const [leadReady, workerReady] = await Promise.all([lead.ensureReady(), worker.ensureReady()])
+  if (!leadReady || !workerReady) {
+    const reasons = [
+      !leadReady ? `lead: ${lead.readinessWarning ?? 'did not reach the prompt'}` : null,
+      !workerReady ? `worker: ${worker.readinessWarning ?? 'did not reach the prompt'}` : null,
+    ]
+      .filter(Boolean)
+      .join('; ')
+    await lead.close().catch(() => {})
+    await worker.close().catch(() => {})
+    throw new Error(`relay sessions did not reach the prompt before starting: ${reasons}`)
+  }
+
   // Seed the manager's disk-backed memory (mission/state/log) so the loop is
   // resumable and can escalate; failures here never block the loop.
   const memDir = managerDir(loopId)
