@@ -31,8 +31,8 @@ export interface TerminalSessionLike {
   attachHint(): string
   isAlive(): Promise<boolean>
   isCurrentlyWorking(): Promise<boolean>
-  send(text: string): Promise<{ report: string; cursor: number; status: 'done' | 'running' }>
-  readSince(cursor: number): Promise<{ text: string; cursor: number; idle: boolean }>
+  send(text: string): Promise<SendResult>
+  readSince(cursor: number): Promise<ReadResult>
   applyControls(controls: { model?: string; effort?: string }): Promise<string[]>
   interrupt(): Promise<void>
   close(): Promise<void>

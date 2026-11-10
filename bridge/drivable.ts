@@ -29,9 +29,12 @@ export interface SendOptions {
 /** The bounded result of a single send() call — status:'running' means the
  *  engine's configured soft cap elapsed, not that the turn failed; the caller
  *  calls read()/poll to keep observing it, NOT send() again with the same
- *  prompt. Never hangs indefinitely. */
+ *  prompt. 'done' means the engine's working marker cleared and the pane held
+ *  still; 'quiet' means a markerless engine (codex, shell) printed nothing for
+ *  its stability window and gave no completion signal. Both end the turn.
+ *  Never hangs indefinitely. */
 export interface SendResult {
-  status: 'done' | 'running'
+  status: 'done' | 'running' | 'quiet'
   report: string
   cursor: number
 }
@@ -45,6 +48,9 @@ export interface ReadResult {
   text: string
   cursor: number
   idle: boolean
+  /** Same split as SendResult: 'quiet' is idle without a completion signal.
+   *  Optional because engines without a pane (hermes) do not report it yet. */
+  state?: 'working' | 'done' | 'quiet'
 }
 
 /**
