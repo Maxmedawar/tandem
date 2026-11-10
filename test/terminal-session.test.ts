@@ -614,3 +614,54 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
     }
   });
 });
+
+// ---- TANDEM-B-SESSION-R1 review-fix: a quiet turn's event must say quiet -----
+describe("quiet completion events (TANDEM-B-SESSION-R1 review-fix)", () => {
+  it("quiet) a quiet turn's event says quiet in its status, notification title and handoff, on send and on poll", async () => {
+    const { routeForTest } = await import("../bridge/router.ts");
+    const { registerLive, unregisterLive } = await import("../bridge/sessions.ts");
+    const name = "quiet-event";
+    registerLive({
+      id: name,
+      engine: "codex",
+      cwd: testEnv.home,
+      isAlive: async () => true,
+      isWorking: async () => false,
+      send: async () => ({ status: "quiet", report: "still waiting on the network", cursor: 5 }),
+      read: async () => ({ text: "more output", cursor: 9, idle: true, state: "quiet" }),
+      interrupt: async () => {},
+      close: async () => {},
+      attachHint: () => "hint",
+    });
+    vi.stubEnv("TANDEM_NTFY_TOPIC", "quiet-topic");
+    vi.stubEnv("TANDEM_DONE_WEBHOOK", "http://127.0.0.1:9/hook");
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
+    try {
+      const sent = await routeForTest("POST", `/sessions/${name}/send`, { text: "go" });
+      const polled = await routeForTest("POST", `/sessions/${name}/send`, { cursor: 5 });
+      expect((sent.body as { status: string }).status).toBe("quiet");
+      expect((polled.body as { state: string }).state).toBe("quiet");
+      const posts = fetchSpy.mock.calls.map(([url, init]) => ({ url: String(url), init: init as RequestInit }));
+      const hooks = posts.filter((p) => p.url.endsWith("/hook")).map((p) => JSON.parse(String(p.init.body)));
+      const pushes = posts.filter((p) => p.url.includes("quiet-topic"));
+      expect(hooks).toHaveLength(2);
+      expect(pushes).toHaveLength(2);
+      for (const ev of hooks) {
+        expect(ev.status).toBe("quiet");
+        expect(ev.handoff).toContain("quiet");
+        expect(ev.handoff).not.toMatch(/\b(done|finished)\b/i);
+      }
+      for (const p of pushes) {
+        const headers = p.init.headers as Record<string, string>;
+        expect(headers.Title).toBe(`tandem: ${name} quiet`);
+        expect(String(p.init.body)).not.toMatch(/\b(done|finished)\b/i);
+      }
+      const logged = readFileSync(join(testEnv.home, ".tandem", "events.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      expect(logged.filter((e) => e.id === name).map((e) => e.status)).toEqual(["quiet", "quiet"]);
+    } finally {
+      fetchSpy.mockRestore();
+      vi.unstubAllEnvs();
+      unregisterLive(name);
+    }
+  });
+});

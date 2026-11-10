@@ -441,7 +441,7 @@ async function handleSend(name: string, req: RpcRequest): Promise<RpcResult> {
     const result = await session.send(text, { model, effort })
     if (result.status !== 'running') {
       // Turn ended — EMIT a completion event (push), not just return it.
-      emitCompletion({ type: 'session', id: name, cursor: result.cursor, summary: turnSummary(result.status, result.report), cwd: session.cwd })
+      emitCompletion({ type: 'session', id: name, status: result.status, cursor: result.cursor, summary: summarize(result.report), cwd: session.cwd })
     }
     return ok({
       status: result.status,
@@ -456,11 +456,6 @@ async function handleSend(name: string, req: RpcRequest): Promise<RpcResult> {
   }
 }
 
-/** A quiet turn end must read as quiet, never as done. */
-function turnSummary(state: string | undefined, text: string): string {
-  return summarize(state === 'quiet' ? `quiet (no output and no completion signal): ${text}` : text)
-}
-
 /** Shared read used by GET /sessions/:name/read AND send poll-mode. Emits a
  *  completion event when a previously-running turn is observed to have finished
  *  (now idle AND produced fresh output since the cursor). */
@@ -473,7 +468,8 @@ async function readSession(name: string, cursor: number): Promise<RpcResult> {
   try {
     const page = await session.read({ cursor })
     if (page.idle && page.text.trim().length > 0) {
-      emitCompletion({ type: 'session', id: name, cursor: page.cursor, summary: turnSummary(page.state, page.text), cwd: session.cwd })
+      // A quiet turn end must read as quiet, never as done.
+      emitCompletion({ type: 'session', id: name, status: page.state === 'quiet' ? 'quiet' : 'done', cursor: page.cursor, summary: summarize(page.text), cwd: session.cwd })
     }
     return ok({ ...page, live: true, engine: session.engine, attachHint: session.attachHint() })
   } catch (e) {

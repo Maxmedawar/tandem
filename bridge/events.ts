@@ -40,7 +40,8 @@ function appendEventLine(line: string): void {
 export interface CompletionEvent {
   /** "session" (a single turn finished) or "relay" (a relay loop finished). */
   type: 'session' | 'relay'
-  status: 'done'
+  /** 'quiet' = a markerless session went still with no completion signal. */
+  status: 'done' | 'quiet'
   /** session name (type=session) or relay loopId (type=relay). */
   id: string
   /** transcript byte cursor at completion. */
@@ -100,7 +101,9 @@ function gitInfo(cwd?: string): GitInfo {
  */
 export function buildHandoff(event: { id: string; status: string; summary: string }, git: GitInfo): string {
   return [
-    `Tandem check: session "${event.id}" finished (${event.status}).`,
+    event.status === 'quiet'
+      ? `Tandem check: session "${event.id}" went quiet (no output and no completion signal; it may still be working).`
+      : `Tandem check: session "${event.id}" finished (${event.status}).`,
     `Summary: ${event.summary}`,
     `Commit: ${git.commit}`,
     `Files changed: ${git.filesChanged}`,
@@ -179,10 +182,10 @@ export function ntfyPayload(
     // Short title; the BODY is the chat-ready handoff block (multi-line, NOT
     // collapsed) so you can copy it straight from the notification into a chat.
     // Falls back to the old one-line summary if no handoff was computed.
-    title: `tandem: ${event.id} done`,
+    title: `tandem: ${event.id} ${event.status}`,
     body: event.handoff ?? summarize(`${event.type} ${event.id} ${event.status} @${event.cursor}: ${event.summary}`),
     priority: 'default',
-    tags: 'white_check_mark',
+    tags: event.status === 'quiet' ? 'zzz' : 'white_check_mark',
     ...(click ? { click } : {}),
   }
 }
@@ -223,14 +226,14 @@ function notifyNtfy(event: CompletionEvent, opts?: NtfyPayloadOptions): void {
  * failures go to stderr and the webhook POST is fire-and-forget.
  */
 export function emitCompletion(
-  ev: Omit<CompletionEvent, 'status' | 'ts' | 'handoff'> & { silent?: boolean; cwd?: string },
+  ev: Omit<CompletionEvent, 'status' | 'ts' | 'handoff'> & { status?: CompletionEvent['status']; silent?: boolean; cwd?: string },
 ): void {
   // `silent` suppresses ONLY the phone push (sink 3) — events.log + webhook still
   // fire — so routine per-task completions stay durable without buzzing the phone.
   // `cwd` is used only to compute the git facts in the handoff; it is NOT stored
   // in the event (so no local path leaks into events.log / the webhook).
-  const { silent, cwd, ...rest } = ev
-  const base = { ts: new Date().toISOString(), status: 'done' as const, ...rest }
+  const { silent, cwd, status = 'done', ...rest } = ev
+  const base = { ts: new Date().toISOString(), status, ...rest }
   // Chat-ready handoff block, computed once and carried on the event so all three
   // sinks (log line, webhook JSON, ntfy body) share the same text.
   const handoff = buildHandoff(base, gitInfo(cwd))
