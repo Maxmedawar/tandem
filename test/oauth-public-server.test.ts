@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadOAuthConfig, loadOAuthConfigFromEnv } from "../src/auth-config.ts";
+import { TandemOAuthProvider } from "../src/oauth-provider.ts";
 import { startOAuthServer, type PublicOAuthServerHandle } from "../src/public-server.ts";
 
 const OWNER_PASSWORD = "owner password 0123456789";
@@ -341,5 +342,220 @@ describe("OAuth public boundary", () => {
       body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: {} }),
     });
     expect(after.status).toBe(401);
+  });
+});
+
+describe("OAuth redirect allowlist", () => {
+  const ENV = "TANDEM_ALLOWED_REDIRECT_ORIGINS";
+  const savedEnv = process.env[ENV];
+  const CONSENT_TAIL = "is requesting every enabled Tandem tool.";
+
+  afterEach(() => {
+    if (savedEnv === undefined) delete process.env[ENV];
+    else process.env[ENV] = savedEnv;
+  });
+
+  async function registerStatus(base: string, redirect: string): Promise<{ status: number; clientId?: string }> {
+    const response = await fetch(`${base}/register`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ redirect_uris: [redirect], token_endpoint_auth_method: "none" }),
+    });
+    const body = await response.json() as { client_id?: string };
+    return { status: response.status, clientId: body.client_id };
+  }
+
+  // Seeds a client straight into the state store, bypassing the registration check.
+  async function seedClient(redirect: string): Promise<string> {
+    const clientId = "seeded-client-0123456789";
+    await handle!.state.registerClient({
+      client_id: clientId,
+      client_id_issued_at: Math.floor(Date.now() / 1000),
+      redirect_uris: [redirect],
+      token_endpoint_auth_method: "none",
+      grant_types: ["authorization_code", "refresh_token"],
+      response_types: ["code"],
+      client_name: "MCP connector",
+      scope: "mcp",
+    });
+    return clientId;
+  }
+
+  async function consentHtml(base: string, redirect: string): Promise<string> {
+    const { status, clientId } = await registerStatus(base, redirect);
+    expect(status).toBe(201);
+    const page = await fetch(authorizeUrl(base, clientId!, redirect), { redirect: "manual" });
+    expect(page.status).toBe(200);
+    return page.text();
+  }
+
+  it("a) refuses to register a redirect outside the allowlist", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    expect((await registerStatus(base, "https://evil.example/cb")).status).toBe(400);
+  });
+
+  it("b) registers the default claude.ai callback", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    expect((await registerStatus(base, "https://claude.ai/api/mcp/auth_callback")).status).toBe(201);
+  });
+
+  it("c) registers a loopback http redirect", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    expect((await registerStatus(base, "http://127.0.0.1:5000/cb")).status).toBe(201);
+  });
+
+  it("d) refuses a lookalike host that only starts with an allowed host", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    expect((await registerStatus(base, "https://claude.ai.evil.example/cb")).status).toBe(400);
+  });
+
+  it("e) refuses plain http on an allowed host", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    expect((await registerStatus(base, "http://claude.ai/cb")).status).toBe(400);
+  });
+
+  it("f) the env variable replaces the default allowlist", async () => {
+    process.env[ENV] = "https://client.example";
+    const { base } = await start();
+    expect((await registerStatus(base, "https://client.example/cb")).status).toBe(201);
+    expect((await registerStatus(base, "https://claude.ai/cb")).status).toBe(400);
+  });
+
+  it("g) junk and non-https entries in the env variable grant nothing", async () => {
+    process.env[ENV] = "not a url, http://plain.example, javascript:alert(1), data:text/html;x, null, ,*";
+    const { base } = await start();
+    for (const redirect of [
+      "http://plain.example/cb",
+      "https://plain.example/cb",
+      "https://claude.ai/cb",
+      "https://evil.example/cb",
+    ]) expect((await registerStatus(base, redirect)).status, redirect).toBe(400);
+    expect((await registerStatus(base, "http://127.0.0.1:5000/cb")).status).toBe(201);
+  });
+
+  it("h) refuses a stored client with a disallowed redirect at authorize", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    const redirect = "https://evil.example/cb";
+    const clientId = await seedClient(redirect);
+    const response = await fetch(authorizeUrl(base, clientId, redirect), { redirect: "manual" });
+    expect(response.status).toBe(400);
+    expect(response.headers.get("location")).toBeNull();
+    expect(response.headers.get("set-cookie")).toBeNull();
+    const text = await response.text();
+    expect(text).not.toContain("Allow connection?");
+    expect(JSON.parse(text)).toEqual({ error: "invalid_request" });
+  });
+
+  it("h) authorize itself refuses a disallowed redirect handed to it by the client store", async () => {
+    delete process.env[ENV];
+    await start();
+    const redirect = "https://evil.example/cb";
+    const provider = new TandemOAuthProvider({ state: handle!.state, publicUrl: new URL(PUBLIC_URL), canonicalOrigin: PUBLIC_ORIGIN });
+    const sent: { status?: number; body?: unknown; html?: boolean; cookie?: boolean } = {};
+    const res = {
+      status(code: number) { sent.status = code; return res; },
+      json(body: unknown) { sent.body = body; return res; },
+      cookie() { sent.cookie = true; return res; },
+      type() { sent.html = true; return res; },
+      send() { return res; },
+    };
+    await provider.authorize(
+      { client_id: "seeded-client-0123456789", redirect_uris: [redirect] },
+      { redirectUri: redirect, scopes: ["mcp"], resource: new URL(PUBLIC_URL), codeChallenge: CHALLENGE, state: "s" },
+      res as never,
+    );
+    expect(sent).toEqual({ status: 400, body: { error: "invalid_request" } });
+  });
+
+  it("i) refuses the same stored client at the approve decision and issues no code", async () => {
+    // The redirect is allowed while the consent page is fetched, then drops off
+    // the allowlist before the owner approves.
+    process.env[ENV] = "https://evil.example";
+    const { base, stateDir } = await start();
+    const redirect = "https://evil.example/cb";
+    const clientId = await seedClient(redirect);
+    const page = await fetch(authorizeUrl(base, clientId, redirect), { redirect: "manual" });
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    const cookie = (page.headers.get("set-cookie") ?? "").split(";")[0];
+    delete process.env[ENV];
+    const decision = await fetch(`${base}/authorize/decision`, {
+      method: "POST",
+      redirect: "manual",
+      headers: { "content-type": "application/x-www-form-urlencoded", cookie, origin: PUBLIC_ORIGIN },
+      body: new URLSearchParams({
+        pending: hidden(html, "pending"),
+        csrf: hidden(html, "csrf"),
+        password: OWNER_PASSWORD,
+        action: "approve",
+      }),
+    });
+    expect(decision.status).toBe(400);
+    expect(decision.headers.get("location")).toBeNull();
+    const persisted = JSON.parse(await readFile(join(stateDir, "state.json"), "utf8")) as { codes: object };
+    expect(Object.keys(persisted.codes)).toHaveLength(0);
+  });
+
+  it("j) consent page shows the HTML-escaped redirect host of an allowed client", async () => {
+    process.env[ENV] = "https://claude.ai,https://a&b.example";
+    const { base } = await start();
+    expect(await consentHtml(base, "https://claude.ai/api/mcp/auth_callback"))
+      .toContain(`<strong>MCP connector</strong> at claude.ai ${CONSENT_TAIL}`);
+    const escaped = await consentHtml(base, "https://a&b.example/cb");
+    expect(escaped).toContain(`<strong>MCP connector</strong> at a&amp;b.example ${CONSENT_TAIL}`);
+    expect(escaped).not.toContain("a&b.example");
+  });
+
+  it("k) loopback consent says this computer and shows host and port", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    expect(await consentHtml(base, "http://127.0.0.1:5000/cb"))
+      .toContain(`<strong>MCP connector</strong> on this computer (127.0.0.1:5000) ${CONSENT_TAIL}`);
+  });
+
+  it("l) a stored disallowed redirect gets a direct 400, never the SDK error redirect", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    const redirect = "https://evil.example/cb";
+    const clientId = await seedClient(redirect);
+    const invalid = new URL(authorizeUrl(base, clientId, redirect));
+    invalid.searchParams.delete("code_challenge");
+    const noRedirectParam = new URL(invalid);
+    noRedirectParam.searchParams.delete("redirect_uri");
+    for (const response of [
+      await fetch(invalid, { redirect: "manual" }),
+      await fetch(noRedirectParam, { redirect: "manual" }),
+      await fetch(`${base}/authorize`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: invalid.searchParams,
+      }),
+    ]) {
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+    }
+  });
+
+  it("m) env entries that are not bare origins grant nothing", async () => {
+    process.env[ENV] = "https://path.example/cb,https://query.example/?x=1,https://frag.example#f,https://claude.ai@userinfo.example,https://*.wild.example,https://bare.example/,HTTPS://Upper.Example:443";
+    const { base } = await start();
+    for (const redirect of [
+      "https://path.example/cb",
+      "https://path.example/other",
+      "https://query.example/cb",
+      "https://frag.example/cb",
+      "https://userinfo.example/cb",
+      "https://*.wild.example/cb",
+      "https://a.wild.example/cb",
+    ]) expect((await registerStatus(base, redirect)).status, redirect).toBe(400);
+    expect((await registerStatus(base, "https://bare.example/cb")).status).toBe(201);
+    expect((await registerStatus(base, "https://upper.example/cb")).status).toBe(201);
   });
 });

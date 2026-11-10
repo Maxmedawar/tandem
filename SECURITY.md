@@ -15,6 +15,7 @@ Tandem drives real agent and terminal processes as its OS user. Treat it like re
 - Access tokens are short-lived and audience-bound.
 - Refresh tokens rotate. Replay revokes the refresh family and its access tokens.
 - Public clients use dynamic registration without client secrets. Redirect URI classes are narrowly validated.
+- OAuth redirects are limited to an allowlist of exact https origins plus loopback addresses on this computer. `TANDEM_ALLOWED_REDIRECT_ORIGINS` is a comma-separated list of origins; when unset it is `https://claude.ai,https://claude.com`, and when set it replaces that default. Entries that are not bare https origins are ignored. The check runs at registration, at authorize and at the approve decision, and the consent page names the redirect host.
 - OAuth bodies, MCP bodies, registration counts, approval attempts, and rates are bounded.
 - OAuth state persists only the owner password verifier plus code, access-token, and refresh-token digests. Setup keeps the readable owner password separately in an owner-only file so the operator can complete consent locally.
 - OAuth state is written atomically outside the repository with owner-only permissions.

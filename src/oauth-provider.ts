@@ -24,6 +24,7 @@ const MAX_PASSWORD_FAILURES = 5;
 const CSRF_COOKIE = "__Host-tandem_csrf";
 const PKCE_S256 = /^[A-Za-z0-9_-]{43}$/;
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
+const DEFAULT_ALLOWED_REDIRECT_ORIGINS = "https://claude.ai,https://claude.com";
 
 interface PendingAuthorization {
   id: string;
@@ -57,7 +58,31 @@ function cleanExpiredPending(pending: Map<string, PendingAuthorization>, now: nu
   }
 }
 
-function isSafeRedirect(raw: string): boolean {
+// Exact https origins a redirect may use. TANDEM_ALLOWED_REDIRECT_ORIGINS
+// (comma-separated) replaces the default when set. An entry that does not
+// parse, is not https, or is more than a bare origin (path, query, fragment,
+// credentials, wildcard) grants nothing.
+function allowedRedirectOrigins(): Set<string> {
+  const raw = process.env.TANDEM_ALLOWED_REDIRECT_ORIGINS ?? DEFAULT_ALLOWED_REDIRECT_ORIGINS;
+  const origins = new Set<string>();
+  for (const entry of raw.split(",")) {
+    try {
+      const url = new URL(entry.trim());
+      if (url.protocol === "https:" && url.href === `${url.origin}/` && !url.hostname.includes("*")) origins.add(url.origin);
+    } catch {
+      // ignored
+    }
+  }
+  return origins;
+}
+
+function isLoopbackRedirect(url: URL): boolean {
+  return (url.protocol === "http:" || url.protocol === "https:") && LOOPBACK_HOSTS.has(url.hostname);
+}
+
+// The one redirect gate: called at registration, authorize and the decision.
+// A redirect passes only on an allowlisted https origin or a loopback host.
+function isPermittedRedirect(raw: string): boolean {
   if (raw.length < 1 || raw.length > 2048) return false;
   let url: URL;
   try {
@@ -66,8 +91,8 @@ function isSafeRedirect(raw: string): boolean {
     return false;
   }
   if (url.username || url.password || url.hash) return false;
-  if (url.protocol === "https:") return true;
-  return url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname);
+  if (isLoopbackRedirect(url)) return true;
+  return url.protocol === "https:" && allowedRedirectOrigins().has(url.origin);
 }
 
 function exactSet(values: string[] | undefined, expected: string[]): boolean {
@@ -84,7 +109,7 @@ function validateClientRegistration(
   if (!Array.isArray(client.redirect_uris) || client.redirect_uris.length < 1 || client.redirect_uris.length > MAX_REDIRECTS) {
     throw new InvalidClientMetadataError("redirect_uris must contain one to five entries");
   }
-  if (new Set(client.redirect_uris).size !== client.redirect_uris.length || !client.redirect_uris.every(isSafeRedirect)) {
+  if (new Set(client.redirect_uris).size !== client.redirect_uris.length || !client.redirect_uris.every(isPermittedRedirect)) {
     throw new InvalidClientMetadataError("redirect_uris contains an unsafe or duplicate URI");
   }
   if (!exactSet(client.grant_types, ["authorization_code", "refresh_token"])) {
@@ -116,9 +141,12 @@ class TandemClientsStore implements OAuthRegisteredClientsStore {
     this.random = random;
   }
 
-  getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
-    if (clientId.length < 1 || clientId.length > 256) return Promise.resolve(undefined);
-    return this.state.getClient(clientId);
+  async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
+    if (clientId.length < 1 || clientId.length > 256) return undefined;
+    const client = await this.state.getClient(clientId);
+    // The SDK redirects invalid authorize requests to a registered URI before
+    // the provider runs, so a URI the gate refuses must never leave the store.
+    return client && { ...client, redirect_uris: client.redirect_uris.filter((uri) => isPermittedRedirect(uri)) };
   }
 
   async registerClient(
@@ -174,7 +202,7 @@ export class TandemOAuthProvider implements OAuthServerProvider {
   }
 
   async authorize(client: OAuthClientInformationFull, params: AuthorizationParams, res: Response): Promise<void> {
-    if (!client.redirect_uris.includes(params.redirectUri)) {
+    if (!client.redirect_uris.includes(params.redirectUri) || !isPermittedRedirect(params.redirectUri)) {
       directOAuthError(res, 400, "invalid_request");
       return;
     }
@@ -209,7 +237,7 @@ export class TandemOAuthProvider implements OAuthServerProvider {
       failures: 0,
     });
     setCsrfCookie(res, csrf);
-    res.status(200).type("html").send(consentPage({ pending: id, csrf }));
+    res.status(200).type("html").send(consentPage({ pending: id, csrf, redirectUri: params.redirectUri }));
   }
 
   async challengeForAuthorizationCode(client: OAuthClientInformationFull, authorizationCode: string): Promise<string> {
@@ -283,7 +311,7 @@ export class TandemOAuthProvider implements OAuthServerProvider {
     cleanExpiredPending(this.pending, now);
     const record = this.pending.get(id);
 
-    if (!record || !validRequestOrigin(req, this.canonicalOrigin) || !cookieCsrf ||
+    if (!record || !isPermittedRedirect(record.redirectUri) || !validRequestOrigin(req, this.canonicalOrigin) || !cookieCsrf ||
       !safeEqual(record.csrf, csrf) || !safeEqual(record.csrf, cookieCsrf) ||
       (action !== "approve" && action !== "deny")) {
       if (record) this.pending.delete(id);
@@ -312,7 +340,7 @@ export class TandemOAuthProvider implements OAuthServerProvider {
       }
       this.pending.set(id, record);
       setCsrfCookie(res, record.csrf);
-      res.status(401).type("html").send(consentPage({ pending: record.id, csrf: record.csrf, passwordError: true }));
+      res.status(401).type("html").send(consentPage({ pending: record.id, csrf: record.csrf, redirectUri: record.redirectUri, passwordError: true }));
       return;
     }
 
@@ -413,7 +441,10 @@ function escapeHtml(value: string): string {
   })[character] ?? character);
 }
 
-function consentPage(input: { pending: string; csrf: string; passwordError?: boolean }): string {
+function consentPage(input: { pending: string; csrf: string; redirectUri: string; passwordError?: boolean }): string {
+  const redirect = new URL(input.redirectUri);
+  const host = escapeHtml(redirect.host);
+  const where = isLoopbackRedirect(redirect) ? `on this computer (${host})` : `at ${host}`;
   const error = input.passwordError
     ? '<p id="password-error" class="error" role="alert">Password not accepted. Check it and try again.</p>'
     : "";
@@ -448,7 +479,7 @@ function consentPage(input: { pending: string; csrf: string; passwordError?: boo
 <body>
   <main>
     <h1>Allow connection?</h1>
-    <p id="permission-copy"><strong>MCP connector</strong> is requesting every enabled Tandem tool. Approval can start and control agent or terminal sessions with your OS account's authority.</p>
+    <p id="permission-copy"><strong>MCP connector</strong> ${where} is requesting every enabled Tandem tool. Approval can start and control agent or terminal sessions with your OS account's authority.</p>
     ${error}
     <form method="post" action="/authorize/decision">
       <input type="hidden" name="pending" value="${escapeHtml(input.pending)}">
