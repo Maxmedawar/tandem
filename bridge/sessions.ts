@@ -269,7 +269,7 @@ export async function listSessions(
       cwd: s.cwd,
       live: true,
       updatedAt: s.createdAt,
-      attachHint: `tmux attach -t ${s.target}`,
+      attachHint: `tmux attach -t '=${s.target}'`,
     }))
 
   const all = [...registered, ...adoptedCandidates]

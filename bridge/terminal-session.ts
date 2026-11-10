@@ -169,17 +169,32 @@ export interface SpawnOptions {
 export interface SendResult {
   report: string
   cursor: number
-  status: 'done' | 'running'
+  /** 'done' = the engine's working marker cleared and the pane held still;
+   *  'quiet' = a markerless engine's pane held still with no completion signal. */
+  status: 'done' | 'running' | 'quiet'
 }
 
 export interface ReadResult {
   text: string
   cursor: number
   idle: boolean
+  state: 'working' | 'done' | 'quiet'
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms))
+}
+
+/** Exact tmux targets. A bare `-t ccm-x` falls back to a prefix match (or a
+ *  window name), so with ccm-x gone it would drive ccm-x-long. `=` forces an
+ *  exact session name; pane/window commands also need the trailing `:` so
+ *  tmux reads the name as a session. */
+function sessionTarget(name: string): string {
+  return `=${SESSION_PREFIX}${name}`
+}
+
+function paneTarget(name: string): string {
+  return `${sessionTarget(name)}:`
 }
 
 /** Run tmux with an argv array (never a shell string). Resolves stdout. */
@@ -198,9 +213,9 @@ function tmux(args: string[]): Promise<string> {
 /** Read a spawned session's `@tandem_engine` / `@tandem_owner` tmux user options
  *  in one round trip. Empty strings mean "tag absent" (tmux prints nothing for
  *  an unset user option in `display-message`, never throws). */
-async function readProvenanceTags(target: string): Promise<{ engine: string; owner: string }> {
+async function readProvenanceTags(name: string): Promise<{ engine: string; owner: string }> {
   try {
-    const raw = await tmux(['display-message', '-p', '-t', target, '#{@tandem_engine}\t#{@tandem_owner}'])
+    const raw = await tmux(['display-message', '-p', '-t', paneTarget(name), '#{@tandem_engine}\t#{@tandem_owner}'])
     const [engine = '', owner = ''] = raw.replace(/\n$/, '').split('\t')
     return { engine, owner }
   } catch {
@@ -215,7 +230,7 @@ async function readProvenanceTags(target: string): Promise<{ engine: string; own
  *  "missing/mismatched tmux provenance must never appear as drivable") — never
  *  by reading the `@tandem_engine` tag alone. */
 export async function readSessionProvenance(name: string): Promise<{ engine: string; owner: string }> {
-  return readProvenanceTags(SESSION_PREFIX + name)
+  return readProvenanceTags(name)
 }
 
 /**
@@ -426,11 +441,12 @@ export class TerminalSession {
   }
 
   get tmuxTarget(): string {
-    return SESSION_PREFIX + this._name
+    return paneTarget(this._name)
   }
 
+  /** Quoted so zsh does not expand the leading `=` when pasted. */
   attachHint(): string {
-    return `tmux attach -t ${this.tmuxTarget}`
+    return `tmux attach -t '${sessionTarget(this._name)}'`
   }
 
   /**
@@ -468,7 +484,7 @@ export class TerminalSession {
 
     const target = SESSION_PREFIX + name
     // Refuse to clobber an existing session of the same name.
-    if (await TerminalSession.tmuxSessionExists(target)) {
+    if (await TerminalSession.tmuxSessionExists(name)) {
       throw new Error(`tmux session already exists: ${target}`)
     }
 
@@ -528,13 +544,13 @@ export class TerminalSession {
     // before the transcript pipe, so a crash in between leaves, at worst, a
     // correctly-tagged session with a short transcript gap — never a mistagged
     // one that could be adopted without real provenance.
-    await tmux(['set-option', '-t', target, '@tandem_engine', descriptor.id])
-    await tmux(['set-option', '-t', target, '@tandem_owner', ownerId])
+    await tmux(['set-option', '-t', paneTarget(name), '@tandem_engine', descriptor.id])
+    await tmux(['set-option', '-t', paneTarget(name), '@tandem_owner', ownerId])
 
     // Attach the append-only transcript pipe. Single-quote the redirect target;
     // the path is bridge-controlled (transcripts dir + validated name).
     const safeLog = logPath.replace(/'/g, `'\\''`)
-    await tmux(['pipe-pane', '-o', '-t', target, `cat >> '${safeLog}'`])
+    await tmux(['pipe-pane', '-o', '-t', paneTarget(name), `cat >> '${safeLog}'`])
 
     const session = new TerminalSession(name, cwd, logPath, descriptor)
     await session.warmup()
@@ -565,17 +581,16 @@ export class TerminalSession {
     ownerIdProvider: OwnerIdProvider = makeOwnerIdProvider(),
   ): Promise<TerminalSession | undefined> {
     if (!SESSION_NAME_RE.test(name)) return undefined
-    const target = SESSION_PREFIX + name
-    if (!(await TerminalSession.tmuxSessionExists(target))) return undefined
+    if (!(await TerminalSession.tmuxSessionExists(name))) return undefined
 
-    const provenance = await readProvenanceTags(target)
+    const provenance = await readProvenanceTags(name)
     const expectedOwner = await ownerIdProvider()
 
     const logPath = join(TRANSCRIPTS_DIR, `${name}.log`)
     // Read the cwd tmux recorded for the session (the session's actual pane cwd).
     let cwd = HOME
     try {
-      cwd = (await tmux(['display-message', '-p', '-t', target, '#{pane_current_path}'])).trim() || HOME
+      cwd = (await tmux(['display-message', '-p', '-t', paneTarget(name), '#{pane_current_path}'])).trim() || HOME
     } catch {
       /* keep default */
     }
@@ -589,7 +604,7 @@ export class TerminalSession {
 
   /** Public: does a ccm-<name> tmux session exist? (name is the bare name.) */
   static async exists(name: string): Promise<boolean> {
-    return TerminalSession.tmuxSessionExists(SESSION_PREFIX + name)
+    return TerminalSession.tmuxSessionExists(name)
   }
 
   /** Public: the `@tandem_engine` tag of an existing ccm-<name> session, or
@@ -598,15 +613,14 @@ export class TerminalSession {
    *  provenance/cwd adoption failure (403) — reading the tag alone reveals
    *  nothing the caller didn't already know (it supplied the name). */
   static async engineTagOf(name: string): Promise<string | undefined> {
-    const target = SESSION_PREFIX + name
-    if (!(await TerminalSession.tmuxSessionExists(target))) return undefined
-    const { engine } = await readProvenanceTags(target)
+    if (!(await TerminalSession.tmuxSessionExists(name))) return undefined
+    const { engine } = await readProvenanceTags(name)
     return engine || undefined
   }
 
   /** True if THIS session's tmux target is still alive. */
   async isAlive(): Promise<boolean> {
-    return TerminalSession.tmuxSessionExists(this.tmuxTarget)
+    return TerminalSession.tmuxSessionExists(this._name)
   }
 
   /** True if a turn is currently running. Marker-based engines check the pane
@@ -627,9 +641,9 @@ export class TerminalSession {
     return false
   }
 
-  private static async tmuxSessionExists(target: string): Promise<boolean> {
+  private static async tmuxSessionExists(name: string): Promise<boolean> {
     try {
-      await tmux(['has-session', '-t', target])
+      await tmux(['has-session', '-t', sessionTarget(name)])
       return true
     } catch {
       return false
@@ -804,14 +818,17 @@ export class TerminalSession {
       state = step.state
 
       if (step.idle) {
-        return { report: await this.reportSince(startCursor), cursor: this.cursor(), status: 'done' }
+        // Only a marker can say the turn finished; a markerless pane that held
+        // still only says it went quiet.
+        return { ...(await this.reportSince(startCursor)), status: this.descriptor.isWorking ? 'done' : 'quiet' }
       }
       if (Date.now() >= hardDeadline) {
         // Hard timeout: surface whatever we have and let the caller poll/read.
-        return { report: await this.reportSince(startCursor), cursor: this.cursor(), status: 'running' }
+        return { ...(await this.reportSince(startCursor)), status: 'running' }
       }
       if (Date.now() >= softDeadline) {
-        return { report: '', cursor: this.cursor(), status: 'running' }
+        // Nothing was delivered, so the cursor stays where the turn began.
+        return { report: '', cursor: startCursor, status: 'running' }
       }
       await sleep(POLL_MS)
     }
@@ -874,7 +891,8 @@ export class TerminalSession {
     const size = this.cursor()
     const text = stripAnsi(await this.readRaw(cursor, size))
     const working = await this.isCurrentlyWorking()
-    return { text, cursor: size, idle: !working }
+    const state = working ? 'working' : this.descriptor.isWorking ? 'done' : 'quiet'
+    return { text, cursor: size, idle: !working, state }
   }
 
   /** Read raw transcript bytes in [from, to) as UTF-8. */
@@ -901,14 +919,16 @@ export class TerminalSession {
    * de-duplicated, spinner-filtered slice of the transcript delta. The full raw
    * (ANSI-stripped) transcript is always available via readSince() for review.
    */
-  private async reportSince(cursor: number): Promise<string> {
-    const pane = await this.capture()
-    const fromPane = this.cleanReportLines(pane.split('\n'))
-    if (fromPane) return fromPane
+  private async reportSince(cursor: number): Promise<{ report: string; cursor: number }> {
+    // Fix the end offset BEFORE reading: bytes that land while the report is
+    // read stay past the returned cursor, so the next readSince() gets them.
     const size = this.cursor()
-    if (size <= cursor) return ''
-    const stripped = stripAnsi(await this.readRaw(cursor, size))
-    return this.cleanReportLines(stripped.split('\n'))
+    const fromPane = this.cleanReportLines((await this.capture()).split('\n'))
+    const report =
+      fromPane || (size > cursor ? this.cleanReportLines(stripAnsi(await this.readRaw(cursor, size)).split('\n')) : '')
+    // The report is a cleaned view, not the raw bytes; say what it cut and where to read them.
+    const cut = size > cursor ? `[${size - cursor} transcript bytes cut from this report; read from cursor ${cursor} to see them]` : ''
+    return { report: [report, cut].filter(Boolean).join('\n'), cursor: size }
   }
 
   /** Drop blank/duplicate lines, spinner frames, progress lines, the input box,
@@ -957,7 +977,7 @@ export class TerminalSession {
   /** Kill the tmux session. Idempotent. */
   async close(): Promise<void> {
     try {
-      await tmux(['kill-session', '-t', this.tmuxTarget])
+      await tmux(['kill-session', '-t', sessionTarget(this._name)])
     } catch {
       /* already gone */
     }
