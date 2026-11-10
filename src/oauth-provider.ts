@@ -59,15 +59,16 @@ function cleanExpiredPending(pending: Map<string, PendingAuthorization>, now: nu
 }
 
 // Exact https origins a redirect may use. TANDEM_ALLOWED_REDIRECT_ORIGINS
-// (comma-separated) replaces the default when set. Entries that do not parse
-// or are not https grant nothing.
+// (comma-separated) replaces the default when set. An entry that does not
+// parse, is not https, or is more than a bare origin (path, query, fragment,
+// credentials, wildcard) grants nothing.
 function allowedRedirectOrigins(): Set<string> {
   const raw = process.env.TANDEM_ALLOWED_REDIRECT_ORIGINS ?? DEFAULT_ALLOWED_REDIRECT_ORIGINS;
   const origins = new Set<string>();
   for (const entry of raw.split(",")) {
     try {
       const url = new URL(entry.trim());
-      if (url.protocol === "https:") origins.add(url.origin);
+      if (url.protocol === "https:" && url.href === `${url.origin}/` && !url.hostname.includes("*")) origins.add(url.origin);
     } catch {
       // ignored
     }
@@ -140,9 +141,12 @@ class TandemClientsStore implements OAuthRegisteredClientsStore {
     this.random = random;
   }
 
-  getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
-    if (clientId.length < 1 || clientId.length > 256) return Promise.resolve(undefined);
-    return this.state.getClient(clientId);
+  async getClient(clientId: string): Promise<OAuthClientInformationFull | undefined> {
+    if (clientId.length < 1 || clientId.length > 256) return undefined;
+    const client = await this.state.getClient(clientId);
+    // The SDK redirects invalid authorize requests to a registered URI before
+    // the provider runs, so a URI the gate refuses must never leave the store.
+    return client && { ...client, redirect_uris: client.redirect_uris.filter((uri) => isPermittedRedirect(uri)) };
   }
 
   async registerClient(

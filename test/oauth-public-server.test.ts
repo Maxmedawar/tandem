@@ -496,4 +496,44 @@ describe("OAuth redirect allowlist", () => {
     expect(await consentHtml(base, "http://127.0.0.1:5000/cb"))
       .toContain(`<strong>MCP connector</strong> on this computer (127.0.0.1:5000) ${CONSENT_TAIL}`);
   });
+
+  it("l) a stored disallowed redirect gets a direct 400, never the SDK error redirect", async () => {
+    delete process.env[ENV];
+    const { base } = await start();
+    const redirect = "https://evil.example/cb";
+    const clientId = await seedClient(redirect);
+    const invalid = new URL(authorizeUrl(base, clientId, redirect));
+    invalid.searchParams.delete("code_challenge");
+    const noRedirectParam = new URL(invalid);
+    noRedirectParam.searchParams.delete("redirect_uri");
+    for (const response of [
+      await fetch(invalid, { redirect: "manual" }),
+      await fetch(noRedirectParam, { redirect: "manual" }),
+      await fetch(`${base}/authorize`, {
+        method: "POST",
+        redirect: "manual",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: invalid.searchParams,
+      }),
+    ]) {
+      expect(response.status).toBe(400);
+      expect(response.headers.get("location")).toBeNull();
+    }
+  });
+
+  it("m) env entries that are not bare origins grant nothing", async () => {
+    process.env[ENV] = "https://path.example/cb,https://query.example/?x=1,https://frag.example#f,https://claude.ai@userinfo.example,https://*.wild.example,https://bare.example/,HTTPS://Upper.Example:443";
+    const { base } = await start();
+    for (const redirect of [
+      "https://path.example/cb",
+      "https://path.example/other",
+      "https://query.example/cb",
+      "https://frag.example/cb",
+      "https://userinfo.example/cb",
+      "https://*.wild.example/cb",
+      "https://a.wild.example/cb",
+    ]) expect((await registerStatus(base, redirect)).status, redirect).toBe(400);
+    expect((await registerStatus(base, "https://bare.example/cb")).status).toBe(201);
+    expect((await registerStatus(base, "https://upper.example/cb")).status).toBe(201);
+  });
 });
