@@ -1,5 +1,6 @@
 # Screen rules adapted from kbwo/ccmanager src/services/stateDetector/opencode.ts (MIT, see ../NOTICE).
-# idle is what is left once nothing else matches, as in ccmanager.
+# idle is a positive match of the prompt: the composer's bottom edge with the `ctrl+p commands`
+# hint under it (real capture, opencode 2.2.7, ../opencode-idle-real.txt).
 name = "opencode"
 program = "opencode"
 has_prompts = true
@@ -7,4 +8,4 @@ has_prompts = true
 [states]
 waiting_for_approval = ['△ Permission required', 'esc (?:dismiss|close)']
 working = ['(?i)esc.*interrupt']
-idle = ['\A']
+idle = ['╹▀+\n[^\n]*ctrl\+p commands']

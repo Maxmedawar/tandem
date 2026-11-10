@@ -1,5 +1,6 @@
 # Screen rules adapted from kbwo/ccmanager src/services/stateDetector/claude.ts (MIT, see ../NOTICE).
-# idle is what is left once nothing else matches, as in ccmanager; debounce_ms (default 1500) guards it.
+# idle is a positive match of the prompt box: a `❯` line (then a space or NBSP) between two rule lines (real capture,
+# claude 2.1.321, ../claude-idle-real.txt). A footer alone is not idle. debounce_ms (default 1500) guards it.
 name = "claude"
 program = "claude"
 has_prompts = true
@@ -16,4 +17,4 @@ working = [
   '^[✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆·•⏺▸▹∙⋅○●] \S+ing.*…',
   '(?i)\([^)]*\d[^)]*tokens\s*\)',
 ]
-idle = ['\A']
+idle = ['^─{20,}[ \t]*\n❯(?:[ \t\x{A0}][^\n]*)?\n─{20,}']

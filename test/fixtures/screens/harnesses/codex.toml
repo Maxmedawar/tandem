@@ -1,5 +1,6 @@
 # Screen rules adapted from kbwo/ccmanager src/services/stateDetector/codex.ts (MIT, see ../NOTICE).
-# idle is what is left once nothing else matches, as in ccmanager.
+# idle is a positive match of the prompt: a `› ` composer line with the `? for shortcuts` hint
+# below it (real capture, codex 0.166.0, ../codex-idle-real.txt). Its update menu also uses `› `.
 name = "codex"
 program = "codex"
 has_prompts = true
@@ -15,4 +16,4 @@ waiting_for_approval = [
   '(?i)(?:do you want|would you like)[\s\S]*?\n+[\s\S]*?\byes\b',
 ]
 working = ['(?i)esc.*interrupt']
-idle = ['\A']
+idle = ['^› [^\n]*\n(?:[^\n]*\n){0,4}[^\n]*\? for shortcuts']

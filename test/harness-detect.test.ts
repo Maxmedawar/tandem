@@ -30,15 +30,35 @@ describe("rule files and screen fixtures", () => {
   it("each agent brings 1 to 3 ccmanager samples per state, and the folder holds nothing else", () => {
     const n = (agent: string, state: string) => fixtures.filter((f) => new RegExp(`^${agent}-${state}-\\d+\\.txt$`).test(f)).length;
     for (const agent of ["claude", "codex", "gemini", "opencode", "grok"]) {
-      for (const state of ["working", "idle", "waiting_for_approval"]) {
+      for (const state of ["working", "waiting_for_approval"]) {
         expect(n(agent, state), `${agent} ${state}`).toBeGreaterThanOrEqual(1);
         expect(n(agent, state), `${agent} ${state}`).toBeLessThanOrEqual(3);
       }
+      // idle is a positive match of the agent's prompt; a ccmanager idle sample with no prompt on it reads unknown.
+      expect(n(agent, "idle"), `${agent} idle`).toBeLessThanOrEqual(3);
+      const idleFixtures = fixtures.filter((f) => f.startsWith(`${agent}-idle-`)).length;
+      const hasIdleRule = (loaded.harnesses.get(agent)?.states?.idle ?? []).length > 0;
+      expect(idleFixtures > 0, `${agent}: an idle rule needs an idle fixture, and an idle fixture needs a rule`).toBe(hasIdleRule);
     }
     expect(fixtures).toContain("claude-working-real.txt");
     expect(fixtures).toContain("claude-idle-real.txt");
     expect(fixtures).toContain("shell-unknown-1.txt");
     for (const f of fixtures) expect(f).toMatch(FILE);
+  });
+
+  // Real dialogs captured from the installed CLIs, plus screens no agent shows when ready for input.
+  const unrecognised: Record<string, string> = {
+    "an empty screen": "",
+    "blank lines": "\n  \n\t\n",
+    "plain output": "Normal output\nSome message\nReady",
+    "a menu": "Select a theme\n❯ 1. Dark\n  2. Light\n↑↓ to move · enter to select",
+    "a shell prompt": "user@host:~/w$ ",
+    "the codex update menu": readFileSync(join(SCREENS, "codex-unknown-update.txt"), "utf8"),
+    "the gemini sign-in dialog": readFileSync(join(SCREENS, "gemini-unknown-auth.txt"), "utf8"),
+    "the grok sign-in screen": readFileSync(join(SCREENS, "grok-unknown-signin.txt"), "utf8"),
+  };
+  it.each(Object.keys(unrecognised))("%s reads unknown for every agent, never idle", (label) => {
+    for (const [name, h] of loaded.harnesses) expect(readScreen(h, unrecognised[label]!), name).toBe("unknown");
   });
 
   it.each(fixtures)("%s reads as the state in its name", (f) => {

@@ -1,1 +1,40 @@
-⏵⏵ auto mode on (shift+tab to cycle) · ← for agents            ● high · /effort
+
+ ▐▛███▛█   Claude Code v2.1.321
+▝▜██████▀  Fable 5.2 · Claude Ultra
+ ▝▝   ▝▝   ~ · /rc
+
+▎ Using Fable 5.2 (from .claude/settings.json) · /model
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ Try "refactor <filepath>"
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  user@example.com · session – · 5h – · 7d – · Fable 5.2 · effort:medium · owner/repo (main)
+  ⏵⏵ auto mode on (shift+tab to cycle) · ← 2 agents

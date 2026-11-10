@@ -1,5 +1,6 @@
 # Screen rules adapted from kbwo/ccmanager src/services/stateDetector/grok.ts (MIT, see ../NOTICE).
-# idle is what is left once nothing else matches, as in ccmanager.
+# idle is a positive match of the prompt: `>` as the last line, as in ccmanager's grok samples.
+# No real grok idle screen was captured (it asks to sign in), so the rule rests on those samples.
 name = "grok"
 program = "grok"
 has_prompts = true
@@ -14,4 +15,4 @@ waiting_for_approval = [
   'Do you trust the contents of this directory',
 ]
 working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ']
-idle = ['\A']
+idle = ['^>(?: [^\n]*)?\z']
