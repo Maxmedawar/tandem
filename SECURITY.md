@@ -21,7 +21,6 @@ Tandem drives real agent and terminal processes as its OS user. Treat it like re
 
 The connector URL is not a credential. Knowing the Funnel hostname does not authorize a client.
 
-An explicit migration mode, `TANDEM_LEGACY_TOKEN_AUTH=1`, accepts a static token only through an Authorization bearer header. Query and path tokens are rejected. New installations should use OAuth.
 
 ### Private fleet and enrollment
 

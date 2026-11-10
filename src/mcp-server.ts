@@ -3,7 +3,6 @@
  *
  * Defines the one seven-tool surface used by both transports:
  *   - src/public-server.ts: OAuth-protected Streamable HTTP (production)
- *   - src/http-mcp.ts: explicit legacy bearer-header migration only
  *   - src/stdio-server.ts: stdio for local desktop apps (no tunnel, no token)
  *
  * Each local tool call reaches the router (../bridge/router.ts) in-process. The same

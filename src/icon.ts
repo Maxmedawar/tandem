@@ -2,7 +2,7 @@
  * icon.ts - the Tandem MCP server's agent mark, embedded as
  * base64 so it ships in-source with no runtime file-path or build-copy concerns.
  *
- * Used two ways (see public-server.ts and the legacy http-mcp.ts):
+ * Used two ways (see public-server.ts):
  *   1. As the MCP server's `icons` metadata (a self-contained data: URI), so a
  *      spec-aware client can render it next to the connector / its tools.
  *   2. Served unauthenticated at /favicon.ico and /icon.png, so a connector UI

@@ -123,4 +123,4 @@ Do not copy secrets into a service command line. Put only the protected configur
 
 ## Migration from older Tandem setup
 
-Cloudflare quick tunnels and token-bearing connector URLs are no longer supported by setup. Run `./setup.sh hub` to create the OAuth connector and protected state. The explicit `TANDEM_LEGACY_TOKEN_AUTH=1` mode remains temporarily for clients that can send an Authorization bearer header. It does not accept query or path tokens.
+Cloudflare quick tunnels and token-bearing connector URLs are no longer supported by setup. Run `./setup.sh hub` to create the OAuth connector and protected state.
