@@ -1,0 +1,6 @@
+name = "bad-precedence"
+program = "agent"
+has_prompts = false
+
+[states]
+precedence = ["working", "working", "idle"]

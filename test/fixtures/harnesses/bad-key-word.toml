@@ -1,0 +1,6 @@
+name = "bad-key-word"
+program = "agent"
+has_prompts = false
+
+[keys]
+approve = "rm"

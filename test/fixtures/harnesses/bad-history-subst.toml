@@ -1,0 +1,4 @@
+name = "bad-history-subst"
+program = "agent"
+has_prompts = false
+history = "/tmp/$(id)"

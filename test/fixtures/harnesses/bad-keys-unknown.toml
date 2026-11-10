@@ -1,0 +1,6 @@
+name = "bad-keys-unknown"
+program = "agent"
+has_prompts = false
+
+[keys]
+submit = "Enter"

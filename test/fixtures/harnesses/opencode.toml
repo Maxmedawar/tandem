@@ -1,0 +1,5 @@
+name = "opencode"
+program = "opencode"
+has_prompts = true
+skip_prompts_args = ["--auto"]
+resume = ["--session", "{id}"]

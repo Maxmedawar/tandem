@@ -1,0 +1,3 @@
+name = "bad-program"
+program = "/usr/../bin/sh"
+has_prompts = false

@@ -1,0 +1,3 @@
+name = "bad-program-glob"
+program = "/bin/[b]ash"
+has_prompts = true
