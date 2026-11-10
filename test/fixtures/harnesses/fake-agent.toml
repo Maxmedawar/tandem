@@ -1,0 +1,26 @@
+name = "fake-agent"
+program = "fake-agent"
+args = ["--color", "never"]
+skip_prompts_args = ["--yes"]
+resume = ["--resume", "{id}"]
+fork = ["--fork-from", "{id}"]
+has_prompts = true
+account_env = "FAKE_AGENT_HOME"
+history = "~/.fake-agent/history.jsonl"
+delivery = "hook"
+hook = "fake-agent-notify --quiet"
+permission_hook = true
+reports_context = true
+logo = "fake-agent.svg"
+
+[states]
+working = ["esc to interrupt", "Thinking"]
+idle = ['^> $']
+waiting_for_approval = ['Allow (this|once)\?']
+debounce_ms = 800
+precedence = ["working", "waiting_for_approval", "idle"]
+
+[keys]
+approve = "y"
+deny = ["Escape", "n"]
+interrupt = ["C-c", "C-c"]

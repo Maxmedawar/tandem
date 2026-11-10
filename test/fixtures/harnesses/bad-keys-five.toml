@@ -1,0 +1,6 @@
+name = "bad-keys-five"
+program = "agent"
+has_prompts = false
+
+[keys]
+approve = ["y", "y", "y", "y", "y"]

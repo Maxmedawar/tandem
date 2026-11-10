@@ -1,0 +1,5 @@
+name = "pi"
+program = "pi"
+has_prompts = false
+resume = ["--session", "{id}"]
+fork = ["--fork", "{id}"]

@@ -1,0 +1,3 @@
+name = "bash"
+program = "bash"
+has_prompts = false

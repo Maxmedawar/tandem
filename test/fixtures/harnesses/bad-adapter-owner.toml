@@ -1,0 +1,4 @@
+name = "bad-adapter-owner"
+program = "agent"
+has_prompts = false
+adapter = "hermes"

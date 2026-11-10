@@ -1,0 +1,4 @@
+name = "bad-args-brace-open"
+program = "agent"
+has_prompts = false
+args = ["{"]

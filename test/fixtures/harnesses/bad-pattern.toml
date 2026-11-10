@@ -1,0 +1,6 @@
+name = "bad-pattern"
+program = "agent"
+has_prompts = false
+
+[states]
+working = ['(a)\1']

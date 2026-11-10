@@ -1,0 +1,4 @@
+name = "bad-history"
+program = "agent"
+has_prompts = false
+history = "relative/history.jsonl"

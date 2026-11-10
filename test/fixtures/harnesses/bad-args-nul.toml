@@ -1,0 +1,4 @@
+name = "bad-args-nul"
+program = "agent"
+has_prompts = false
+args = ["a\u0000b"]

@@ -1,0 +1,6 @@
+name = "bad-debounce"
+program = "agent"
+has_prompts = false
+
+[states]
+debounce_ms = 10001

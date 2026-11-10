@@ -1,0 +1,6 @@
+name = "bad-unknown-subfield"
+program = "agent"
+has_prompts = false
+
+[states]
+workin = ["x"]

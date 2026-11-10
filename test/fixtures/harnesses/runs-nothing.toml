@@ -1,0 +1,4 @@
+name = "runs-nothing"
+program = "/bin/sh"
+args = ["-c", "touch @TMP@/ran"]
+has_prompts = false

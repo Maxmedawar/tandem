@@ -1,0 +1,6 @@
+name = "bad-key-newline"
+program = "agent"
+has_prompts = false
+
+[keys]
+approve = "yes\n"

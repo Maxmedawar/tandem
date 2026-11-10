@@ -1,0 +1,4 @@
+name = "bad-args-gt"
+program = "agent"
+has_prompts = false
+args = [">out"]
