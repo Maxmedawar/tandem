@@ -1,10 +1,8 @@
 /**
  * Tandem network entrypoint.
  *
- * The public MCP listener is OAuth-protected by default. The private fleet
- * listener is a separate loopback-only WebSocket service with its own bearer
- * credential. An explicit legacy flag keeps static bearer-header migration
- * available without re-enabling query or path credentials.
+ * The public MCP listener is OAuth-protected. The private fleet listener is a
+ * separate loopback-only WebSocket service with its own bearer credential.
  */
 import { fileURLToPath } from "node:url";
 import { loadProtectedRuntimeConfigFromEnv, readProtectedSecretFile } from "./runtime-config.ts";
@@ -29,7 +27,6 @@ try {
 if (process.env.TANDEM_CWD_ALLOWLIST) process.env.CCM_CWD_ALLOWLIST = process.env.TANDEM_CWD_ALLOWLIST;
 if (process.env.TANDEM_DEFAULT_CWD) process.env.CCM_DEFAULT_CWD = process.env.TANDEM_DEFAULT_CWD;
 
-const legacyAuth = process.env.TANDEM_LEGACY_TOKEN_AUTH === "1";
 const publicHost = process.env.TANDEM_HOST ?? "127.0.0.1";
 const publicPort = Number(process.env.TANDEM_PORT ?? 8787);
 const fleetToken = (process.env.TANDEM_FLEET_TOKEN ?? "").trim();
@@ -62,18 +59,10 @@ let publicHandle: ClosableHandle | undefined;
 let privateHandle: ClosableHandle | undefined;
 
 try {
-  if (legacyAuth) {
-    const token = (process.env.TANDEM_TOKEN ?? "").trim();
-    if (token.length < 16) throw new Error("TANDEM_TOKEN must contain at least 16 characters in legacy mode");
-    console.error("WARNING: TANDEM_LEGACY_TOKEN_AUTH=1 enables deprecated static bearer authentication; migrate to OAuth");
-    const { startServer } = await import("./http-mcp.ts");
-    publicHandle = await startServer({ token, host: publicHost, port: publicPort, fleet: fleetRuntime });
-  } else {
-    const { loadOAuthConfigFromEnv } = await import("./auth-config.ts");
-    const config = loadOAuthConfigFromEnv();
-    const { startOAuthServer } = await import("./public-server.ts");
-    publicHandle = await startOAuthServer({ host: publicHost, port: publicPort, config, fleet: fleetRuntime });
-  }
+  const { loadOAuthConfigFromEnv } = await import("./auth-config.ts");
+  const config = loadOAuthConfigFromEnv();
+  const { startOAuthServer } = await import("./public-server.ts");
+  publicHandle = await startOAuthServer({ host: publicHost, port: publicPort, config, fleet: fleetRuntime });
 
   if (fleetToken) {
     const { startPrivateFleetServer } = await import("../bridge/fleet-private-server.ts");
