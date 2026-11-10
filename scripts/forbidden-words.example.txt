@@ -1,0 +1,8 @@
+# Word list for scripts/check-tree.sh (--words FILE).
+# One fixed string per line, matched case-insensitively against file contents
+# and paths at HEAD, and against commit messages, author and committer names
+# and emails. Lines starting with # and blank lines are ignored. Findings name
+# a word only by its line number here. The real list lives outside this repo
+# (default ~/.config/tandem/forbidden-words.txt); never commit it.
+examplecorp
+project-moonbeam
