@@ -7,7 +7,7 @@
  * acknowledged is still there, exactly once.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
-import { chmodSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -324,6 +324,7 @@ describe('fabric with no bus: a holder that was killed rather than stopped', () 
       room: 'main', type: 'message', body: 'after reopen', idempotencyKey: 'f-after',
     })
     host.close()
+    expect(() => host.close()).not.toThrow()
 
     const entries = readdirSync(directory)
     expect(entries).toContain('fabric.sqlite3')
@@ -331,4 +332,41 @@ describe('fabric with no bus: a holder that was killed rather than stopped', () 
     expect(entries).not.toContain('mesh')
     for (const entry of entries) expect(entry).toMatch(/^fabric\.sqlite3(-wal|-shm|-journal)?$/)
   }, 60_000)
+
+  it('reopens a store whose holder was killed inside a write', async () => {
+    // The paced rounds above are killed while the holder sleeps between
+    // posts. Here it posts back to back and the kill comes 0-3 ms after an
+    // acknowledgement, inside the next post's transaction most rounds. The
+    // rollback journal left beside the database proves a kill landed there;
+    // the next child and the final reopen must recover from it.
+    const directory = fabricDirectory()
+    const journal = join(directory, 'fabric.sqlite3-journal')
+    const rounds: Array<{ prefix: string, projectId: string, acked: string[] }> = []
+    let killedInsideWrite = 0
+    for (let round = 0; round < 30 && killedInsideWrite < 3; round += 1) {
+      const prefix = `g${round}`
+      const child = startChild(directory, ['post', '-', '60', '0', prefix])
+      await child.waitFor(() => child.acks.length >= 2, 'two acknowledgements')
+      // A timer would fire just after the next acknowledgement arrives, so
+      // every kill would land at the same point between two posts. A spin
+      // of a different length each round does not follow the child.
+      const until = performance.now() + (round * 0.37) % 3
+      while (performance.now() < until) { /* spin */ }
+      await child.kill()
+      if (existsSync(journal)) killedInsideWrite += 1
+      rounds.push({ prefix, projectId: child.projectId, acked: child.acks.map(ack => ack.body) })
+    }
+    expect(killedInsideWrite).toBeGreaterThan(0)
+
+    const host = await reopen(directory)
+    for (const { prefix, projectId, acked } of rounds) {
+      const read = await host.client.readRoom(context('agent-a', projectId, 'owner'), { room: 'main', limit: 500 })
+      const bodies = read.events.map(event => event.body)
+      for (const body of acked) {
+        expect(bodies.filter(entry => entry === body), `${body} is not present exactly once`).toHaveLength(1)
+      }
+      expect(new Set(bodies).size).toBe(bodies.length)
+      for (const body of bodies) expect(body.startsWith(`${prefix} event `)).toBe(true)
+    }
+  }, 120_000)
 })

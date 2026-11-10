@@ -72,6 +72,7 @@ describe('bridge startup resilience', () => {
     })
 
     expect(host).toBeDefined()
+    expect(stdout).toContain('[bridge] local Fabric storage enabled\n')
     const project = await host!.client.createProject(context(), {
       displayName: 'PROJECT_NAME_MUST_NOT_LOG',
     })
