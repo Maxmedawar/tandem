@@ -1,0 +1,58 @@
+{
+  // Separate, isolated Worker on Max's existing Cloudflare account.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tandem-hub",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "durable_objects": {
+    "bindings": [
+      // Holds the Mac bridge's outbound WebSocket; forwards MCP->bridge RPC frames.
+      { "name": "TUNNEL", "class_name": "TunnelDO" },
+      // McpAgent (from the `agents` package) is itself a Durable Object.
+      { "name": "MCP_OBJECT", "class_name": "CloudCodeMcp" },
+      // Counts /authorize password guesses (one global instance).
+      { "name": "LOGIN_THROTTLE", "class_name": "LoginThrottleDO" }
+    ]
+  },
+
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["TunnelDO", "CloudCodeMcp"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": ["LoginThrottleDO"]
+    }
+  ],
+
+  "kv_namespaces": [
+    // Used by @cloudflare/workers-oauth-provider to persist grants/tokens.
+    // Create with: wrangler kv namespace create OAUTH_KV  -> paste id below.
+    { "binding": "OAUTH_KV" }
+  ],
+
+  "vars": {
+    // Preferred machine when multiple bridges are connected and a tool call omits
+    // `machine`. If only one bridge is connected it is used regardless of this.
+    "DEFAULT_MACHINE": "mini",
+    // Anti-phishing: comma-separated allowlist of redirect_uri ORIGINS an OAuth
+    // code may return to. Client registration AND /authorize reject off-allowlist
+    // origins, so a code can only ever go to your real Claude client. Omit to use
+    // the default ("https://claude.ai,https://claude.com"); widen ONLY if your
+    // Claude client uses a different origin.
+    "CCM_ALLOWED_REDIRECT_ORIGINS": "https://claude.ai,https://claude.com"
+  }
+
+  // Secrets (set via `wrangler secret put`), NOT here:
+  //   CCM_TUNNEL_TOKEN   - shared secret the Mac bridge presents on /__tunnel/connect
+  //   CCM_MCP_PASSWORD   - password gating the OAuth /authorize browser login form
+  //                        (REQUIRED: /authorize FAILS CLOSED if this is unset).
+  //                        Generate: openssl rand -base64 32
+  //                        Set with: wrangler secret put CCM_MCP_PASSWORD
+  // Recommended: add a Cloudflare WAF rate-limit rule on POST /authorize (brute force).
+  // NOTE: ANTHROPIC_API_KEY lives on the Mac bridge, NEVER in this Worker.
+}
