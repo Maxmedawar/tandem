@@ -154,7 +154,7 @@ const responseSuccessFrameSchema = z
     id: requestIdSchema,
     ok: z.literal(true),
     status: z.number().int().min(100).max(599),
-    body: z.record(z.unknown()),
+    body: z.record(z.string(), z.unknown()),
   })
   .strict()
 
