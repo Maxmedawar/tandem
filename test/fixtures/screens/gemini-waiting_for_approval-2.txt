@@ -1,0 +1,3 @@
+Some output from Gemini
+│ Apply this change
+│ > 

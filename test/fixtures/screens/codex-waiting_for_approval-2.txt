@@ -1,0 +1,3 @@
+Some output
+Continue? [y/n]
+> 

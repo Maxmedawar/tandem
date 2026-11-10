@@ -1,0 +1,18 @@
+# Screen rules adapted from kbwo/ccmanager src/services/stateDetector/codex.ts (MIT, see ../NOTICE).
+# idle is what is left once nothing else matches, as in ccmanager.
+name = "codex"
+program = "codex"
+has_prompts = true
+
+[states]
+waiting_for_approval = [
+  '(?i)press enter to confirm or esc to cancel',
+  '(?i)confirm with .+ enter',
+  '(?i)allow command\?',
+  '(?i)\[y/n\]',
+  '(?i)yes \(y\)',
+  '(?i)enter to submit',
+  '(?i)(?:do you want|would you like)[\s\S]*?\n+[\s\S]*?\byes\b',
+]
+working = ['(?i)esc.*interrupt']
+idle = ['\A']

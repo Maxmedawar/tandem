@@ -1,0 +1,3 @@
+◆ Started the dev server
+○ 1 command still running
+> 

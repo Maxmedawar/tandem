@@ -1,0 +1,3 @@
+◆ Read src/main.rs
+⠧ Thinking… 0.2s                         1m20s ⇣12k [stop]
+> 

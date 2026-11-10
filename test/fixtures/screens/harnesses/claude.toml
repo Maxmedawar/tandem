@@ -1,0 +1,19 @@
+# Screen rules adapted from kbwo/ccmanager src/services/stateDetector/claude.ts (MIT, see ../NOTICE).
+# idle is what is left once nothing else matches, as in ccmanager; debounce_ms (default 1500) guards it.
+name = "claude"
+program = "claude"
+has_prompts = true
+
+[states]
+waiting_for_approval = [
+  '(?i)(?:do you want|would you like).+\n+[\s\S]*?(?:yes|❯)',
+  '(?i)esc to cancel',
+  '(?i)\d+\.\s*deny\s*\(esc\)',
+]
+working = [
+  '(?i)esc to interrupt',
+  '(?i)ctrl\+c to interrupt',
+  '^[✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆·•⏺▸▹∙⋅○●] \S+ing.*…',
+  '(?i)\([^)]*\d[^)]*tokens\s*\)',
+]
+idle = ['\A']

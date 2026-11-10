@@ -1,0 +1,2 @@
+◆ Run rm -rf build
+1/5:select  │  Tab:next option  │  ←/→:scope  │  e:edit pattern  │  Ctrl+o:always-approve  │  Ctrl+c:cancel

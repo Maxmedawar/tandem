@@ -1,0 +1,10 @@
+# Screen rules adapted from kbwo/ccmanager src/services/stateDetector/opencode.ts (MIT, see ../NOTICE).
+# idle is what is left once nothing else matches, as in ccmanager.
+name = "opencode"
+program = "opencode"
+has_prompts = true
+
+[states]
+waiting_for_approval = ['△ Permission required', 'esc (?:dismiss|close)']
+working = ['(?i)esc.*interrupt']
+idle = ['\A']

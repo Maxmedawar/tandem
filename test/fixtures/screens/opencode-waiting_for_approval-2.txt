@@ -1,0 +1,6 @@
+opencode v0.1.0
+
+△ Permission required
+The AI wants to execute a shell command
+
+Press Enter to allow, Esc to deny

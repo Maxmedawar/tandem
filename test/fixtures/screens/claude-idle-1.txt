@@ -1,0 +1,3 @@
+Command completed successfully
+Ready for next command
+> 

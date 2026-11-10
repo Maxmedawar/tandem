@@ -1,0 +1,2 @@
+Some output
+Apply changes? yes (y) / no (n)

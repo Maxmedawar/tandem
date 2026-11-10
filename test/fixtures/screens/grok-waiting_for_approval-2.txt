@@ -1,0 +1,2 @@
+◆ Run rm -rf build
+1/4:select  │  Tab:next choice  │  Enter:confirm  │  Esc:keep running

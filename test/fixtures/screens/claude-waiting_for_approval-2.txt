@@ -1,0 +1,4 @@
+Some output
+DO YOU WANT to make this edit?
+❯ 1. YES
+2. NO

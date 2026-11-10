@@ -1,0 +1,3 @@
+◆ Read src/main.rs
+  ⠼ Starting session… 0.4s
+> 
