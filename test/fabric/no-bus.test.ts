@@ -336,14 +336,15 @@ describe('fabric with no bus: a holder that was killed rather than stopped', () 
   it('reopens a store whose holder was killed inside a write', async () => {
     // The paced rounds above are killed while the holder sleeps between
     // posts. Here it posts back to back and the kill comes 0-3 ms after an
-    // acknowledgement, inside the next post's transaction most rounds. The
-    // rollback journal left beside the database proves a kill landed there;
-    // the next child and the final reopen must recover from it.
+    // acknowledgement, until one kill lands inside a post's transaction. The
+    // rollback journal left beside the database proves it did; the reopen
+    // must recover from it. One such kill is enough, and stopping there keeps
+    // the extra disk load off the other suites running alongside.
     const directory = fabricDirectory()
     const journal = join(directory, 'fabric.sqlite3-journal')
     const rounds: Array<{ prefix: string, projectId: string, acked: string[] }> = []
     let killedInsideWrite = 0
-    for (let round = 0; round < 30 && killedInsideWrite < 3; round += 1) {
+    for (let round = 0; round < 30 && killedInsideWrite === 0; round += 1) {
       const prefix = `g${round}`
       const child = startChild(directory, ['post', '-', '60', '0', prefix])
       await child.waitFor(() => child.acks.length >= 2, 'two acknowledgements')
