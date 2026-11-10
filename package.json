@@ -40,7 +40,7 @@
     "SETUP-PROMPT.md"
   ],
   "engines": {
-    "node": ">=22.6"
+    "node": ">=22.13"
   },
   "scripts": {
     "start": "node --experimental-strip-types src/server.ts",
@@ -53,6 +53,8 @@
     "@modelcontextprotocol/sdk": "^1.30.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
+    "re2js": "^2.10.0",
+    "smol-toml": "^1.9.1",
     "ws": "^8.18.0",
     "zod": "^4.6.7"
   },
