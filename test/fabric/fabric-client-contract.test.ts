@@ -2,12 +2,12 @@ import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
-import { SQLiteFabricClient } from '../../bridge/fabric/sqlite-fabric-client'
-import { createCallerContext, FabricAccessError } from '../../src/fabric/capabilities'
-import type { FabricClient } from '../../src/fabric/client'
-import { DEFAULT_MEMORY_SEARCH_LIMIT, MAX_MEMORY_SEARCH_LIMIT, type CallerContext, type FabricCapability } from '../../src/fabric/types'
-import { FabricValidationError } from '../../src/fabric/validation'
-import { InMemoryFabricClient } from './in-memory-fabric-client'
+import { SQLiteFabricClient } from '../../bridge/fabric/sqlite-fabric-client.ts'
+import { createCallerContext, FabricAccessError } from '../../src/fabric/capabilities.ts'
+import type { FabricClient } from '../../src/fabric/client.ts'
+import { DEFAULT_MEMORY_SEARCH_LIMIT, MAX_MEMORY_SEARCH_LIMIT, type CallerContext, type FabricCapability } from '../../src/fabric/types.ts'
+import { FabricValidationError } from '../../src/fabric/validation.ts'
+import { InMemoryFabricClient } from './in-memory-fabric-client.ts'
 
 const capabilities: FabricCapability[] = [
   'project:create', 'project:members', 'project:read', 'project:archive',

@@ -1,15 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import { assertCapability, FabricAccessError } from '../../src/fabric/capabilities'
-import type { FabricClient } from '../../src/fabric/client'
+import { assertCapability, FabricAccessError } from '../../src/fabric/capabilities.ts'
+import type { FabricClient } from '../../src/fabric/client.ts'
 import {
   DEFAULT_MEMORY_SEARCH_LIMIT,
   type ArchiveProjectResult, type CallerContext, type CreateProjectInput, type MemoryRecord,
   type MemorySearchResult, type Project, type PromoteRoomEventInput, type PostRoomEventInput,
   type ReadRoomInput, type RememberInput, type RoomEvent, type RoomReadResult, type SearchMemoryInput,
-} from '../../src/fabric/types'
+} from '../../src/fabric/types.ts'
 import { FabricValidationError, validateCreateProjectInput, validateMemoryId,
   validatePostRoomEventInput, validateProjectId, validatePromoteRoomEventInput,
-  validateReadRoomInput, validateRememberInput, validateSearchMemoryInput } from '../../src/fabric/validation'
+  validateReadRoomInput, validateRememberInput, validateSearchMemoryInput } from '../../src/fabric/validation.ts'
 
 type Owned<T> = { ownerId: string; value: T }
 type IdempotencyRecord = { resultId: string; fingerprint: string; expiresAt: number }

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { routeFabricRpc, FABRIC_MCP_TRUST } from '../../bridge/fabric/rpc-router'
-import type { FabricClient } from '../../src/fabric/client'
-import { MAX_DISPLAY_NAME_BYTES } from '../../src/fabric/types'
-import { InMemoryFabricClient } from './in-memory-fabric-client'
+import { routeFabricRpc, FABRIC_MCP_TRUST } from '../../bridge/fabric/rpc-router.ts'
+import type { FabricClient } from '../../src/fabric/client.ts'
+import { MAX_DISPLAY_NAME_BYTES } from '../../src/fabric/types.ts'
+import { InMemoryFabricClient } from './in-memory-fabric-client.ts'
 
 const caller = Object.freeze({
   ownerId: `owner-${'a'.repeat(64)}`,

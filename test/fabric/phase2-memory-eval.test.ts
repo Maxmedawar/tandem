@@ -2,8 +2,8 @@ import { chmodSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { EVAL_CASES, EVAL_SEEDS, EVAL_THRESHOLDS, runMemoryEvaluation } from '../../bench/memory-eval'
-import { sqliteVecAvailable } from '../../bridge/fabric/memory/vector-store'
+import { EVAL_CASES, EVAL_SEEDS, EVAL_THRESHOLDS, runMemoryEvaluation } from '../../bench/memory-eval.ts'
+import { sqliteVecAvailable } from '../../bridge/fabric/memory/vector-store.ts'
 
 const directories = new Set<string>()
 const dbPath = () => { const dir = mkdtempSync(join(tmpdir(), 'fabric-eval-')); chmodSync(dir, 0o700); directories.add(dir); return join(dir, 'fabric.sqlite3') }

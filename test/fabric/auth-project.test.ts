@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { createCallerContext, FabricAccessError } from '../../src/fabric/capabilities'
-import type { FabricCapability } from '../../src/fabric/types'
-import { InMemoryFabricClient } from './in-memory-fabric-client'
+import { createCallerContext, FabricAccessError } from '../../src/fabric/capabilities.ts'
+import type { FabricCapability } from '../../src/fabric/types.ts'
+import { InMemoryFabricClient } from './in-memory-fabric-client.ts'
 
 const all: FabricCapability[] = ['project:create','project:members','project:read','project:archive','room:post','room:read','memory:write','memory:read','memory:delete']
 const ctx = (ownerId: string, agentId: string, projectId?: string, caps: readonly FabricCapability[] = all, actorType: 'agent'|'owner' = 'agent') =>

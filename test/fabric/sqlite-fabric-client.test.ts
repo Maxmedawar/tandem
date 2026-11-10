@@ -9,16 +9,16 @@ import {
   createCallerContext,
   FabricAccessError,
   FabricAuthError,
-} from '../../src/fabric/capabilities'
-import type { CallerContext, FabricCapability } from '../../src/fabric/types'
-import { FabricValidationError } from '../../src/fabric/validation'
+} from '../../src/fabric/capabilities.ts'
+import type { CallerContext, FabricCapability } from '../../src/fabric/types.ts'
+import { FabricValidationError } from '../../src/fabric/validation.ts'
 import {
   CURRENT_FABRIC_SCHEMA_VERSION,
   FABRIC_CLEANUP_BATCH_SIZE,
   FabricStorageError,
   SQLiteFabricClient,
   type FabricAuditEntry,
-} from '../../bridge/fabric/sqlite-fabric-client'
+} from '../../bridge/fabric/sqlite-fabric-client.ts'
 
 // Vitest 2 predates node:sqlite and does not externalize that newer builtin.
 // Loading it through Node's native require keeps the test on the real builtin.

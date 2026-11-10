@@ -3,8 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createLocalVectorStore, sqliteVecAvailable, type VectorBackend } from '../../bridge/fabric/memory/vector-store'
-import { SQLiteFabricClient } from '../../bridge/fabric/sqlite-fabric-client'
+import { createLocalVectorStore, sqliteVecAvailable, type VectorBackend } from '../../bridge/fabric/memory/vector-store.ts'
+import { SQLiteFabricClient } from '../../bridge/fabric/sqlite-fabric-client.ts'
 
 const directories = new Set<string>()
 const dbPath = () => { const dir = mkdtempSync(join(tmpdir(), 'fabric-vec-')); chmodSync(dir, 0o700); directories.add(dir); return join(dir, 'fabric.sqlite3') }

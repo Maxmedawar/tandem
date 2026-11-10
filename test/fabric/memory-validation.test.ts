@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { createCallerContext, FabricAccessError } from '../../src/fabric/capabilities'
-import type { FabricCapability } from '../../src/fabric/types'
-import { FabricValidationError } from '../../src/fabric/validation'
-import { InMemoryFabricClient } from './in-memory-fabric-client'
+import { createCallerContext, FabricAccessError } from '../../src/fabric/capabilities.ts'
+import type { FabricCapability } from '../../src/fabric/types.ts'
+import { FabricValidationError } from '../../src/fabric/validation.ts'
+import { InMemoryFabricClient } from './in-memory-fabric-client.ts'
 
 const context=(caps: readonly FabricCapability[], projectId?:string, agentId='agent-a', ownerId='owner-a', actorType:'agent'|'owner'='agent')=>createCallerContext({ownerId,deviceId:'device-a',agentId,projectId,capabilities:caps,actorType})
 const caps: FabricCapability[]=['project:create','project:read','room:post','room:read','memory:write','memory:read','memory:delete']

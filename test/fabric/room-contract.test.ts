@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { createCallerContext } from '../../src/fabric/capabilities'
-import type { FabricCapability } from '../../src/fabric/types'
-import { FabricValidationError } from '../../src/fabric/validation'
-import { canonicalTupleKey, InMemoryFabricClient } from './in-memory-fabric-client'
+import { createCallerContext } from '../../src/fabric/capabilities.ts'
+import type { FabricCapability } from '../../src/fabric/types.ts'
+import { FabricValidationError } from '../../src/fabric/validation.ts'
+import { canonicalTupleKey, InMemoryFabricClient } from './in-memory-fabric-client.ts'
 
 const caps: FabricCapability[] = ['project:create','project:members','project:read','room:post','room:read','memory:write','memory:read']
 const base = (agentId='agent-a', projectId?: string, actorType:'agent'|'owner'='agent') => createCallerContext({ ownerId:'owner-a', deviceId:`device-${agentId}`, agentId, projectId, capabilities:caps, actorType })

@@ -2,7 +2,7 @@ import { chmodSync, existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createLocalFabricHost } from '../../bridge/fabric/local-fabric-host'
+import { createLocalFabricHost } from '../../bridge/fabric/local-fabric-host.ts'
 
 const directories = new Set<string>()
 function databasePath(): string {

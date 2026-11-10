@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createRequire } from 'node:module'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createCallerContext } from '../../src/fabric/capabilities'
-import { DEFAULT_MEMORY_SEARCH_LIMIT, MAX_MEMORY_SEARCH_LIMIT, type FabricCapability } from '../../src/fabric/types'
-import { DeterministicEmbeddingProvider, type EmbeddingProvider } from '../../bridge/fabric/memory/embedding'
-import { sqliteVecAvailable, type VectorBackend } from '../../bridge/fabric/memory/vector-store'
-import { SQLiteFabricClient } from '../../bridge/fabric/sqlite-fabric-client'
+import { createCallerContext } from '../../src/fabric/capabilities.ts'
+import { DEFAULT_MEMORY_SEARCH_LIMIT, MAX_MEMORY_SEARCH_LIMIT, type FabricCapability } from '../../src/fabric/types.ts'
+import { DeterministicEmbeddingProvider, type EmbeddingProvider } from '../../bridge/fabric/memory/embedding.ts'
+import { sqliteVecAvailable, type VectorBackend } from '../../bridge/fabric/memory/vector-store.ts'
+import { SQLiteFabricClient } from '../../bridge/fabric/sqlite-fabric-client.ts'
 
 const capabilities: FabricCapability[] = ['project:create', 'project:members', 'project:read', 'memory:write', 'memory:read', 'memory:delete']
 const directories = new Set<string>()

@@ -3,7 +3,7 @@ import {
   configureFabricTools,
   type FabricToolDefinition,
   type FabricToolHandler,
-} from '../../src/fabric/mcp-tools'
+} from '../../src/fabric/mcp-tools.ts'
 
 class FakeToolServer {
   readonly tools = new Map<string, { definition: FabricToolDefinition; handler: FabricToolHandler }>()

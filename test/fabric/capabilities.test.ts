@@ -6,8 +6,8 @@ import {
   createCallerContext,
   hasCapability,
   isFabricEnabled,
-} from '../../src/fabric/capabilities'
-import { FabricValidationError } from '../../src/fabric/validation'
+} from '../../src/fabric/capabilities.ts'
+import { FabricValidationError } from '../../src/fabric/validation.ts'
 
 describe('trusted caller snapshots', () => {
   it('fails closed for feature flags', () => {
