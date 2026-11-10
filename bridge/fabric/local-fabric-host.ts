@@ -1,19 +1,11 @@
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { join } from 'node:path'
 import { isFabricEnabled } from '../../src/fabric/capabilities.ts'
 import type { FabricClient } from '../../src/fabric/client.ts'
-import type { MeshEnrollInput, MeshStatus } from '../../src/fabric/bus-contract.ts'
-type MeshTransport = unknown
-import type { FabricAuditEntry } from './sqlite-fabric-client.ts'
+import type { FabricAuditAction, FabricAuditEntry } from './sqlite-fabric-client.ts'
 
 export interface LocalFabricHost {
   readonly client: FabricClient
-  /** This device's view of the fabric it is on, if it is on one. */
-  meshStatus(): Promise<MeshStatus>
-  /** Joins this device to a fabric, or moves it to another. */
-  enroll(input: MeshEnrollInput): Promise<MeshStatus>
-  /** Carries fabric requests to and from peers on the mesh. */
-  readonly transport: MeshTransport
   close(): void
 }
 
@@ -25,9 +17,12 @@ export interface LocalFabricHostOptions {
 }
 
 /**
- * The sole Phase 1 production host boundary. It is imported by the private Node
+ * The sole production host boundary. It is imported by the private Node
  * bridge and dynamically loads node:sqlite only after explicit enablement. The
  * Cloudflare Durable Object never imports or owns this database.
+ *
+ * Rooms, memory and projects all live in the one SQLite store. Each room post
+ * commits in its own transaction, so an acknowledged post survives a kill.
  */
 export async function createLocalFabricHost(
   env: Record<string, string | undefined> = process.env,
@@ -40,20 +35,104 @@ export async function createLocalFabricHost(
   const configuredPath = env.CCM_FABRIC_DB_PATH?.trim()
   const databasePath = configuredPath || join(homedir(), '.tandem', 'fabric', 'fabric.sqlite3')
 
-  // A fabric's parts belong together. Pointing Tandem at a different database
-  // moves the durable log and the device identity with it unless they are
-  // named explicitly, so configuring one part cannot leave the others behind
-  // in the default location - which is how a test run ends up writing into
-  // somebody's real fabric.
-  const fabricRoot = dirname(databasePath)
-  const storeDir = env.CCM_FABRIC_BUS_DIR?.trim() || join(fabricRoot, 'bus')
-  const meshDir = env.CCM_FABRIC_MESH_DIR?.trim() || join(fabricRoot, 'mesh')
+  const { SQLiteFabricClient } = await import('./sqlite-fabric-client.ts')
+  const client = new SQLiteFabricClient({ databasePath, now: options.now, audit: options.audit })
 
-  // Phase 3: room events are durable on the embedded bus, so the bus starting
-  // is a precondition for Fabric rather than an enhancement to it. A failure
-  // here propagates and the bridge runs with Fabric disabled - which is the
-  // honest outcome, because a client that quietly fell back to SQLite-only
-  // storage would still answer room reads while no longer being what the
-  // rooms are durable in.
-  throw new Error('fabric: room bus not available until U-R1A-21')
+  let closed = false
+  return Object.freeze({
+    client,
+    close() {
+      if (closed) return
+      closed = true
+      client.close()
+    },
+  })
+}
+
+export interface StartFabricDependencies {
+  readonly env?: Record<string, string | undefined>
+  readonly createFabricHost?: typeof createLocalFabricHost
+  readonly stdout?: (value: string) => void
+  readonly stderr?: (value: string) => void
+}
+
+const FABRIC_AUDIT_ACTIONS = new Set<FabricAuditAction>([
+  'project.create', 'project.list', 'project.get', 'project.archive',
+  'room.post', 'room.read',
+  'memory.remember', 'memory.search', 'memory.get', 'memory.forget', 'memory.promote',
+])
+
+/**
+ * The bridge's fabric start-up step. Fabric is optional to the bridge: this
+ * never throws, and its diagnostics are fixed lines that carry no error
+ * message, path or input. Closing the host on shutdown is the caller's job.
+ */
+export async function startFabric(dependencies: StartFabricDependencies = {}): Promise<LocalFabricHost | undefined> {
+  const createFabricHost = dependencies.createFabricHost ?? createLocalFabricHost
+  const writeStdout = dependencies.stdout ?? (value => process.stdout.write(value))
+  const writeStderr = dependencies.stderr ?? (value => process.stderr.write(value))
+  const env = dependencies.env ?? process.env
+  let fabricHost: LocalFabricHost | undefined
+  try {
+    fabricHost = await createFabricHost(env, {
+      audit: productionFabricAuditSink(writeStdout, writeStderr),
+    })
+  } catch {
+    bestEffort(writeStderr, '[bridge] local Fabric initialization failed; Fabric disabled\n')
+    return undefined
+  }
+  if (fabricHost) bestEffort(writeStdout, '[bridge] local Fabric storage enabled\n')
+  return fabricHost
+}
+
+function bestEffort(write: (value: string) => void, value: string): void {
+  try { write(value) } catch { /* a failed diagnostic must not stop the bridge */ }
+}
+
+/**
+ * Production audit serialization is deliberately an allowlist. No caller input,
+ * room body, memory text, query, idempotency token, path, or native error has a
+ * route into the emitted object, even if a future producer adds fields.
+ */
+function productionFabricAuditSink(
+  write: (value: string) => void,
+  reportFailure: (value: string) => void,
+): (entry: FabricAuditEntry) => void {
+  return entry => {
+    try {
+      if (!FABRIC_AUDIT_ACTIONS.has(entry.action) || !['ok', 'denied', 'failed'].includes(entry.status) ||
+        !['agent', 'owner', 'unknown'].includes(entry.actorType)) throw new Error('invalid audit metadata')
+      const timestamp = new Date(entry.timestamp).toISOString()
+      if (timestamp !== entry.timestamp) throw new Error('invalid audit metadata')
+      const record = {
+        timestamp,
+        action: entry.action,
+        status: entry.status,
+        ownerId: auditMetadataIdentifier(entry.ownerId),
+        deviceId: auditMetadataIdentifier(entry.deviceId),
+        agentId: auditMetadataIdentifier(entry.agentId),
+        actorType: entry.actorType,
+        ...(entry.projectId === undefined ? {} : { projectId: auditMetadataIdentifier(entry.projectId) }),
+        ...(entry.targetId === undefined ? {} : { targetId: auditMetadataIdentifier(entry.targetId) }),
+        ...(entry.byteCount === undefined ? {} : { byteCount: auditMetadataCount(entry.byteCount) }),
+        ...(entry.resultCount === undefined ? {} : { resultCount: auditMetadataCount(entry.resultCount) }),
+        ...(entry.correlationId === undefined ? {} : { correlationId: auditMetadataIdentifier(entry.correlationId) }),
+      }
+      write(`[fabric-audit] ${JSON.stringify(record)}\n`)
+    } catch {
+      try { reportFailure('[fabric] production audit sink failed\n') } catch { /* fixed fallback is best effort */ }
+    }
+  }
+}
+
+function auditMetadataIdentifier(value: unknown): string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > 256 || !/^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(value)) {
+    throw new Error('invalid audit metadata')
+  }
+  return value
+}
+
+function auditMetadataCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) throw new Error('invalid audit metadata')
+  return value
 }
