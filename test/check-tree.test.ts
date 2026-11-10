@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -218,6 +218,112 @@ describe("scripts/check-tree.sh", { timeout: 60_000 }, () => {
     expect(r.lines.filter((l) => l.includes("blob:")).length).toBeGreaterThanOrEqual(3);
   });
 
+  // Audit R1: ways to hide content from the checks.
+  it("ignores inline gitleaks:allow comments", () => {
+    const r = check(repo([{ files: { ...clean, "config.txt": `value = "${sample}" # gitleaks:allow\n` } }]));
+    expect(r.status).toBe(1);
+    expect(r.lines.some((l) => l.startsWith("SECRET config.txt "))).toBe(true);
+  });
+
+  it("ignores a committed .gitleaksignore", () => {
+    const dir = repo([{ files: { ...clean, "config.txt": `value = "${sample}"\n` } }]);
+    const c = git(dir, ["rev-parse", "HEAD"]).trim();
+    writeFileSync(join(dir, ".gitleaksignore"), `config.txt:github-pat:1\n${c}:config.txt:github-pat:1\n`);
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-q", "-m", "ignore"]);
+    const r = check(dir);
+    expect(r.status).toBe(1);
+    expect(r.lines.some((l) => l.startsWith("SECRET config.txt "))).toBe(true);
+    expect(r.lines).toContain(`SECRET ${c.slice(0, 7)} github-pat in config.txt line 1`);
+  });
+
+  it("scans a HEAD file that .gitattributes export-ignore hides from git archive", () => {
+    const dir = repo([{ files: { ...clean, "config.txt": `value = "${sample}"\n` } }, { files: { ".gitattributes": "config.txt export-ignore\n" } }]);
+    const r = check(dir, ["--range", "HEAD~1..HEAD"]);
+    expect(r.status).toBe(1);
+    expect(r.lines.some((l) => l.startsWith("SECRET config.txt "))).toBe(true);
+  });
+
+  it("scans a secret under node_modules/ and inside a zip", () => {
+    const side = tmp("check-tree-zip-");
+    writeFileSync(join(side, "inner.txt"), `value = "${sample}"\n`);
+    const dir = repo([{ files: { ...clean, "node_modules/x/index.js": `const v = "${sample}";\n` } }]);
+    expect(spawnSync("zip", ["-q", "-j", join(dir, "bundle.zip"), join(side, "inner.txt")]).status).toBe(0);
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-q", "-m", "add"]);
+    const r = check(dir, ["--range", "HEAD"]);
+    expect(r.status).toBe(1);
+    expect(r.lines.some((l) => l.startsWith("SECRET node_modules/x/index.js "))).toBe(true);
+    expect(r.lines.some((l) => l.startsWith("SECRET bundle.zip"))).toBe(true);
+  });
+
+  it("checks a symlink as its target text and never follows it", () => {
+    const outside = join(tmp("check-tree-outside-"), "x.txt");
+    writeFileSync(outside, `value = "${sample}"\n`);
+    const dir = repo([{ files: clean }]);
+    symlinkSync(outside, join(dir, "out"));
+    symlinkSync(`../${WORD_A}/notes.md`, join(dir, "link"));
+    git(dir, ["add", "-A"]);
+    git(dir, ["commit", "-q", "-m", "links"]);
+    const r = check(dir);
+    expect(r.status).toBe(1);
+    expect(r.lines.slice(0, -1)).toEqual(["WORD link word #3"]);
+  });
+
+  it("trims blanks around a word in the list", () => {
+    const padded = join(tmp("check-tree-words-"), "padded.txt");
+    writeFileSync(padded, `# padded\n  ${WORD_A}  \n`);
+    const r = run(repo([{ files: { ...clean, "notes.md": `${WORD_A}.\n` } }]), ["--words", padded, "--icons", iconsDir]);
+    expect(r.status).toBe(1);
+    expect(r.lines).toContain("WORD notes.md word #2");
+  });
+
+  it("exits 2 when a PATH matches nothing at HEAD", () => {
+    const r = check(repo([{ files: clean }]), ["src", "no-such-dir"]);
+    expect(r.status).toBe(2);
+    expect(r.lines).toHaveLength(1);
+    expect(r.last).toMatch(/^check-tree: ERROR /);
+  });
+
+  it("exits 2 when the word list holds no words", () => {
+    const empty = join(tmp("check-tree-words-"), "empty.txt");
+    writeFileSync(empty, "# only comments\n\n   \n");
+    const r = run(repo([{ files: clean }]), ["--words", empty, "--icons", iconsDir]);
+    expect(r.status).toBe(2);
+    expect(r.lines).toHaveLength(1);
+    expect(r.last).toMatch(/^check-tree: ERROR /);
+  });
+
+  it("exits 2 when the icon folder holds no path data", () => {
+    const r = run(repo([{ files: clean }]), ["--words", wordsFile, "--icons", tmp("check-tree-icons-")]);
+    expect(r.status).toBe(2);
+    expect(r.lines).toHaveLength(1);
+    expect(r.last).toMatch(/^check-tree: ERROR /);
+  });
+
+  it.each([
+    ["a leading and trailing blank", ` ${ICON_D} `],
+    ["doubled spaces", ICON_D.replaceAll(" ", "  ")],
+    ["commas", ICON_D.replaceAll(" ", ",")],
+    ["tabs", ICON_D.replaceAll(" ", "\t")],
+    ["line breaks", ICON_D.replaceAll("L", "\nL")],
+  ])("fails on library icon path data reformatted with %s", (_label, d) => {
+    const r = check(repo([{ files: { ...clean, "public/x.svg": `<svg><path\n  fill="none"\n  d="${d}"/></svg>\n` } }]));
+    expect(r.status).toBe(1);
+    expect(r.lines).toContain("ICON public/x.svg library icon path data");
+  });
+
+  it.each([
+    ["marked binary in .gitattributes", { ".gitattributes": "*.svg binary\n", "x.svg": `<path d="${ICON_D}"/>\n` }, "x.svg"],
+    ["in a file with a NUL byte", { "x.svg": `<path d="${ICON_D}"/>\n\0` }, "x.svg"],
+    ["in a template literal", { "src/I.tsx": `export const I = () => <path d={\`${ICON_D}\`} />;\n` }, "src/I.tsx"],
+    ["in an escaped JSON string", { "icons.json": `{"down": "<path d=\\"${ICON_D}\\"/>"}\n` }, "icons.json"],
+  ])("fails on library icon path data %s", (_label, files, p) => {
+    const r = check(repo([{ files: { ...clean, ...files } }]));
+    expect(r.status).toBe(1);
+    expect(r.lines).toContain(`ICON ${p} library icon path data`);
+  });
+
   it.skipIf(!existsSync(REAL_ICONS))("fails on a real library SVG, renamed and committed", () => {
     const pick = (d: string): string => {
       for (const e of readdirSync(d, { withFileTypes: true })) {
@@ -231,11 +337,16 @@ describe("scripts/check-tree.sh", { timeout: 60_000 }, () => {
     };
     const dir = repo([{ files: clean }]);
     mkdirSync(join(dir, "assets"));
-    copyFileSync(pick(REAL_ICONS), join(dir, "assets", "glyph.svg"));
+    const src = pick(REAL_ICONS);
+    copyFileSync(src, join(dir, "assets", "glyph.svg"));
+    // Reformatted copy: every blank becomes a line break plus indent, stroke recoloured.
+    const reformatted = readFileSync(src, "utf8").replace(/stroke="[^"]*"/g, 'stroke="currentColor"').replaceAll(" ", "\n  ");
+    writeFileSync(join(dir, "assets", "glyph-2.svg"), reformatted);
     git(dir, ["add", "-A"]);
     git(dir, ["commit", "-q", "-m", "add glyph"]);
     const r = run(dir, ["--words", wordsFile]);
     expect(r.status).toBe(1);
     expect(r.lines).toContain("ICON assets/glyph.svg library icon path data");
+    expect(r.lines).toContain("ICON assets/glyph-2.svg library icon path data");
   });
 });

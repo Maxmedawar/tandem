@@ -6,11 +6,16 @@
 # Checks the git repo of the current directory (run it from the repo's top; this
 # script may live elsewhere) and only committed content: the tree at HEAD, limited
 # to PATHs (default .), and the commits in REVS. Uncommitted changes are not checked.
-#   SECRET  gitleaks (default rules) on the HEAD tree and on the commits in REVS
+#   SECRET  gitleaks (default rules, inline gitleaks:allow and any committed
+#           .gitleaksignore or .gitleaks.toml not honoured) on the HEAD tree and on the
+#           commits in REVS
 #   WORD    a word from FILE in a file's content or path at HEAD
 #   PATH    a forbidden path at HEAD: top-level ee/ or private/, .env and .env.*
 #           (not .env.example), .dev.vars, *.pem, *.p12, *.key, *.fig, anything uxercon
-#   ICON    a quoted string at HEAD equal to the path data (d="...") of an SVG in DIR
+#   ICON    a quoted string at HEAD equal to the path data (d="...") of an SVG in DIR,
+#           compared with blanks and commas removed
+# HEAD files are read as raw blobs: .gitattributes (export-ignore, binary, encodings)
+# changes nothing, and a symlink is checked as its target text, never followed.
 #   COMMIT  a commit in REVS whose message holds a word or a secret, or whose author
 #           or committer name or email holds a word
 # FILE: one fixed string per line, case-insensitive; # lines and blank lines ignored.
@@ -70,14 +75,14 @@ add() { printf '%s\n' "$*" >> "$out"; }
 g() { git -c core.quotePath=false "$@"; }
 
 # Word list as "<line number><TAB><word>"; $t/wl holds the bare words.
-awk '{ sub(/\r$/, "") } /^#/ || /^[ \t]*$/ { next } { print NR "\t" $0 }' "$words" > "$t/words"
+awk '{ sub(/\r$/, ""); sub(/^[ \t]+/, ""); sub(/[ \t]+$/, "") } /^#/ || /^$/ { next } { print NR "\t" $0 }' "$words" > "$t/words"
 [ -s "$t/words" ] || die "word list has no words (--words)"
 cut -f2- "$t/words" > "$t/wl"
 
 # A path, or blob:<sha> when the path itself holds a list word.
-shown() { # rev path
+shown() { # rev path [blob sha]
   if printf '%s\n' "$2" | grep -i -F -q -f "$t/wl"; then
-    printf 'blob:%s' "$(g --literal-pathspecs ls-tree "$1" -- "$2" | awk '{ print substr($3, 1, 7) }')"
+    printf 'blob:%.7s' "${3:-$(g --literal-pathspecs ls-tree "$1" -- "$2" | awk '{ print $3 }')}"
   else
     printf '%s' "$2"
   fi
@@ -93,23 +98,39 @@ printf '{{range .}}{{.RuleID}}\t{{.Commit}}\t{{.File}}\t{{.StartLine}}\n{{end}}'
 leaks() { # mode report args...
   m=$1; rep=$2; shift 2
   gitleaks "$m" "$@" --no-banner --redact --config "$t/gitleaks.toml" --gitleaks-ignore-path "$t/none" \
-    --report-format template --report-template "$t/report.tmpl" --report-path "$rep" >/dev/null 2>&1
+    --ignore-gitleaks-allow --max-archive-depth 8 --report-format template --report-template "$t/report.tmpl" --report-path "$rep" >/dev/null 2>&1
   rc=$?
   [ "$rc" -eq 0 ] && return 0
   [ "$rc" -eq 1 ] && [ -s "$rep" ] && return 0
   die "gitleaks $m failed (exit $rc)"
 }
-mkdir "$t/tree"
-g archive -o "$t/tree.tar" HEAD -- "$@" 2>/dev/null || die "git archive failed (bad PATH?)"
-tar -xf "$t/tree.tar" -C "$t/tree" || die "tar failed"
+# HEAD blobs in PATHs, raw, one folder per blob: $t/tree/<sha>/<file name> (the
+# name keeps gitleaks' file-type rules; the folder defeats its folder allowlists).
+# $t/map: <sha><TAB><path>. Every gitleaks run starts in $t, so no file in the repo
+# is read as a .gitleaksignore.
+# $t/flat/<sha>: the blob with blanks, line breaks, commas and backslashes removed (ICON).
+for p in "$@"; do
+  [ -n "$(g ls-tree -r --name-only HEAD -- "$p" 2>/dev/null | head -n 1)" ] || die "a PATH matches nothing at HEAD"
+done
+g ls-tree -r HEAD -- "$@" > "$t/ls" || die "git ls-tree failed"
+awk -F'\t' '{ split($1, m, " ") } m[2] == "blob" { print m[3] "\t" $2 }' "$t/ls" > "$t/map"
+mkdir "$t/tree" "$t/flat"
+# ponytail: one git cat-file per blob (about 100 here, 1 s); use --batch if trees grow large.
+while IFS="$TAB" read -r b p; do
+  [ -d "$t/tree/$b" ] && continue
+  f=$t/tree/$b/${p##*/}
+  mkdir "$t/tree/$b" && g cat-file blob "$b" > "$f" && tr -d ' \t\r\n,\\' < "$f" > "$t/flat/$b" || die "cannot read blob $b"
+done < "$t/map"
+gitdir=$(git rev-parse --absolute-git-dir) || die "no git dir"
 (cd "$t/tree" && leaks dir "$t/r-dir" .) || exit 2
-awk -F'\t' '{ f = $3; sub(/^\.\//, "", f); print $1 "\t" f "\t" $4 }' "$t/r-dir" |
-  while IFS="$TAB" read -r rule file line; do add "SECRET $(shown HEAD "$file") $rule line $line"; done
-leaks git "$t/r-git" . "--log-opts=$range"
+awk -F'\t' 'NR == FNR { f = $3; sub(/^\.\//, "", f); sub(/\/.*/, "", f); r[f] = r[f] $1 " line " $4 "\n"; next }
+  ($1 in r) { n = split(r[$1], x, "\n"); for (i = 1; i < n; i++) print $1 "\t" $2 "\t" x[i] }' "$t/r-dir" "$t/map" |
+  while IFS="$TAB" read -r b p d; do add "SECRET $(shown HEAD "$p" "$b") $d"; done
+(cd "$t" && leaks git "$t/r-git" "$gitdir" "--log-opts=$range") || exit 2
 while IFS="$TAB" read -r rule c file line; do
   add "SECRET $(printf '%.7s' "$c") $rule in $(shown "$c" "$file") line $line"
 done < "$t/r-git"
-leaks stdin "$t/r-msg" < "$t/msgs"
+(cd "$t" && leaks stdin "$t/r-msg" < "$t/msgs") || exit 2
 awk -F'\t' 'NR == FNR { if ($0 ~ /^@@check-tree-commit /) s = substr($0, 21, 7); at[FNR] = s; next }
   { print "COMMIT " at[$4] " message has a secret (" $1 ")" }' "$t/msgs" "$t/r-msg" >> "$out"
 
@@ -126,9 +147,13 @@ awk -F'\t' 'NR == FNR { n[NR] = $1; w[NR] = tolower($2); c = NR; next }
     } }' "$t/words" "$t/people" >> "$out"
 
 # WORD: list words in file contents and paths at HEAD.
+# onmap: shas on stdin -> "<sha><TAB><path>" for every HEAD path of those shas.
+onmap() { awk -F'\t' 'NR == FNR { h[$1]; next } $1 in h' - "$t/map"; }
 while IFS="$TAB" read -r n w; do
-  g grep -l -i -F -e "$w" HEAD -- "$@" | sed 's/^HEAD://' |
-    while IFS= read -r p; do add "WORD $(shown HEAD "$p") word #$n"; done
+  g -C "$t/tree" grep --no-index -l -a -i -F -e "$w" > "$t/wh"
+  [ $? -le 1 ] || die "git grep failed"
+  sed 's/^"//; s/\/.*//' "$t/wh" | onmap |
+    while IFS="$TAB" read -r b p; do add "WORD $(shown HEAD "$p" "$b") word #$n"; done
 done < "$t/words"
 g ls-tree -r --name-only HEAD -- "$@" > "$t/paths"
 awk -F'\t' 'NR == FNR { n[NR] = $1; w[NR] = tolower($2); c = NR; next }
@@ -141,18 +166,22 @@ awk '{ p = tolower($0); b = p; sub(/.*\//, "", b) }
   b ~ /\.(pem|p12|key|fig)$/ || index(p, "uxercon") { print }' "$t/paths" |
   while IFS= read -r p; do add "PATH $(shown HEAD "$p") forbidden path"; done
 
-# ICON: quoted M... strings at HEAD that equal a library d="..." value (40+ chars).
+# ICON: quoted ("...", '...' or `...`) M... strings at HEAD equal to a library d="..."
+# value (40+ chars), both sides with blanks, line breaks and commas removed, so
+# reformatting the path data does not hide it.
 find "$icons" -type f \( -name '*.svg' -o -name '*.SVG' \) -exec grep -o -h -E '(^|[[:space:]])d="[^"]{40,}"' {} + |
-  sed 's/^[[:space:]]*d="//; s/"$//' | sort -u > "$t/lib"
+  sed 's/^[[:space:]]*d="//; s/"$//' | tr -d ' \t\r,' | sort -u > "$t/lib"
 [ -s "$t/lib" ] || die "icon folder has no path data (--icons)"
-git grep -o -I -E "[\"'][Mm][-0-9., A-Za-z]{39,}[\"']" HEAD -- "$@" > "$t/cand"
-# "HEAD:<path>:<quoted match>"; the match holds no colon, so it is the last field.
-awk '{ k = split($0, a, ":"); v = a[k]; print substr($0, 6, length($0) - length(v) - 6) "\t" substr(v, 2, length(v) - 2) }' \
+q="[\"'\`]"
+grep -r -o -a -E "$q[Mm][-0-9.A-Za-z]{19,}$q" "$t/flat" > "$t/cand"
+[ $? -le 1 ] || die "grep failed"
+# "$t/flat/<sha>:<quoted match>"
+awk -v p="$t/flat/" '{ s = substr($0, length(p) + 1); i = index(s, ":"); print substr(s, 1, i - 1) "\t" substr(s, i + 2, length(s) - i - 2) }' \
   "$t/cand" > "$t/pairs"
 cut -f2 "$t/pairs" | sort -u > "$t/vals"
 comm -12 "$t/lib" "$t/vals" > "$t/hits"
-awk -F'\t' 'NR == FNR { h[$0]; next } ($2 in h) { print $1 }' "$t/hits" "$t/pairs" | sort -u |
-  while IFS= read -r p; do add "ICON $(shown HEAD "$p") library icon path data"; done
+awk -F'\t' 'NR == FNR { h[$0]; next } ($2 in h) { print $1 }' "$t/hits" "$t/pairs" | sort -u | onmap |
+  while IFS="$TAB" read -r b p; do add "ICON $(shown HEAD "$p" "$b") library icon path data"; done
 
 n=$(wc -l < "$out" | tr -d ' ')
 cat "$out"
