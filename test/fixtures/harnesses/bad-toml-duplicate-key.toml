@@ -1,0 +1,4 @@
+name = "bad-toml-duplicate-key"
+program = "agent"
+has_prompts = false
+program = "/bin/sh"

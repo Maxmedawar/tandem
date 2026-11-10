@@ -17,7 +17,7 @@ A harness file names a program, so Tandem treats it like a program:
 | Folder | Who writes it | Rules |
 |---|---|---|
 | `harnesses/` in the Tandem install | ships with Tandem (built-in) | may use `adapter` |
-| `$TANDEM_HOME/harnesses`, else `~/.tandem/harnesses` | you (owner files) | folder must be mode 0700 and owned by you, or no owner file loads (one error) |
+| `$TANDEM_HOME/harnesses`, else `~/.tandem/harnesses` | you (owner files) | folder must be mode 0700 and owned by you, or no owner file loads (one error); each file must be owned by you and not writable by group or others |
 
 Only `*.toml` files directly inside each folder are read. Subfolders and other files are ignored.
 A missing owner folder just means no owner files.
@@ -31,7 +31,7 @@ TOML. Every field not listed here is refused, at the top level and inside `state
 | Field | Type | Default | Rule |
 |---|---|---|---|
 | `name` | string | required | `^[a-z0-9][a-z0-9-]{0,31}$`, equal to the file name without `.toml` |
-| `program` | string | required | a bare name (`^[A-Za-z0-9._+-]+$`) found on `PATH`, or an absolute path with no `..` |
+| `program` | string | required | a bare name (`^[A-Za-z0-9._+][A-Za-z0-9._+-]*$`, so never starting `-`) found on `PATH`, or an absolute path with no `..` whose parts use only those characters (no space, quote, glob or backslash) |
 | `args` | array of strings | `[]` | arguments for every start |
 | `skip_prompts_args` | array of strings | `[]` | added when the agent should not ask before acting |
 | `resume` | array of strings | `[]` | arguments to resume a session; `{id}` is the session id |
@@ -69,7 +69,8 @@ with a newline) is refused.
 ### Command text
 
 Every string outside `states` is command text. It may not hold a newline, NUL or any other
-control character, nor `` ` ``, `$`, `;`, `|`, `&`, `<`, `>`, nor a `{` or `}` other than in
+control character, a format character (bidi or zero-width), a line or paragraph
+separator, nor `` ` ``, `$`, `;`, `|`, `&`, `<`, `>`, nor a `{` or `}` other than in
 the exact text `{id}`.
 
 ## Shell or agent
@@ -97,6 +98,7 @@ A refused file never stops the others. It is reported with a reason and skipped:
 - a TOML syntax error, a wrong type, an unknown field, a missing required field, or a value
   that breaks a rule above;
 - a file over 64 KiB, a symlink, or anything that is not a regular file;
+- an owner file not owned by you, or writable by group or others;
 - a file name that is not `<valid name>.toml`;
 - an owner file that uses a built-in name (the built-in stays);
 - two owner files that claim one name (both are refused).

@@ -1,0 +1,4 @@
+name = "bad-proto"
+program = "agent"
+has_prompts = false
+__proto__ = { args = ["$(id)"] }

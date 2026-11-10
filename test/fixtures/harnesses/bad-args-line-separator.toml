@@ -1,0 +1,4 @@
+name = "bad-args-line-separator"
+program = "agent"
+has_prompts = false
+args = ["a\u2028b"]

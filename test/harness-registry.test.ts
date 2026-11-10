@@ -91,6 +91,25 @@ describe("loadHarnesses: one load over every fixture", () => {
     ["dup-a.toml", "owner", /duplicate owner name/],
     ["dup-b.toml", "owner", /duplicate owner name/],
     ["claude.toml", "owner", /built-in name/],
+    // review-fix rows (U-R1A-08-R1): a program string tmux or sh -c would read as something else.
+    ["bad-program-space.toml", "owner", /bad program/],
+    ["bad-program-glob.toml", "owner", /bad program/],
+    ["bad-program-quote.toml", "owner", /bad program/],
+    ["bad-program-backslash.toml", "owner", /bad program/],
+    ["bad-program-dash.toml", "owner", /bad program/],
+    // review-fix rows: control and hidden characters beyond C0.
+    ["bad-args-c1.toml", "owner", /forbidden character in args/],
+    ["bad-args-line-separator.toml", "owner", /forbidden character in args/],
+    ["bad-args-bidi.toml", "owner", /forbidden character in args/],
+    // TOML tricks and look-alike names (guard rows).
+    ["bad-toml-duplicate-key.toml", "owner", /TOML syntax error/],
+    ["bad-proto.toml", "owner", /unknown field __proto__/],
+    ["bad-keys-unknown.toml", "owner", /unknown field keys\.submit/],
+    ["Pi.toml", "owner", /bad file name/],
+    ["\u0440i.toml", "owner", /bad file name/],
+    // review-fix rows: an owner file writable by group or others.
+    ["group-writable.toml", "owner", /writable by group or others/],
+    ["world-writable.toml", "owner", /writable by group or others/],
   ];
 
   const LOADED: [string, "builtin" | "owner", "agent" | "shell"][] = [
@@ -117,6 +136,12 @@ describe("loadHarnesses: one load over every fixture", () => {
     for (const [f, dir] of REFUSED) if (f.startsWith("bad-")) put(dir === "builtin" ? builtin : owner, f);
     // Built at run time: file names, symlinks, size, FIFO, duplicates, subfolder, programs.
     writeFileSync(join(owner, "Bad_Name.toml"), text("bad-name"));
+    writeFileSync(join(owner, "Pi.toml"), text("Pi"));
+    writeFileSync(join(owner, "\u0440i.toml"), text("\u0440i"));
+    writeFileSync(join(owner, "group-writable.toml"), text("group-writable"));
+    chmodSync(join(owner, "group-writable.toml"), 0o664);
+    writeFileSync(join(owner, "world-writable.toml"), text("world-writable"));
+    chmodSync(join(owner, "world-writable.toml"), 0o646);
     writeFileSync(join(owner, "big.toml"), text("big", `# ${"x".repeat(70_000)}\n`));
     writeFileSync(join(tmp, "elsewhere.toml"), text("linked"));
     symlinkSync(join(tmp, "elsewhere.toml"), join(owner, "linked.toml"));
@@ -216,11 +241,11 @@ describe("loadHarnesses: owner folder rules", () => {
     cleanup();
   });
 
-  it("owner folder mode 0755: no owner file loads, one error", () => {
+  it.each([0o755, 0o770, 0o707])("owner folder mode %o: no owner file loads, one error", (mode) => {
     const { builtin, owner, bin, put } = setup();
     put(builtin, "claude.toml");
     put(owner, "pi.toml");
-    chmodSync(owner, 0o755);
+    chmodSync(owner, mode);
     const res = loadHarnesses({ installDir: builtin, ownerDir: owner, path: bin });
     expect(res.errors).toHaveLength(1);
     expect(res.errors[0]).toMatchObject({ file: owner, reason: expect.stringMatching(/mode 0700/) });
@@ -235,6 +260,16 @@ describe("loadHarnesses: owner folder rules", () => {
     expect(res.errors).toHaveLength(1);
     expect(res.errors[0]).toMatchObject({ file: owner, reason: expect.stringMatching(/not owned by the current user/) });
     expect(res.harnesses.size).toBe(0);
+  });
+
+  it.skipIf(process.getuid?.() !== 0)("owner file owned by another user: refused, the others load", () => {
+    const { builtin, owner, bin, put } = setup();
+    put(owner, "pi.toml");
+    put(owner, "opencode.toml");
+    chownSync(join(owner, "pi.toml"), 65534, 65534);
+    const res = loadHarnesses({ installDir: builtin, ownerDir: owner, path: bin });
+    expect(res.errors).toEqual([{ file: join(owner, "pi.toml"), reason: expect.stringMatching(/owner file is not owned by the current user/) }]);
+    expect([...res.harnesses.keys()]).toEqual(["opencode"]);
   });
 
   it("a missing owner folder means no owner files and no error", () => {

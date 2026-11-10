@@ -1,0 +1,3 @@
+name = "bad-program-space"
+program = "/usr/bin/env bash"
+has_prompts = true

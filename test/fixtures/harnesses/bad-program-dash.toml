@@ -1,0 +1,4 @@
+name = "bad-program-dash"
+program = "--"
+args = ["bash"]
+has_prompts = true

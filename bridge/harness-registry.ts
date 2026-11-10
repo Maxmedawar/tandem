@@ -47,12 +47,15 @@ export interface HarnessError { file: string; reason: string }
 
 const MAX_BYTES = 64 * 1024
 const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
-const BARE_PROGRAM = /^[A-Za-z0-9._+-]+$/
+/** No leading `-` (a launcher such as tmux would read it as an option, `--` hands it the next argument). */
+const BARE_PROGRAM = /^[A-Za-z0-9._+][A-Za-z0-9._+-]*$/
+/** Each part of an absolute path in the bare-name characters: no space, quote, glob or backslash that sh -c would turn into another program. */
+const ABS_PROGRAM = /^(\/[A-Za-z0-9._+-]+)+$/
 const ACCOUNT_ENV = /^[A-Z][A-Z0-9_]{0,63}$/
 const LOGO = /^[a-z0-9-]+\.(svg|png)$/
 const NAMED_KEY = /^(Enter|Escape|Tab|BTab|Space|BSpace|Up|Down|Left|Right|Home|End|PageUp|PageDown|C-[a-z]|F[1-9]|F1[0-2]|[a-z0-9])$/
-/** Command text: no control character (newline, NUL, ...), no shell character, no brace once `{id}` is removed. */
-const BAD_TEXT = /[\x00-\x1f\x7f`$;|&<>{}]/
+/** Command text: no control, format (bidi, zero-width) or line-separator character, no shell character, no brace once `{id}` is removed. */
+const BAD_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}`$;|&<>{}]/u
 const FIELDS = ['name', 'program', 'args', 'skip_prompts_args', 'resume', 'fork', 'has_prompts', 'account_env', 'history',
   'states', 'keys', 'delivery', 'hook', 'permission_hook', 'reports_context', 'adapter', 'logo']
 const STATE_NAMES: StateName[] = ['working', 'idle', 'waiting_for_approval']
@@ -107,7 +110,7 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
   if (name !== stem) fail('name does not match the file name')
   const program = str(raw, 'program') ?? fail('missing program')
   const bare = BARE_PROGRAM.test(program) && program !== '.' && program !== '..'
-  if (!bare && !(program.startsWith('/') && !program.includes('..'))) fail('bad program: a bare name or an absolute path without ..')
+  if (!bare && !(ABS_PROGRAM.test(program) && !program.includes('..'))) fail('bad program: a bare name or an absolute path without .. (letters, digits and . _ + - only)')
   const has_prompts = bool(raw, 'has_prompts') ?? fail('missing has_prompts')
   const account_env = str(raw, 'account_env')
   if (account_env !== undefined && !ACCOUNT_ENV.test(account_env)) fail('bad account_env')
@@ -175,7 +178,7 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
 }
 
 /** Reads one `*.toml` entry without following a symlink or blocking on a FIFO. */
-function readToml(file: string, stem: string): Table {
+function readToml(file: string, stem: string, owner: boolean): Table {
   if (!NAME.test(stem)) fail('bad file name: must be <name>.toml with a valid name')
   const st = lstatSync(file)
   if (st.isSymbolicLink()) fail('symlink: a harness file must be a regular file')
@@ -184,7 +187,10 @@ function readToml(file: string, stem: string): Table {
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK)
   let buf: Buffer
   try {
-    if (!fstatSync(fd).isFile()) fail('not a regular file')
+    const fst = fstatSync(fd)
+    if (!fst.isFile()) fail('not a regular file')
+    if (owner && process.getuid !== undefined && fst.uid !== process.getuid()) fail('owner file is not owned by the current user')
+    if (owner && (fst.mode & 0o022) !== 0) fail('owner file must not be writable by group or others')
     buf = readFileSync(fd)
   } finally { closeSync(fd) }
   if (buf.length > MAX_BYTES) fail('over 64 KiB')
@@ -264,13 +270,13 @@ export function loadHarnesses(opts: { installDir?: string; ownerDir?: string; pa
   for (const entry of listToml(installDir, errors)) {
     const file = join(installDir, entry)
     builtinNames.add(entry.slice(0, -5))
-    try { add(readToml(file, entry.slice(0, -5)), entry.slice(0, -5), 'builtin', file) } catch (e) { errors.push({ file, reason: reasonOf(e) }) }
+    try { add(readToml(file, entry.slice(0, -5), false), entry.slice(0, -5), 'builtin', file) } catch (e) { errors.push({ file, reason: reasonOf(e) }) }
   }
 
   const owned: { file: string; stem: string; raw: Table }[] = []
   for (const entry of ownerFolderOk(ownerDir, errors) ? listToml(ownerDir, errors) : []) {
     const file = join(ownerDir, entry)
-    try { owned.push({ file, stem: entry.slice(0, -5), raw: readToml(file, entry.slice(0, -5)) }) } catch (e) { errors.push({ file, reason: reasonOf(e) }) }
+    try { owned.push({ file, stem: entry.slice(0, -5), raw: readToml(file, entry.slice(0, -5), true) }) } catch (e) { errors.push({ file, reason: reasonOf(e) }) }
   }
   const claims = new Map<unknown, number>()
   for (const o of owned) if (typeof o.raw.name === 'string') claims.set(o.raw.name, (claims.get(o.raw.name) ?? 0) + 1)
