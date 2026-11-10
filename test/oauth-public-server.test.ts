@@ -5,6 +5,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadOAuthConfig, loadOAuthConfigFromEnv } from "../src/auth-config.ts";
+import { TandemOAuthProvider } from "../src/oauth-provider.ts";
 import { startOAuthServer, type PublicOAuthServerHandle } from "../src/public-server.ts";
 
 const OWNER_PASSWORD = "owner password 0123456789";
@@ -449,6 +450,27 @@ describe("OAuth redirect allowlist", () => {
     const text = await response.text();
     expect(text).not.toContain("Allow connection?");
     expect(JSON.parse(text)).toEqual({ error: "invalid_request" });
+  });
+
+  it("h) authorize itself refuses a disallowed redirect handed to it by the client store", async () => {
+    delete process.env[ENV];
+    await start();
+    const redirect = "https://evil.example/cb";
+    const provider = new TandemOAuthProvider({ state: handle!.state, publicUrl: new URL(PUBLIC_URL), canonicalOrigin: PUBLIC_ORIGIN });
+    const sent: { status?: number; body?: unknown; html?: boolean; cookie?: boolean } = {};
+    const res = {
+      status(code: number) { sent.status = code; return res; },
+      json(body: unknown) { sent.body = body; return res; },
+      cookie() { sent.cookie = true; return res; },
+      type() { sent.html = true; return res; },
+      send() { return res; },
+    };
+    await provider.authorize(
+      { client_id: "seeded-client-0123456789", redirect_uris: [redirect] },
+      { redirectUri: redirect, scopes: ["mcp"], resource: new URL(PUBLIC_URL), codeChallenge: CHALLENGE, state: "s" },
+      res as never,
+    );
+    expect(sent).toEqual({ status: 400, body: { error: "invalid_request" } });
   });
 
   it("i) refuses the same stored client at the approve decision and issues no code", async () => {
