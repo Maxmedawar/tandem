@@ -16,7 +16,7 @@ import { join, relative } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { writeLimits } from './fixtures/limits.ts'
 
 type Json = any // eslint-disable-line @typescript-eslint/no-explicit-any
@@ -664,6 +664,219 @@ describe('(33B-2) (u5) mail_send to <computer>:<session> through the MCP tool', 
       ])
     } finally {
       await m.close()
+      box.close()
+    }
+  })
+})
+
+describe('(33B-2) (audit) fail-safe rows added by the audit', () => {
+  const copyHome = (name: string) => {
+    const home = join(BOX, name)
+    mkdirSync(join(home, 'roster'), { recursive: true, mode: 0o700 })
+    chmodSync(home, 0o700)
+    copyFileSync(join(TH, 'roster', 'roster.json'), join(home, 'roster', 'roster.json'))
+    chmodSync(join(home, 'roster', 'roster.json'), 0o600)
+    return home
+  }
+
+  it('(33B-2) (audit) a store failure that is not a refusal (SQLite busy) or a stop between the check and the store loses nothing: the copy is not acked and the next take stores it once', async () => {
+    const home = copyHome('audit-store')
+    process.env.TANDEM_HOME = home
+    process.env.TANDEM_HUB_LINK_ID = 'beta'
+    try {
+      queue = []
+      const box = boxAt(join(home, 'state.db'))
+      let failures = 2
+      const flaky = { ...box, receive: (input: Json) => {
+        if (failures-- > 0) throw new Error('database is locked')
+        return box.receive(input)
+      } }
+      const body = mailBody({ to: 'busy' })
+      const id = JSON.parse(body).id
+      const before = enqueue({ body: envelope(A, 'alpha', 'beta', mailBody({ to: 'busy', text: 'first' })) })
+      const c = enqueue({ id, body: envelope(A, 'alpha', 'beta', body) })
+      // The default replay store (state.db): what a restarted bridge would find.
+      const first = hubMail(cfg('beta'), { box: flaky, key: B, now })
+      failures = 0
+      onTake = () => ({ status: 200, body: { copies: [before] } })
+      expect(await first.pullOnce()).toBe(1)
+      onTake = undefined
+      failures = 2
+      seen.length = 0
+      await expect(first.pullOnce()).rejects.toThrow('database is locked')
+      expect(takes()).toEqual([before.seq]) // never acked above what is stored
+      expect(box.pending('busy').fyi).toBe(1)
+      // The bridge stops here and starts again: a new carrier, cursor 0, the same state.db.
+      const second = hubMail(cfg('beta'), { box: flaky, key: B, now })
+      await expect(second.pullOnce()).rejects.toThrow('database is locked')
+      const n = mark()
+      seen.length = 0
+      expect(await second.pullOnce()).toBe(1)
+      expect(takes().at(-1)).toBe(c.seq)
+      expect(carrierLines(n)).toEqual([])
+      expect(box.read('busy', 50).map((m: Json) => m.text)).toEqual(['first', SECRET])
+      // Stored once: the same copy again is a repeat, and the nonce is kept now.
+      const again = mark()
+      enqueue({ id, body: c.body })
+      expect(await second.pullOnce()).toBe(1)
+      expect(carrierLines(again)).toEqual([{ event: 'mail.repeat', from: 'alpha', id }])
+      expect(box.pending('busy').fyi).toBe(0)
+      box.close()
+    } finally {
+      process.env.TANDEM_HOME = TH
+      process.env.TANDEM_HUB_LINK_ID = 'alpha'
+    }
+  })
+
+  it('(33B-2) (audit) a copy the mailbox refused stays refused: its replay is a repeat even after interrupt_from lists the sender', async () => {
+    const home = copyHome('audit-refused')
+    process.env.TANDEM_HOME = home
+    process.env.TANDEM_HUB_LINK_ID = 'beta'
+    try {
+      queue = []
+      limits.applyLimits()
+      const box = boxAt(join(home, 'state.db'))
+      const mail = hubMail(cfg('beta'), { box, key: B, now })
+      const body = mailBody({ to: 'late', level: 'interrupt' })
+      const id = JSON.parse(body).id
+      const text = envelope(A, 'alpha', 'beta', body)
+      let n = mark()
+      enqueue({ id, body: text })
+      expect(await mail.pullOnce()).toBe(1)
+      expect(carrierLines(n)).toEqual([{ event: 'mail.refused', from: 'alpha', id, denied: 'mailbox', status: 403 }])
+      writeLimits(home, { interrupt_from: ['machine:alpha/owner'] })
+      limits.applyLimits()
+      n = mark()
+      enqueue({ id, body: text })
+      expect(await mail.pullOnce()).toBe(1)
+      expect(carrierLines(n)).toEqual([{ event: 'mail.repeat', from: 'alpha', id }])
+      expect(box.pending('late')).toEqual({ fyi: 0, ask: 0, interrupt: 0 })
+      box.close()
+    } finally {
+      process.env.TANDEM_HOME = TH
+      process.env.TANDEM_HUB_LINK_ID = 'alpha'
+      limits.applyLimits()
+    }
+  })
+
+  it('(33B-2) (audit) a signed sentAt no date can show is refused (a roster member cannot break the label), and nothing is stored', async () => {
+    const home = copyHome('audit-date')
+    process.env.TANDEM_HOME = home
+    process.env.TANDEM_HUB_LINK_ID = 'beta'
+    try {
+      queue = []
+      const box = boxAt(join(home, 'state.db'))
+      const mail = hubMail(cfg('beta'), { box, key: B, now })
+      for (const sentAt of [8_640_000_000_000_001, Number.MAX_SAFE_INTEGER]) {
+        const body = mailBody({ to: 'date', sentAt })
+        const id = JSON.parse(body).id
+        const n = mark()
+        enqueue({ id, body: envelope(A, 'alpha', 'beta', body) })
+        expect(await mail.pullOnce()).toBe(1)
+        expect(carrierLines(n)).toEqual([{ event: 'mail.refused', from: 'alpha', id, denied: 'mailbox', status: 400 }])
+      }
+      expect(box.pending('date').fyi).toBe(0)
+      const edge = mailBody({ to: 'date', sentAt: 8_640_000_000_000_000 })
+      enqueue({ id: JSON.parse(edge).id, body: envelope(A, 'alpha', 'beta', edge) })
+      expect(await mail.pullOnce()).toBe(1)
+      expect(box.read('date', 50).map((m: Json) => new Date(m.sentAt).toISOString())).toHaveLength(1)
+      box.close()
+    } finally {
+      process.env.TANDEM_HOME = TH
+      process.env.TANDEM_HUB_LINK_ID = 'alpha'
+    }
+  })
+
+  it('(33B-2) (audit) a row that waited is signed again at its push, so the hub\'s 7 days fit the receiver\'s window; sentAt and id never change; a quick retry is byte-identical', async () => {
+    const box = boxAt()
+    const mail = hubMail(cfg('alpha'), { box, key: A, now })
+    const one = box.send({ from: 'owner', to: 'beta:bob', level: 'fyi', text: SECRET })
+    onPut = () => 'drop'
+    expect(await mail.pushOnce()).toBe(0)
+    clock = T + 60_000
+    expect(await mail.pushOnce()).toBe(0)
+    clock = T + 6 * 86_400_000
+    expect(await mail.pushOnce()).toBe(0)
+    onPut = () => ok(3)
+    clock += 1000
+    expect(await mail.pushOnce()).toBe(1)
+    const sentEnvelopes = puts().map((s) => JSON.parse(JSON.parse(s.body).body))
+    expect(sentEnvelopes.map((e: Json) => e.ts)).toEqual([T, T, T + 6 * 86_400_000, T + 6 * 86_400_000])
+    expect(puts()[0].body).toBe(puts()[1].body)
+    expect(puts()[2].body).toBe(puts()[3].body)
+    for (const e of sentEnvelopes) expect(JSON.parse(e.body)).toMatchObject({ id: one.id, sentAt: T, text: SECRET })
+    // The receiver takes it on the hub's last day: still inside its window.
+    const opened = openEnvelope(sentEnvelopes[3], { sender: { id: 'alpha', publicKey: A.publicKey }, self: 'beta', seen: { remember: () => true }, now: clock + 7 * 86_400_000, maxAgeMs: MAX_AGE_CAP_MS })
+    expect(JSON.parse(opened.body).id).toBe(one.id)
+    box.close()
+  })
+
+  it('(33B-2) (audit) a hub that keeps failing is asked less and less: no 2-a-second retry that would spend the proof allowance', async () => {
+    const home = copyHome('audit-backoff')
+    process.env.TANDEM_HOME = home
+    try {
+      const box = openMailbox({ path: join(home, 'state.db') })
+      box.send({ from: 'owner', to: 'beta:bob', level: 'fyi', text: 'x' })
+      onPut = () => ({ status: 500, body: { error: 'x' } })
+      onTake = () => ({ status: 401, body: 'unauthorized' })
+      const mute = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      const stop = hubMail(cfg('alpha'), { box, key: A }).start()
+      await new Promise((resolve) => setTimeout(resolve, 3200))
+      stop()
+      const lines = mute.mock.calls.map((c) => String(c[0]))
+      mute.mockRestore()
+      // Without a back-off: 6 puts in 3.2 s (every 500 ms). With it: 0.5 s, then 1 s later, then 2 s later.
+      expect(puts().length).toBeGreaterThanOrEqual(1)
+      expect(puts().length).toBeLessThanOrEqual(3)
+      expect(seen.filter((s) => s.path === TAKE).length).toBe(1)
+      expect(lines.sort()).toEqual(['hub mail: pull failed: 401\n', 'hub mail: push failed: 500\n'])
+      box.close()
+    } finally {
+      process.env.TANDEM_HOME = TH
+    }
+  })
+
+  it('(33B-2) (audit) no local caller spells a remote sender, and a remote address is one computer id, one colon, one session name', () => {
+    const box = boxAt()
+    for (const from of ['machine:alpha/owner', 'machine:alpha/owner\n', 'Machine:alpha/owner', 'MACHINE:alpha/owner', 'session:machine:alpha/owner', 'session:a/owner',
+      'machine:alpha/session:lead', 'owner\nmachine:alpha/owner', 'machine：alpha/owner', 'mаchine:alpha/owner', ' machine:alpha/owner']) {
+      expect([from, refusal(() => box.send({ from, to: 'bob', level: 'fyi', text: 'x' }))]).toEqual([from, { status: 400, message: 'from: owner or session:<name>; nothing was saved' }])
+    }
+    for (const v of ['machine:alpha/owner\n', 'machine:alpha/Owner', 'machine:alpha/session:', 'machine:alpha/session:a/b', 'machine:alpha:beta/owner', 'machine:/owner', 'machine:alpha/owner/owner', `machine:${'a'.repeat(65)}/owner`, 'machine:alphа/owner']) {
+      expect([v, limits.isRemoteSender(v), limits.isInterruptSender(v)]).toEqual([v, false, false])
+    }
+    for (const to of ['beta:bob:x', ':bob', 'beta:', 'beta:relay-x', 'BETA:bob', 'bеta:bob', `${'a'.repeat(65)}:bob`, 'beta:bob\n', 'beta :bob', 'beta:b ob', 'beta::bob', 'beta/bob:x']) {
+      expect([to, refusal(() => box.send({ from: 'owner', to, level: 'fyi', text: 'x' }))]).toEqual([to, { status: 400, message: TO_NAME }])
+    }
+    for (const read of [() => box.pending('beta:bob'), () => box.claim('beta:bob', 'idle'), () => box.read('beta:bob', 5), () => box.noticeFor('beta:bob'), () => box.interruptFor('beta:bob')]) {
+      expect(refusal(read)).toEqual({ status: 400, message: TO_NAME })
+    }
+    expect(box.sent('owner', 50)).toEqual([])
+    box.close()
+  })
+
+  it('(33B-2) (audit) a remote Interrupt presses the key only while interrupt_from lists its sender, and waits out the cool-down like a local one', () => {
+    const box = boxAt()
+    const receive = (k: number) => box.receive({ id: `mail-${randomUUID()}`, from: 'machine:alpha/owner', to: 'press', level: 'interrupt', text: `stop ${k}`, sentAt: clock })
+    try {
+      writeLimits(TH, { interrupt_from: ['machine:alpha/owner'] })
+      limits.applyLimits()
+      expect(receive(1)).toBe('stored')
+      expect(refusal(() => box.receive({ id: `mail-${randomUUID()}`, from: 'machine:alpha/session:lead', to: 'press', level: 'interrupt', text: 'x', sentAt: clock })))
+        .toEqual({ status: 403, message: 'interrupt_from: machine:alpha/session:lead may not send Interrupt (limits file); nothing was saved' })
+      expect(box.interruptFor('press', 10_000)).toBe(true)
+      expect(receive(2)).toBe('stored')
+      clock += 9_999
+      expect(box.interruptFor('press', 10_000)).toBe(false)
+      clock += 1
+      // The sender is taken out before the key: nothing is pressed (the press-time check).
+      writeLimits(TH, { interrupt_from: ['owner'] })
+      limits.applyLimits()
+      expect(box.interruptFor('press', 10_000)).toBe(false)
+      writeLimits(TH, { interrupt_from: ['machine:alpha/owner'] })
+      limits.applyLimits()
+      expect(box.interruptFor('press', 10_000)).toBe(true)
+    } finally {
       box.close()
     }
   })

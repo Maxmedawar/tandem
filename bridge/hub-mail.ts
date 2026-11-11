@@ -15,7 +15,11 @@
  * mail body; only then is it stored (mailbox.receive), from `machine:<computer>/<sender>` built
  * from the hub-named AND signature-checked computer and the signed body's local sender. Message
  * text is never read for identity. Repeats are dropped by envelope nonce and by message id, so a
- * copy the hub hands twice is stored once. Every call carries the link bearer and a
+ * copy the hub hands twice is stored once. A copy's nonce is recorded only after the mailbox stored
+ * or refused it: a store that fails (SQLite busy) or a stop in between leaves the copy unacked and
+ * unrecorded, so the next take stores it. An envelope kept longer than RESIGN_AFTER_MS is signed
+ * again at its push (same id and sentAt, new ts and nonce), so the hub's 7 days always fit the
+ * receiver's window; the receiver drops the extra copy by message id. Every call carries the link bearer and a
  * `tandem-proof` over the exact bytes; no token, key, proof or message text is ever logged.
  *
  * `now` is the only clock: the replay store, every openEnvelope and every signEnvelope run on it.
@@ -33,6 +37,8 @@ export const PUSH_EVERY_MS = 500
 export const SLOW_DOWN_MS = 60_000
 export const OUTBOX_TTL_MS = 7 * 86_400_000
 export const MAX_PAGES = 10
+/** A kept envelope older than this is signed again at its push: the hub may hold it 7 days and the receiver takes ts up to 7 days + 5 min old. */
+export const RESIGN_AFTER_MS = 60_000
 
 const TIMEOUT_MS = 10_000
 const LOG_EVERY_MS = 60_000
@@ -127,20 +133,37 @@ export function hubMail(
     failed[kind] = status === undefined ? 'no answer' : String(status)
   }
 
+  /** Envelopes signed again for rows that waited past RESIGN_AFTER_MS, until the row moves. */
+  const again = new Map<string, string>()
+
   /** The kept envelope of row `m`, else a new one signed now and kept before it is ever sent. */
   function envelopeFor(m: Message, computer: string, session: string): string {
-    const kept = box.envelopeOf(m.id)
-    if (kept !== undefined) return kept
+    const kept = again.get(m.id) ?? box.envelopeOf(m.id)
+    let last: { ts?: unknown } = {}
+    try {
+      if (kept !== undefined) last = JSON.parse(kept) as { ts?: unknown }
+    } catch {
+      last = {}
+    }
+    if (kept !== undefined && isTime(last.ts) && Math.abs(now() - last.ts) <= RESIGN_AFTER_MS) return kept
     const body: Json = { v: 1, kind: 'mail', id: m.id, from: m.from, to: session, level: m.level, text: m.text, sentAt: m.sentAt }
     if (m.level === 'ask') body.replyBy = m.replyBy
-    box.keepEnvelope(m.id, JSON.stringify(signEnvelope(signer(), { from: config.bridgeId, to: computer, body: JSON.stringify(body) }, now())))
-    return box.envelopeOf(m.id)!
+    const text = JSON.stringify(signEnvelope(signer(), { from: config.bridgeId, to: computer, body: JSON.stringify(body) }, now()))
+    if (kept === undefined) {
+      box.keepEnvelope(m.id, text)
+      return box.envelopeOf(m.id)!
+    }
+    // ponytail: a re-signed envelope lives in memory only (keepEnvelope keeps the first); after a
+    // restart the old one is stale again and is signed once more. The receiver drops extras by id.
+    again.set(m.id, text)
+    return text
   }
 
   async function pushOnce(): Promise<number> {
     if (now() < quietUntil) return 0
     let moved = 0
     const move = (id: string, state: 'sent' | 'queue_full' | 'refused' | 'expired', seq?: number) => {
+      again.delete(id)
       if (!box.markRemote(id, state, seq)) return
       moved++
       if (state === 'expired') audit({ event: 'mail.expired', id })
@@ -188,21 +211,38 @@ export function hubMail(
       publicKey = undefined
     }
     if (publicKey === undefined) return refuse('unknown_sender')
+    // The nonce is only looked up here and recorded below, once the mailbox has stored or refused
+    // the message: a store that throws anything else, or a stop before it, records nothing, so the
+    // copy (never acked) is stored at the next take instead of being dropped as a repeat.
+    let record = (): void => undefined
+    const peek = {
+      remember: (from: string, nonce: string, expiresAt: number) => {
+        record = () => void seen.remember(from, nonce, expiresAt)
+        return !seen.has(from, nonce)
+      },
+    }
     let opened: { body: string }
     try {
-      opened = openEnvelope(c.body, { sender: { id: c.from, publicKey }, self: config.bridgeId, seen, now: now(), maxAgeMs: MAX_AGE_CAP_MS })
+      opened = openEnvelope(c.body, { sender: { id: c.from, publicKey }, self: config.bridgeId, seen: peek, now: now(), maxAgeMs: MAX_AGE_CAP_MS })
     } catch (e) {
       if (!(e instanceof EnvelopeError)) throw e
       return e.reason === 'replay' ? repeat() : refuse(e.reason)
     }
     const body = mailBody(opened.body)
-    if (!body) return refuse('shape')
+    if (!body) {
+      record()
+      return refuse('shape')
+    }
+    let stored: 'stored' | 'repeat'
     try {
-      if (box.receive({ ...body, from: `machine:${c.from}/${body.from}` }) === 'repeat') repeat()
+      stored = box.receive({ ...body, from: `machine:${c.from}/${body.from}` })
     } catch (e) {
       if (!(e instanceof MailError)) throw e
-      refuse('mailbox', e.status)
+      record()
+      return refuse('mailbox', e.status)
     }
+    record()
+    if (stored === 'repeat') repeat()
   }
 
   async function pullOnce(): Promise<number> {
@@ -240,8 +280,12 @@ export function hubMail(
       process.stderr.write(`hub mail: ${kind} failed: ${why}\n`)
     }
     const running = { push: false, pull: false }
-    const pass = (kind: 'push' | 'pull', run: () => Promise<number>) => () => {
-      if (running[kind]) return
+    // A pass that stopped early waits twice its interval, doubling up to SLOW_DOWN_MS, before the
+    // next: a hub that is down or refusing is never asked 2 times a second (the proof allowance).
+    const fails = { push: 0, pull: 0 }
+    const waitUntil = { push: -Infinity, pull: -Infinity }
+    const pass = (kind: 'push' | 'pull', every: number, run: () => Promise<number>) => () => {
+      if (running[kind] || now() < waitUntil[kind]) return
       running[kind] = true
       run()
         .catch(() => {
@@ -249,10 +293,12 @@ export function hubMail(
         })
         .finally(() => {
           running[kind] = false
+          fails[kind] = failed[kind] === undefined ? 0 : fails[kind] + 1
+          waitUntil[kind] = fails[kind] === 0 ? -Infinity : now() + Math.min(SLOW_DOWN_MS, every * 2 ** Math.min(fails[kind], 10))
           report(kind)
         })
     }
-    const timers = [setInterval(pass('push', pushOnce), PUSH_EVERY_MS), setInterval(pass('pull', pullOnce), MAIL_POLL_MS)]
+    const timers = [setInterval(pass('push', PUSH_EVERY_MS, pushOnce), PUSH_EVERY_MS), setInterval(pass('pull', MAIL_POLL_MS, pullOnce), MAIL_POLL_MS)]
     for (const t of timers) t.unref()
     return () => {
       for (const t of timers) clearInterval(t)

@@ -108,6 +108,8 @@ const NAME = /^[A-Za-z0-9._-]{1,256}$/
 /** A computer id (bridge/envelope.ts ID). */
 const COMPUTER = /^[a-z0-9._-]{1,64}$/
 const MAIL_ID = /^mail-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/** The last ms a Date can show: a later sentAt would throw where a label prints it. */
+const MAX_DATE_MS = 8_640_000_000_000_000
 const REMOTE_STATES: readonly string[] = ['sent', 'queue_full', 'refused', 'expired']
 /** Every C0 control character except tab and newline, DEL, and the C1 controls (U+009B is an 8-bit CSI, U+0085 a line break). */
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
@@ -198,7 +200,7 @@ function checkReceive({ id, from, to, level, text, sentAt, replyBy }: ReceiveInp
   if (!isRemoteSender(from)) throw new MailError(400, 'from: machine:<id>/owner or machine:<id>/session:<name>; nothing was saved')
   checkName(to)
   checkBody(level, text)
-  if (!Number.isSafeInteger(sentAt) || sentAt < 0) throw new MailError(400, 'sentAt: ms since the epoch; nothing was saved')
+  if (!Number.isSafeInteger(sentAt) || sentAt < 0 || sentAt > MAX_DATE_MS) throw new MailError(400, 'sentAt: ms since the epoch; nothing was saved')
   if (replyBy !== undefined && level !== 'ask') throw new MailError(400, 'replyByMinutes is for ask only; nothing was saved')
   // Remote Ask arrives with control_from (U-R1A-36B), which may then list the computer; nothing does yet.
   if (level === 'ask') throw new MailError(403, `control_from: ${from.slice('machine:'.length, from.indexOf('/'))} may not send Ask here (limits file); nothing was saved`)
