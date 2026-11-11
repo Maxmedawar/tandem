@@ -1,0 +1,31 @@
+Factory Droid CLI screens in this folder are plain-text (no colour) for harnesses/droid.toml.
+
+Every *-src.txt file here is CONSTRUCTED, not a capture. Each is built from short UI strings in
+Factory's `droid` 1.8.0 for darwin/arm64 (the single Bun-compiled binary from
+https://downloads.factory.ai/factory-cli/releases/1.8.0/darwin/arm64/droid, sha256
+c8dd0da4d01cc8c08f4f441c183a22bcf713bef17e82d8ba7a77ffd7899d06bc, proprietary, Factory), read
+as text only (`strings`), never run. Only short UI strings are transcribed; no code is copied.
+
+idle-src.txt: the header lines, the round input box with the first-turn placeholder
+`> Try "Write unit tests for this file"`, and a footer ending `? for help`.
+idle-alt-src.txt: idle-src.txt with the placeholder `> Type "Review this code for security issues"`
+and the footer's left text replaced by the update notice `↓ v1.9.0 available`.
+working-src.txt: idle-src.txt with the status line `⠋ Thinking... (Press ESC to stop)` above the box.
+working-wait-src.txt: the same with `⠋ Executing... (Please wait)`.
+waiting_for_approval-exec-src.txt, -edit-src.txt, -batch-src.txt: a tool confirmation (one
+command, one edit with a two-line diff, two commands) whose option list ends `No, cancel` or
+`No, cancel all`.
+waiting_for_approval-spec-src.txt: the spec-mode exit list ending `No, keep iterating on spec`.
+waiting_for_approval-shield-src.txt: the Droid-Shield confirmation (`Droid-Shield approval
+required`, `Proceed anyway`, `Cancel`).
+Each confirmation list sits in a round box with Droid's key hint line under it
+(`↑↓ navigate · Enter select · Esc cancel`; the spec exit adds `1-N select`): Droid draws that
+hint only while a confirmation is open, and the harness rules need the cancel row with that hint
+under it, so reply text that quotes a row is not an approval.
+unknown-trust-src.txt: the folder-trust menu (`Trust this folder?`, two description lines,
+`1. Trust this folder`, `2. Exit without trusting`, `Enter to confirm · Esc to exit`).
+unknown-login-src.txt: the signed-out start screen (`Welcome to Factory CLI`, `Login with Factory
+account`, `Continue with API key`).
+unknown-ide-src.txt: the VSCode extension menu.
+
+None of these is a real screen. A real screen added here by a live run is named *-real.txt.

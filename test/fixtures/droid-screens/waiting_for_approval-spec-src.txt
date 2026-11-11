@@ -1,0 +1,13 @@
+Current folder: ~/work
+
+  Spec: add a /health route
+  1. Add GET /health returning {"ok": true}
+  2. Add a test for it
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Proceed with implementation                                        │
+│   Proceed, and allow file edits and read-only commands (Low)         │
+│   No, keep iterating on spec                                         │
+╰──────────────────────────────────────────────────────────────────────╯
+  ↑↓ navigate · 1-3 select · Enter select · Esc cancel
+
+Auto (Off)  claude-sonnet-4-6                                  ? for help

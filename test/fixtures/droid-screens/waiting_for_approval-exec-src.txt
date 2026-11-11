@@ -1,0 +1,11 @@
+Current folder: ~/work
+
+  EXECUTE  npm test
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Yes, allow                                                         │
+│   Yes, and always allow Low                                          │
+│   No, cancel                                                         │
+╰──────────────────────────────────────────────────────────────────────╯
+  ↑↓ navigate · Enter select · Esc cancel
+
+Auto (Off)  claude-sonnet-4-6                                  ? for help

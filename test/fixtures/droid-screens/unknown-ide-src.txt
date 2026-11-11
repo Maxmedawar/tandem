@@ -1,0 +1,6 @@
+VSCode Extension Available
+
+Would you like to install the Factory VSCode extension?
+
+> Yes, install extension
+  No, skip for now (can install later in /ide)

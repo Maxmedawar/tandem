@@ -1,0 +1,46 @@
+# Factory Droid CLI, program `droid` (its interactive terminal UI; `droid exec` is never used).
+# Checked against droid 1.8.0 darwin/arm64 (its strings and UI code read as text, never run).
+# idle is the input box: before the first turn its prompt `> ` shows one of the 13 random
+# placeholders (`Try "..."` / `Type "..."`; spec and mission mode show their own); after the first
+# turn the empty input shows no placeholder, so an empty `│ > │` row right above the box's bottom
+# border also reads idle (while a turn runs the input shows `Enter to steer ...` instead). idle never
+# reads the footer: its `? for help` turns into update or config notices. Unproven on a real screen
+# until the live row runs. working is the status hint `(Press ESC to stop)` / `(Please wait)`.
+# waiting_for_approval is a confirmation list's last row (`No, cancel`, `No, cancel all`, `No, keep
+# iterating on spec`, the spec exit's `N. No and explain why` or its autonomy step's
+# `N. Proceed with ...`) as a whole row, with Droid's key hint `↑↓ navigate ...` / `↑↓ to select ...`
+# at most three lines under it, or the Droid-Shield title with its `Cancel` row and that hint (the
+# mission proposal's `No and explain why` takes its own `↑/↓ Navigate · Enter Select` hint). An open
+# list replaces the input box, so the hint sits at the bottom of the screen: at most four lines with
+# no box border follow it. Reply text that quotes a list, even with its hint, has the input box
+# under it and is not an approval. approve is Enter (the first row is selected when the list
+# opens), deny is Escape (cancel; the spec exit and the mission proposal also take Escape as
+# cancel). interrupt is one Escape; Ctrl+C once only warns and twice exits. English UI only (Droid
+# ships other languages). account_env is unset:
+# the sign-in may sit in the macOS keychain, which FACTORY_HOME_OVERRIDE may not follow. No dialog
+# row: the `Trust this folder?` menu's form is unproven. delivery is `notice`: Droid's hooks live
+# in its own ~/.factory/settings.json, which Tandem never writes.
+name = "droid"
+program = "droid"
+has_prompts = true
+skip_prompts_args = ["--auto", "high"]
+resume = ["--resume", "{id}"]
+fork = ["--fork", "{id}"]
+history = "~/.factory/sessions"
+delivery = "notice"
+
+[states]
+waiting_for_approval = [
+  '(?m)^[ │]*(?:[>✕] )?(?:No, cancel(?: all)?|No, keep iterating on spec|(?:\d+\. )?No and explain why|\d+\. Proceed with (?:Manual Approvals|Low autonomy|Medium autonomy|High autonomy))[ │]*$(?:\n[^\n]*){0,3}?\n *(?:↑↓ (?:navigate · (?:1-\d+ select · )?Enter select|to select, Enter to confirm)|↑/↓ Navigate · Enter Select)[^\n]*(?:\n[^\n╭╮╰╯│]*){0,4}\z',
+  '(?m)Droid-Shield approval required(?:\n[^\n]*){1,40}?\n[ │]*(?:[>✕] )?Cancel[ │]*$(?:\n[^\n]*){0,3}?\n *↑↓ navigate · Enter select[^\n]*(?:\n[^\n╭╮╰╯│]*){0,4}\z',
+]
+working = ['\((?:Press ESC to stop|Please wait)\)']
+idle = [
+  '> (?:(?:Try|Type) "(?:How do I handle errors in async functions\?|Write unit tests for this file|Search the documentation for this library|Optimize the performance of this component|Debug why users can.t login|Implement a REST endpoint for user data|Add proper error handling to API calls|Set up GitHub Actions for CI/CD|Fix all lint warnings|Create a PR with these changes|Review the changes in my current branch|Explain how the codebase is organized|Review this code for security issues)"|Droid will research and plan before making changes|Mission control for huge projects)',
+  '(?m)^ *│ > +│ *\n *╰─+╯',
+]
+
+[keys]
+interrupt = ["Escape"]
+approve = "Enter"
+deny = "Escape"
