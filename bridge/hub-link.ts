@@ -4,8 +4,8 @@
  * Dials `<hub>/__tunnel/connect?bridge_id=<id>` with the secret only in an
  * `Authorization: Bearer` header (a URL lands in proxy and request logs; a frame
  * or a log line is no better) and a fresh `tandem-proof` signed by this computer's
- * device key (hub/src/devices.ts: the hub binds the id to the first key that proves
- * it), registers, heartbeats, drops a socket that has gone silent, and redials with backoff. Inbound frames over MAX_FRAME_BYTES close the
+ * device key over that path and query (hub/src/devices.ts: the hub binds the id to the first
+ * key that proves it), registers, heartbeats, drops a socket that has gone silent, and redials with backoff. Inbound frames over MAX_FRAME_BYTES close the
  * socket before any handler sees them. Only `wss://` is dialled, except on loopback.
  *
  * Settings: TANDEM_HUB_LINK_URL (hub origin), TANDEM_HUB_LINK_TOKEN (16+ chars,
@@ -126,7 +126,8 @@ export interface HubLinkConfig {
 /**
  * The `tandem-proof` value for one hub request: `v1 <id> <key> <ts> <nonce> <sig>`, ts = `now`
  * (default this clock), a fresh random nonce on every call, sig over proofText with the host of
- * `url`, METHOD, `path` (no query) and the SHA-256 of `body` (none: zero bytes).
+ * `url`, METHOD, `path` (the connect route: path plus query; every other route: no query) and
+ * the SHA-256 of `body` (none: zero bytes).
  */
 export function hubProofHeader(
   key: Pick<DeviceKey, 'publicKey' | 'sign'>,
@@ -230,6 +231,9 @@ export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): 
     ...opts.timing,
   }
   const dialUrl = `${origin}/__tunnel/connect?bridge_id=${encodeURIComponent(config.bridgeId)}${config.memoryHome ? '&memory_home=1' : ''}`
+  // The proof covers the path and its query as the URL parser gives them, as the hub reads
+  // them: bridge_id and memory_home are signed (U-R1A-31C-1).
+  const signedPath = new URL(dialUrl).pathname + new URL(dialUrl).search
 
   let stopped = false
   let isConnected = false
@@ -242,7 +246,7 @@ export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): 
     new Promise<boolean>((resolve) => {
       let proof: string
       try {
-        proof = hubProofHeader(config.key ?? openDeviceKey(), { url: origin, method: 'GET', path: '/__tunnel/connect', id: config.bridgeId })
+        proof = hubProofHeader(config.key ?? openDeviceKey(), { url: origin, method: 'GET', path: signedPath, id: config.bridgeId })
       } catch (error) {
         if (!(error instanceof DeviceKeyError)) throw error
         // A failed dial: backoff as for any other.

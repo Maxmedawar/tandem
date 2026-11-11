@@ -105,9 +105,10 @@ function deviceRefusal(status: 401 | 409 | 503): Response {
 /**
  * RAW websocket route for the Mac bridge. Checks the shared secret from
  * `Authorization: Bearer` (401 on a bad/absent token), then the device proof for
- * `GET /__tunnel/connect` whose id must be exactly the `bridge_id` query value (an id
- * proved here for the first time is bound to its key), then forwards the upgrade request
- * to the singleton TunnelDO.
+ * `GET /__tunnel/connect` plus its query exactly as the URL parser gives it (so `bridge_id`,
+ * `memory_home` and any other flag are signed), whose id must be exactly the `bridge_id` query
+ * value (an id proved here for the first time is bound to its key), then forwards the upgrade
+ * request to the singleton TunnelDO.
  */
 async function handleTunnelConnect(request: Request, env: HandlerEnv): Promise<Response> {
   const presented = bearerToken(request)
@@ -122,7 +123,7 @@ async function handleTunnelConnect(request: Request, env: HandlerEnv): Promise<R
   const { status } = await stub.checkDevice(request.headers.get(PROOF_HEADER), {
     host: url.host,
     method: 'GET',
-    path: '/__tunnel/connect',
+    path: url.pathname + url.search,
     bodySha256: EMPTY_SHA256,
     queryId: url.searchParams.get('bridge_id') ?? '',
     mayBind: true,
@@ -132,14 +133,18 @@ async function handleTunnelConnect(request: Request, env: HandlerEnv): Promise<R
 }
 
 const FABRIC_LINK_PREFIX = '/__tunnel/fabric-rpc'
+/** The caller's fresh challenge the memory home signs its answer over (bridge/hub-rpc.ts). */
+const MEMORY_CHALLENGE_HEADER = 'tandem-memory-challenge'
 
 /**
  * The link route for fabric calls. Order: a `token` query 401, not POST 405, a missing or
  * wrong bearer 401, a body over WS_MAX_FRAME_BYTES 413 (readCapped: never held past the cap),
  * a device proof that is not over these exact bytes or not from an id already bound on the
  * tunnel 401 (409/503 as checkDevice says), a body that is not an object with
- * an object `input` 400; then the TunnelDO's answer as it is. Only `input` is kept: the
- * caller is the hub's own owner, derived here as TandemMcp derives it.
+ * an object `input` 400, a `tandem-memory-challenge` that is not exactly 22 base64url characters
+ * 400; then the TunnelDO's answer as it is. Only `input` is kept: the caller is the hub's own
+ * owner, derived here as TandemMcp derives it. The challenge, when sent, goes on to the memory
+ * home, which signs its answer over it (bridge/hub-rpc.ts); the hub never vouches for an answer.
  */
 async function handleFabricLink(request: Request, env: HandlerEnv, url: URL): Promise<Response> {
   if (url.searchParams.has('token')) return new Response('unauthorized', { status: 401 })
@@ -168,9 +173,11 @@ async function handleFabricLink(request: Request, env: HandlerEnv, url: URL): Pr
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     return jsonResponse({ error: 'fabric_request_invalid' }, 400)
   }
+  const challenge = request.headers.get(MEMORY_CHALLENGE_HEADER)
+  if (challenge !== null && !/^[A-Za-z0-9_-]{22}$/.test(challenge)) return jsonResponse({ error: 'fabric_request_invalid' }, 400)
   return stub.fetch(`https://do/__fabric-rpc${url.pathname.slice(FABRIC_LINK_PREFIX.length)}`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
+    headers: { 'content-type': 'application/json', ...(challenge === null ? {} : { [MEMORY_CHALLENGE_HEADER]: challenge }) },
     body: JSON.stringify({ caller: await fabricCallerFor(SINGLE_USER_ID), input }),
   })
 }

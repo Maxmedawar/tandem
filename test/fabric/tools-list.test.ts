@@ -9,6 +9,7 @@
  * file (two processes, one SQLite file); skipped when wrangler or tmux is missing.
  */
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
@@ -21,6 +22,10 @@ import { createLocalFabricHost, type LocalFabricHost } from '../../bridge/fabric
 import {
   hub, missing, repo, signIn, startBridge, startHub, stopBridge, stopHub, type Bridge,
 } from '../e2e/hub-harness.ts'
+import { LINK_TOKEN } from '../e2e/hub-harness.ts'
+import { openDeviceKey } from '../../bridge/device-keys.ts'
+import { initRoster } from '../../bridge/roster.ts'
+import { rosterHub } from '../../bridge/roster-hub.ts'
 
 const SESSION_TOOLS = ['open_session', 'list_sessions', 'send_to_session', 'interrupt_session', 'close_session', 'relay', 'list_devices']
 const FABRIC_TOOLS = [
@@ -163,6 +168,18 @@ describe.skipIf(Boolean(missing))(title, () => {
   beforeAll(async () => {
     await startHub('/tmp/r1a22-')
     alpha = await startBridge('alpha', { CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: dbPath, TANDEM_HOME: alphaHome })
+    // U-R1A-31C-1: the hub sends memory calls only to a home in the roster it holds: alpha starts it.
+    const alphaKey = openDeviceKey({ path: join(alphaHome, 'keys', 'device.key') })
+    const savedHome = process.env.TANDEM_HOME
+    process.env.TANDEM_HOME = alphaHome
+    try {
+      initRoster(alphaKey, 'alpha')
+    } finally {
+      if (savedHome === undefined) delete process.env.TANDEM_HOME
+      else process.env.TANDEM_HOME = savedHome
+    }
+    const roster = readFileSync(join(alphaHome, 'roster', 'roster.json'), 'utf8')
+    if (!(await rosterHub({ url: hub, token: LINK_TOKEN, bridgeId: 'alpha' }, alphaKey).put(0, roster)).ok) throw new Error('roster put refused')
     client = await connect()
   }, 150_000)
 

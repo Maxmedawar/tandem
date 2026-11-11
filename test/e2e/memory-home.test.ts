@@ -9,7 +9,9 @@
  * Skipped only when wrangler or tmux is missing.
  */
 import { once } from 'node:events'
+import { createHash } from 'node:crypto'
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { request as httpRequest, type ClientRequest } from 'node:http'
 import { join } from 'node:path'
 import WebSocket from 'ws'
@@ -22,6 +24,8 @@ import { CCM_FRAME_TYPES, CCM_TUNNEL_SUBPROTOCOL } from '../../hub/src/protocol.
 import { hubProofHeader, MAX_FRAME_BYTES as WS_MAX_FRAME_BYTES } from '../../bridge/hub-link.ts'
 import { openDeviceKey, type DeviceKey } from '../../bridge/device-keys.ts'
 import { fabricCallerFor } from '../../src/fabric/mcp-tools.ts'
+import { initRoster, makeOffer, receiveOffer, trustOffer } from '../../bridge/roster.ts'
+import { rosterHub } from '../../bridge/roster-hub.ts'
 import {
   hub, LINK_TOKEN, missing, rand, repo, signIn, startBridge, startHub, stopBridge, stopHub, type Bridge,
 } from './hub-harness.ts'
@@ -69,7 +73,8 @@ function sameComputer(from: string, to: string): void {
 }
 const standInHome = mkdtempSync('/tmp/r1a23-key-')
 folders.push(standInHome)
-const standIn = keyIn(standInHome)
+/** U-R1A-31C-1: each stand-in id has its own key (a roster holds each key once). */
+const standIn = (id: string): DeviceKey => keyIn(join(standInHome, id))
 let linkAs: { id: string; key: DeviceKey } | undefined
 /** The proof for one link-route request: POST `path` (its query left out) over `body`. */
 const linkProof = (path: string, body?: string, method = 'POST') =>
@@ -144,9 +149,10 @@ const listBody = JSON.stringify({ input: {} })
  * With `answer` it replies 200 to each request with it (a function gets the request frame),
  * after `delayMs`; without, it never replies. `requests` is every request frame it was sent.
  */
-async function fakeHome(id: string, answer?: unknown, { home = true, key = standIn }: { home?: boolean; key?: DeviceKey } = {}) {
+async function fakeHome(id: string, answer?: unknown, { home = true, key = standIn(id) }: { home?: boolean; key?: DeviceKey } = {}) {
+  const connectPath = `/__tunnel/connect?bridge_id=${id}${home ? '&memory_home=1' : ''}`
   const ws = new WebSocket(`${hub.replace(/^http/, 'ws')}/__tunnel/connect?bridge_id=${id}${home ? '&memory_home=1' : ''}`, CCM_TUNNEL_SUBPROTOCOL, {
-    headers: { Authorization: `Bearer ${LINK_TOKEN}`, 'tandem-proof': hubProofHeader(key, { url: hub, method: 'GET', path: '/__tunnel/connect', id }) },
+    headers: { Authorization: `Bearer ${LINK_TOKEN}`, 'tandem-proof': hubProofHeader(key, { url: hub, method: 'GET', path: connectPath, id }) },
   })
   const closed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)))
   const stand = {
@@ -169,12 +175,13 @@ async function fakeHome(id: string, answer?: unknown, { home = true, key = stand
     if (answer === undefined) return
     const reply = () => {
       if (ws.readyState !== WebSocket.OPEN) return
+      const bytes = Buffer.from(JSON.stringify(typeof answer === 'function' ? answer(frame) : answer), 'utf8')
       ws.send(JSON.stringify({
         type: CCM_FRAME_TYPES.httpResponse,
         request_id: frame.request_id,
         status_code: 200,
-        headers: { 'content-type': ['application/json'] },
-        body_base64: Buffer.from(JSON.stringify(typeof answer === 'function' ? answer(frame) : answer), 'utf8').toString('base64'),
+        headers: signedHeaders(frame, id, key, bytes),
+        body_base64: bytes.toString('base64'),
       }))
     }
     if (stand.delayMs > 0) setTimeout(reply, stand.delayMs)
@@ -182,6 +189,51 @@ async function fakeHome(id: string, answer?: unknown, { home = true, key = stand
   })
   await once(ws, 'open')
   return stand
+}
+
+/**
+ * U-R1A-31C-1: a home signs its answer when the request carries a challenge (ANSWER_TEXT over the
+ * challenge, method, path and input, and the answer's status and bytes), as bridge/hub-rpc.ts does.
+ */
+const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex')
+function signedHeaders(frame: Json, id: string, key: DeviceKey, bytes: Buffer): Record<string, string[]> {
+  const headers: Record<string, string[]> = { 'content-type': ['application/json'] }
+  const challenge = frame.headers?.['tandem-memory-challenge']?.[0]
+  if (!challenge) return headers
+  const sent = JSON.parse(Buffer.from(frame.body_base64 ?? '', 'base64').toString('utf8') || 'null') as Json | null
+  const text = ['tandem-memory-answer-v1', id, key.publicKey, challenge, frame.method, frame.path, sha(JSON.stringify(sent?.input ?? null)), '200', sha(bytes)].join('\n')
+  headers['tandem-memory-answer'] = [`v1 ${id} ${key.publicKey} ${key.sign(text)}`]
+  return headers
+}
+
+/**
+ * U-R1A-31C-1: the owner's roster for one hub. Started in `rootHome` (a TANDEM_HOME) by `root`;
+ * every other computer trusted there through its offer (process.env.TANDEM_HOME set around each
+ * call and restored); roster.json copied into each of `copies` (TANDEM_HOMEs); one PUT to the hub
+ * with base 0 as `root`.
+ */
+async function ownerRoster(rootHome: string, root: { id: string; key: DeviceKey }, others: [string, DeviceKey][], copies: string[]) {
+  const before = process.env.TANDEM_HOME
+  process.env.TANDEM_HOME = rootHome
+  try {
+    initRoster(root.key, root.id)
+    for (const [id, key] of others) {
+      receiveOffer(JSON.stringify(makeOffer(key, id)))
+      trustOffer(root.key, key.fingerprint)
+    }
+  } finally {
+    if (before === undefined) delete process.env.TANDEM_HOME
+    else process.env.TANDEM_HOME = before
+  }
+  const text = readFileSync(join(rootHome, 'roster', 'roster.json'), 'utf8')
+  for (const home of copies) {
+    mkdirSync(join(home, 'roster'), { recursive: true, mode: 0o700 })
+    chmodSync(join(home, 'roster'), 0o700)
+    copyFileSync(join(rootHome, 'roster', 'roster.json'), join(home, 'roster', 'roster.json'))
+    chmodSync(join(home, 'roster', 'roster.json'), 0o600)
+  }
+  const put = await rosterHub({ url: hub, token: LINK_TOKEN, bridgeId: root.id }, root.key).put(0, text)
+  if (!put.ok) throw new Error(`roster put: ${put.len}`)
 }
 
 afterAll(() => {
@@ -198,6 +250,10 @@ describe.skipIf(Boolean(missing))(title, () => {
   let alpha: Bridge | undefined
   let beta: Bridge | undefined
   let gamma: Bridge | undefined
+  // U-R1A-31C-1: gamma's TANDEM_HOME and key are made first, so the roster can trust gamma before it dials.
+  const gammaHome = mkdtempSync('/tmp/r1a23-gamma-')
+  folders.push(gammaHome)
+  const gammaKey = openDeviceKey({ path: join(gammaHome, 'keys', 'device.key') })
   let agentA: Awaited<ReturnType<typeof startStdio>> | undefined
   let agentB: Awaited<ReturnType<typeof startStdio>> | undefined
   let hubClient: Client | undefined
@@ -224,6 +280,12 @@ describe.skipIf(Boolean(missing))(title, () => {
       CCM_FABRIC_DB_PATH: bDb,
     })
     sameComputer(beta.home, agentB.home)
+    await ownerRoster(
+      join(alpha.home, '.tandem'),
+      { id: 'alpha', key: keyIn(alpha.home) },
+      [['beta', keyIn(beta.home)], ['gamma', gammaKey], ['r1a23-dup', standIn('r1a23-dup')], ['r1a23-slow', standIn('r1a23-slow')]],
+      [join(beta.home, '.tandem'), join(agentB.home, '.tandem')],
+    )
   }, 150_000)
 
   afterAll(async () => {
@@ -306,7 +368,7 @@ describe.skipIf(Boolean(missing))(title, () => {
   })
 
   it('(7) a second home (gamma) gives memory_home_conflict everywhere but A; gone again, B answers', async () => {
-    gamma = await startBridge('gamma', { CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: databasePath() })
+    gamma = await startBridge('gamma', { CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: databasePath(), TANDEM_HOME: gammaHome })
     expect(await call(hubClient!, 'memory_search', { query: routedMarker })).toEqual(CONFLICT)
     expect(await call(B(), 'memory_search', { query: routedMarker })).toEqual(CONFLICT)
     expect(await route('/fabric/project/list', { body: listBody })).toEqual({ status: 409, text: JSON.stringify(CONFLICT) })
@@ -446,6 +508,7 @@ describe.skipIf(Boolean(missing))('U-R1A-23-R1 audit: the link route, the caller
     // This computer's id is bound on the tunnel by its own key, as its bridge would bind it.
     linkAs = { id: 'r1a23-beta', key: keyIn(agent.home) }
     await (await fakeHome('r1a23-beta', undefined, { home: false, key: linkAs.key })).close()
+    await ownerRoster(join(agent.home, '.tandem'), linkAs, [['r1a23-echo', standIn('r1a23-echo')], ['r1a23-two', standIn('r1a23-two')]], [])
     session = await connect()
     owner = await fabricCallerFor('owner')
   }, 150_000)

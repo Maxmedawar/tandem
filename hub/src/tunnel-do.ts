@@ -13,9 +13,11 @@
  *                          the Worker through checkDevice, so the id is bound to this key)
  *   /__rpc/<path>       -> forward to the bridge as an HTTP request frame
  *   /__fabric-rpc/fabric/<path> -> the same, marked with trusted_surface, always to the
- *                          memory home (the one socket tagged memory-home; any other path
- *                          under it is 404, nothing sent). Callers: TandemMcp's fabric tools
- *                          and the hub link route for fabric calls (index.ts).
+ *                          memory home (the one socket tagged memory-home whose id and proven key
+ *                          are an entry of the roster the hub holds, checked here by
+ *                          ./roster-verify; any other path under it is 404, nothing sent).
+ *                          Callers: TandemMcp's fabric tools and the hub link route for fabric
+ *                          calls (index.ts).
  */
 
 import { DurableObject } from 'cloudflare:workers'
@@ -43,8 +45,9 @@ import {
   type SocketInfo,
 } from './tunnel-routing'
 import { HubQueue, type PutResult, type QueuedCopy, type QueueMessage } from './queue'
-import { HubDevices, PROOF_WINDOW_MS, parseProof, verifyProof, type ProofContext } from './devices'
+import { HubDevices, PROOF_HEADER, PROOF_WINDOW_MS, parseProof, verifyProof, type ProofContext } from './devices'
 import { RosterStore, type OfferAnswer, type PutAnswer } from './roster-store'
+import { verifyRosterText } from './roster-verify'
 import type { Env } from './types'
 import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
@@ -71,9 +74,15 @@ const WS_READY_STATE_OPEN = 1
 const BRIDGE_TAG_PREFIX = 'bid:'
 /** Hibernation tag of a socket whose bridge holds the memory store (dialled with memory_home=1). */
 const MEMORY_HOME_TAG = 'memory-home'
+/** Hibernation tag prefix carrying the device key the socket's connect proof was signed by. */
+const KEY_TAG_PREFIX = 'dk:'
 const MEMORY_HOME_OFFLINE = {
   error: 'memory_home_offline',
   message: 'memory home offline: the computer that holds memory is not connected to the hub',
+}
+const NOT_IN_ROSTER = {
+  error: 'memory_home_not_in_roster',
+  message: 'memory home not in roster: the computer that holds memory is not in the roster the hub holds; trust it from a computer in the roster',
 }
 
 const HOP_BY_HOP = new Set<string>([
@@ -186,6 +195,17 @@ export class TunnelDO extends DurableObject<Env> {
     return this.rosterStore().get()
   }
 
+  /** The stored roster's text and its checked entries (none when refused), kept until the text changes. */
+  private members?: { text: string; entries: { id: string; key: string }[] }
+
+  /** The entries of the stored roster when its whole chain checks out (./roster-verify), else none. */
+  private async rosterMembers(): Promise<{ id: string; key: string }[]> {
+    const text = this.rosterGet()?.roster
+    if (text === undefined) return []
+    if (this.members?.text !== text) this.members = { text, entries: (await verifyRosterText(text)) ?? [] }
+    return this.members.entries
+  }
+
   /** The store's answer and the length it holds after it (0 when none). */
   rosterPut(senderId: string, senderKey: string, base: number, rosterText: string): { answer: PutAnswer; len: number } {
     const answer = this.rosterStore().put(senderId, senderKey, base, rosterText)
@@ -224,9 +244,12 @@ export class TunnelDO extends DurableObject<Env> {
     }
 
     // Tag the socket with its bridge_id so the id survives hibernation; RPCs are
-    // routed by reading this tag back (getSocketFor / listConnectedBridgeIds). A bridge
+    // routed by reading this tag back (getSocketFor / listConnectedBridgeIds). The key of the
+    // proof the Worker accepted (over this very path and query) is kept beside it. A bridge
     // with the memory store also gets the memory-home tag (handleFabricRpc).
     const tags = [CCM_TUNNEL_SUBPROTOCOL, `${BRIDGE_TAG_PREFIX}${bridgeId}`]
+    const proof = parseProof(request.headers.get(PROOF_HEADER))
+    if (proof) tags.push(`${KEY_TAG_PREFIX}${proof.key}`)
     if (url.searchParams.get('memory_home') === '1') tags.push(MEMORY_HOME_TAG)
     this.ctx.acceptWebSocket(server, tags)
 
@@ -291,14 +314,24 @@ export class TunnelDO extends DurableObject<Env> {
 
   /**
    * A fabric call goes to the memory home whatever machine header it carries: the one
-   * bridge id among the open memory-home sockets. None: 503 memory_home_offline. Two or
-   * more ids: 409 memory_home_conflict and nothing is sent. Same id twice cannot happen
-   * for long (a redial evicts the older socket); the newest open one is used.
+   * bridge id among the open memory-home sockets whose id and proven key are one entry of
+   * the roster the hub holds (its chain checked here, at each call). No memory-home socket:
+   * 503 memory_home_offline; some, none in the roster: 503 memory_home_not_in_roster. Two or
+   * more ids in the roster: 409 memory_home_conflict and nothing is sent. A socket not in the
+   * roster is never sent a frame. Same id twice cannot happen for long (a redial evicts the
+   * older socket); the newest open one is used.
    */
   private async handleFabricRpc(request: Request, url: URL): Promise<Response> {
-    const homes = this.ctx.getWebSockets(MEMORY_HOME_TAG).filter((ws) => ws.readyState === WS_READY_STATE_OPEN)
+    const open = this.ctx.getWebSockets(MEMORY_HOME_TAG).filter((ws) => ws.readyState === WS_READY_STATE_OPEN)
+    if (open.length === 0) return json(MEMORY_HOME_OFFLINE, 503)
+    const members = await this.rosterMembers()
+    const homes = open.filter((ws) => {
+      const id = this.bridgeIdOf(ws)
+      const key = this.keyOf(ws)
+      return members.some((m) => m.id === id && m.key === key)
+    })
     const ids = [...new Set(homes.map((ws) => this.bridgeIdOf(ws)))].sort()
-    if (ids.length === 0) return json(MEMORY_HOME_OFFLINE, 503)
+    if (ids.length === 0) return json(NOT_IN_ROSTER, 503)
     if (ids.length > 1) {
       return json({
         error: 'memory_home_conflict',
@@ -377,6 +410,14 @@ export class TunnelDO extends DurableObject<Env> {
       if (tag.startsWith(BRIDGE_TAG_PREFIX)) return tag.slice(BRIDGE_TAG_PREFIX.length)
     }
     return DEFAULT_BRIDGE_ID // socket somehow untagged -> treat as default
+  }
+
+  /** Read the dk: hibernation tag back off a live socket (undefined when untagged). */
+  private keyOf(ws: WebSocket): string | undefined {
+    for (const tag of this.ctx.getTags(ws)) {
+      if (tag.startsWith(KEY_TAG_PREFIX)) return tag.slice(KEY_TAG_PREFIX.length)
+    }
+    return undefined
   }
 
   /** Snapshot the live sockets alongside the plain {bridgeId, isOpen} view the
