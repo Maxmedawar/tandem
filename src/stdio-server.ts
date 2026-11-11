@@ -93,7 +93,11 @@ try {
 // A message a dead deliverer left delivering (only those over 60 s: a hook run ends in 10 s) shows
 // as maybe_delivered; then the notice line for agents with mail (bridge/delivery-notice.ts).
 if (mail) {
-  mail.recover(60_000);
+  try {
+    mail.recover(60_000);
+  } catch {
+    console.error("mail: recover failed at start; a message left delivering stays so until the next start");
+  }
   (await import("../bridge/delivery-notice.ts")).startNotices(mail);
 }
 // Who is up on this computer (bridge/presence.ts): read on a call, never on a timer.

@@ -13,7 +13,7 @@
  */
 import { audit } from './audit.ts'
 import { admitInput } from './input-gate.ts'
-import type { Mailbox } from './mailbox.ts'
+import { MailError, type Mailbox } from './mailbox.ts'
 import { getLive, liveSessionNames } from './sessions.ts'
 
 /** The only text the notice ever types. */
@@ -28,20 +28,26 @@ export async function noticePass(box: Mailbox): Promise<{ typed: string[]; held:
   for (const name of liveSessionNames()) {
     const session = getLive(name)
     if (!session || name.startsWith('relay-')) continue
-    const cls = (session as { deliveryClass?: () => string }).deliveryClass
-    if (typeof cls !== 'function' || cls.call(session) === 'none') continue
-    const p = box.pending(name)
-    if (p.fyi + p.ask + p.interrupt === 0) continue
-    const { verdict } = await admitInput(session, 'agent', 'type')
-    if (verdict !== 'enter') {
-      held.push(name)
-      continue
+    // One session's failure never ends the pass for the others. A MailError here is a name no
+    // inbox can have (over 256 bytes): it has no mail, so it is skipped without a line.
+    try {
+      const cls = (session as { deliveryClass?: () => string }).deliveryClass
+      if (typeof cls !== 'function' || cls.call(session) === 'none') continue
+      const p = box.pending(name)
+      if (p.fyi + p.ask + p.interrupt === 0) continue
+      const { verdict } = await admitInput(session, 'agent', 'type')
+      if (verdict !== 'enter') {
+        held.push(name)
+        continue
+      }
+      const n = box.noticeFor(name)
+      if (n === 0) continue
+      audit({ event: 'mail.notice', name, engine: session.engine, n })
+      session.send(noticeLine(n)).catch(() => audit({ event: 'mail.notice', name, failed: true }))
+      typed.push(name)
+    } catch (e) {
+      if (!(e instanceof MailError)) audit({ event: 'mail.notice', name: name.slice(0, 300), failed: true })
     }
-    const n = box.noticeFor(name)
-    if (n === 0) continue
-    audit({ event: 'mail.notice', name, engine: session.engine, n })
-    session.send(noticeLine(n)).catch(() => audit({ event: 'mail.notice', name, failed: true }))
-    typed.push(name)
   }
   return { typed, held }
 }

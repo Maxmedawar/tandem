@@ -427,3 +427,32 @@ describe('(j) startNotices: one pass at a time', () => {
     }
   }, 30_000)
 })
+
+describe('(k) audit: one bad session never ends the pass for the others', () => {
+  it('a name the mailbox refuses, a deliveryClass that throws, a send that throws: the good session still gets its one line', async () => {
+    const good = 'r1a27a-good'
+    const typed: string[] = []
+    const idle = async () => ({ state: 'idle', screen: 'fake>', debounceMs: 0 })
+    const fake = (id: string, over: Json = {}) => ({ id, engine: 'r1a27a-fake', cwd: WORK, deliveryClass: () => 'notice', inputState: idle, send: async () => ({ status: 'done', report: '', cursor: 0 }), ...over })
+    const bad = [
+      fake('r'.repeat(300)), // over the mailbox's 256 bytes: pending() throws MailError
+      fake('r1a27a-badclass', { deliveryClass: () => { throw new Error('boom') } }),
+      fake('r1a27a-badsend', { send: () => { throw new Error('boom') } }),
+    ]
+    fyi('r1a27a-badclass')
+    fyi('r1a27a-badsend')
+    fyi(good)
+    for (const s of bad) registerLive(s as Json)
+    registerLive(fake(good, { send: async (text: string) => { typed.push(text); return { status: 'done', report: '', cursor: 0 } } }) as Json)
+    try {
+      const pass = await noticePass(box)
+      expect(pass.typed).toContain(good)
+      expect(typed).toEqual([noticeLine(1)])
+      expect(pass.typed).not.toContain('r'.repeat(300))
+      expect(pass.typed).not.toContain('r1a27a-badclass')
+    } finally {
+      for (const s of bad) unregisterLive(s.id)
+      unregisterLive(good)
+    }
+  })
+})
