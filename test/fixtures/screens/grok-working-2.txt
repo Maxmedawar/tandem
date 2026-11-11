@@ -1,0 +1,3 @@
+◆ Read src/main.rs
+⠋ Run cargo test 3.1s                              12s [stop]
+> 

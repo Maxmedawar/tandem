@@ -1,0 +1,2 @@
+Welcome to Gemini CLI
+Type your message below

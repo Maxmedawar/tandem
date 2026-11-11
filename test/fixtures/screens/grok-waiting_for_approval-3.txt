@@ -1,0 +1,2 @@
+◆ Run rm -rf build
+Tab:next answer  │  Esc:back  │  x:dismiss

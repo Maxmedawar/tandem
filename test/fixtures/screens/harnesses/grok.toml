@@ -1,0 +1,18 @@
+# Screen rules adapted from kbwo/ccmanager src/services/stateDetector/grok.ts (MIT, see ../NOTICE).
+# idle is a positive match of the prompt: `>` as the last line, as in ccmanager's grok samples.
+# No real grok idle screen was captured (it asks to sign in), so the rule rests on those samples.
+name = "grok"
+program = "grok"
+has_prompts = true
+
+[states]
+waiting_for_approval = [
+  '\d/\d:select',
+  '\([○●]\) No, reject \(type to add feedback\)',
+  ':next answer',
+  ':accept / toggle',
+  '◆ (?:Waiting on answers for|Waiting on plan approval|No plan written)',
+  'Do you trust the contents of this directory',
+]
+working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ']
+idle = ['^>(?: [^\n]*)?\z']

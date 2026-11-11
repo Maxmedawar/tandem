@@ -1,0 +1,8 @@
+Some previous output
+Do you want to make this edit to test.txt?
+❯ 1. Yes
+2. Yes, allow all edits during this session (shift+tab)
+3. No, and tell Claude what to do differently (esc)
+──────────────────────────────
+❯
+──────────────────────────────

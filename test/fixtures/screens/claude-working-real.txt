@@ -1,0 +1,1 @@
+⏵⏵ auto mode on (shift+tab to cycle) · esc to interrupt        3 MCP servers need auth · /mcp

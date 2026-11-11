@@ -1,0 +1,40 @@
+⚠  Skill conflict detected: "higgsfield-marketplace-cards" from
+   "/Users/user/.agents/skills/higgsfield-marketplace-cards/SKILL.md" is overriding the same skill from
+   "/Users/user/.gemini/skills/higgsfield-marketplace-cards/SKILL.md".
+
+⚠  Skill conflict detected: "higgsfield-generate" from "/Users/user/.agents/skills/higgsfield-generate/SKILL.md"
+   is overriding the same skill from "/Users/user/.gemini/skills/higgsfield-generate/SKILL.md".
+
+⚠  Skill conflict detected: "find-skills" from "/Users/user/.agents/skills/find-skills/SKILL.md" is overriding the
+   same skill from "/Users/user/.gemini/skills/find-skills/SKILL.md".
+
+⚠  Skill conflict detected: "cua-driver-rs" from "/Users/user/.agents/skills/cua-driver/SKILL.md" is overriding
+   the same skill from "/Users/user/.gemini/skills/cua-driver/SKILL.md".
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│ Gemini CLI update available! 0.38.2 → 0.68.0                                                                         │
+│ Installed via Homebrew. Please update with "brew upgrade gemini-cli".                                                │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+
+
+╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                      │
+│ ? Get started                                                                                                        │
+│                                                                                                                      │
+│   How would you like to authenticate for this project?                                                               │
+│                                                                                                                      │
+│   ● 1. Sign in with Google                                                                                           │
+│     2. Use Gemini API Key                                                                                            │
+│     3. Vertex AI                                                                                                     │
+│                                                                                                                      │
+│   Failed to sign in. Message: This client is no longer supported for Gemini Code Assist for individuals. To continue │
+│   using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google                      │
+│                                                                                                                      │
+│   (Use Enter to select)                                                                                              │
+│                                                                                                                      │
+│   Terms of Services and Privacy Notice for Gemini CLI                                                                │
+│                                                                                                                      │
+│   https://geminicli.com/docs/resources/tos-privacy/                                                                  │
+│                                                                                                                      │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+

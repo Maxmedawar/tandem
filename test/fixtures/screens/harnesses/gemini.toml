@@ -1,0 +1,14 @@
+# Screen rules adapted from kbwo/ccmanager src/services/stateDetector/gemini.ts (MIT, see ../NOTICE).
+# No idle rule: no prompt is visible on the ccmanager samples and no real gemini screen was
+# captured (it asks to sign in), so a ready gemini reads unknown.
+name = "gemini"
+program = "gemini"
+has_prompts = true
+
+[states]
+waiting_for_approval = [
+  '(?i)waiting for user confirmation',
+  '│ (?:Apply this change|Allow execution|Do you want to proceed)',
+  '(?i)(?:allow execution|do you want to|apply this change)[\s\S]*?\n+[\s\S]*?\byes\b',
+]
+working = ['(?i)esc to cancel']
