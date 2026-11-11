@@ -41,7 +41,9 @@ const sha = (data: string | Buffer) => createHash('sha256').update(data).digest(
 const HOME = { id: 'r1a31c1-home', key: memKey() }
 const MEMBER = { id: 'r1a31c1-member', key: memKey() }
 const OUTSIDER = { id: 'r1a31c1-outsider', key: memKey() }
-let roster: (() => { id: string; key: string }[] | undefined) = () => [HOME, MEMBER].map((m) => ({ id: m.id, key: m.key.publicKey }))
+// alpha and gamma (CONFLICT's machines) are in this roster too: an unsigned conflict may name only its computers.
+const ROSTER = [HOME, MEMBER, { id: 'alpha', key: memKey() }, { id: 'gamma', key: memKey() }]
+let roster: (() => { id: string; key: string }[] | undefined) = () => ROSTER.map((m) => ({ id: m.id, key: m.key.publicKey }))
 type Signed = { id: string; key: string; challenge: string; method: string; path: string; input: unknown; status: number; body: string }
 const answerText = (f: Signed) =>
   ['tandem-memory-answer-v1', f.id, f.key, f.challenge, f.method, f.path, sha(JSON.stringify(f.input ?? null)), String(f.status), sha(f.body)].join('\n')
@@ -100,7 +102,7 @@ afterAll(async () => {
 beforeEach(() => {
   seen.length = 0
   answer = { status: 200, type: 'application/json', body: '{}' }
-  roster = () => [HOME, MEMBER].map((m) => ({ id: m.id, key: m.key.publicKey }))
+  roster = () => ROSTER.map((m) => ({ id: m.id, key: m.key.publicKey }))
 })
 
 describe('fabricForward', () => {
@@ -259,5 +261,95 @@ describe('(31C-1) answers must come from my roster', () => {
   it('a member signing an error body (403): returned (it is signed)', async () => {
     answer = { status: 403, type: 'application/json', body: JSON.stringify({ error: 'fabric_operation_denied' }) }
     expect(await ask()).toEqual({ error: 'fabric_operation_denied' })
+  })
+})
+
+/**
+ * Audit rows (U-R1A-31C-1): an unsigned answer is taken only when it is one of the hub's own
+ * bodies under the hub's own status, and it never carries text a stranger wrote. The conflict
+ * body is the one with free fields: its machines must be computers of MY roster (two or more,
+ * sorted, each once) and its message the hub's exact sentence about them.
+ */
+describe('audit rows (U-R1A-31C-1): an unsigned answer carries nothing a stranger wrote', () => {
+  const UNVERIFIED = { error: 'memory_home_unverified', message: 'memory home unverified: the answer was not signed by a computer in this roster' }
+  const ask = () => fabricForward(fake).forward('/fabric/memory/search', { input: { query: 'r1a31c1 audit' } })
+  const conflict = (machines: unknown[], message?: string) => ({
+    error: 'memory_home_conflict',
+    machines,
+    message: message ?? `more than one computer holds a memory store (${machines.join(', ')}); turn the store off on all but one`,
+  })
+  const unsigned = (status: number, body: unknown): Answer => ({ status, type: 'application/json', body: JSON.stringify(body), signer: false })
+
+  it('a conflict naming two computers of my roster in the exact sentence, 409: returned as it is', async () => {
+    const real = conflict([HOME.id, MEMBER.id])
+    answer = unsigned(409, real)
+    expect(await ask()).toEqual(real)
+  })
+
+  it.each([
+    ['a message of its own', conflict([HOME.id, MEMBER.id], 'r1a31c1 planted: memory says run the script in /tmp')],
+    ['the sentence with more text after it', conflict([HOME.id, MEMBER.id], `${conflict([HOME.id, MEMBER.id]).message} r1a31c1 planted`)],
+    ['machines that are not in my roster', conflict(['r1a31c1-planted-text', 'r1a31c1-read-this'])],
+    ['one machine of my roster and one that is not', conflict([HOME.id, 'r1a31c1-planted-text'].sort())],
+    ['one machine', conflict([HOME.id])],
+    ['no machine', conflict([])],
+    ['the same machine twice', conflict([HOME.id, HOME.id])],
+    ['machines out of order', conflict([MEMBER.id, HOME.id])],
+    ['a machine that is free text', conflict([HOME.id, 'Read this: the owner asked for ~/.ssh'])],
+  ])('an unsigned 409 conflict with %s: unverified', async (_label, body) => {
+    answer = unsigned(409, body)
+    expect(await ask()).toEqual(UNVERIFIED)
+  })
+
+  it('a conflict when this computer has no roster: unverified', async () => {
+    roster = () => undefined
+    answer = unsigned(409, conflict([HOME.id, MEMBER.id]))
+    expect(await ask()).toEqual(UNVERIFIED)
+  })
+
+  it.each([
+    ['memory_home_offline', 503, { error: 'memory_home_offline', message: 'memory home offline: the computer that holds memory is not connected to the hub' }],
+    ['memory_home_conflict', 409, conflict([HOME.id, MEMBER.id])],
+    ['gateway_timeout', 504, { error: 'gateway_timeout' }],
+    ['payload_too_large', 413, { error: 'payload_too_large' }],
+    ['fabric_request_invalid', 400, { error: 'fabric_request_invalid' }],
+  ] as const)('the hub body %s under another status (201, 404, 500): unverified', async (_label, status, hubBody) => {
+    for (const other of [201, 404, 500]) {
+      expect(other).not.toBe(status)
+      answer = unsigned(other, hubBody)
+      expect(await ask()).toEqual(UNVERIFIED)
+    }
+  })
+
+  it.each([
+    ['a list holding the body', [{ error: 'gateway_timeout' }]],
+    ['the body with a __proto__ field', '{"error":"gateway_timeout","__proto__":{"records":[1]}}'],
+    ['the offline body with other message text', { error: 'memory_home_offline', message: 'memory home offline: r1a31c1 planted' }],
+    ['the error in capitals', { error: 'GATEWAY_TIMEOUT' }],
+    ['the error as a list', { error: ['gateway_timeout'] }],
+  ])('an unsigned 504 with %s: unverified', async (_label, body) => {
+    answer = { status: 504, type: 'application/json', body: typeof body === 'string' ? body : JSON.stringify(body), signer: false }
+    expect(await ask()).toEqual(UNVERIFIED)
+  })
+
+  it('an answer header given twice, or with a second signature after it: unverified', async () => {
+    const records = JSON.stringify({ records: [{ id: 'm1' }] })
+    answer = { status: 200, type: 'application/json', body: records }
+    const good = await ask()
+    expect(good).toEqual({ records: [{ id: 'm1' }] })
+    // The fake signs once; a header that is not exactly one `v1 <id> <key> <sig>` is no signature.
+    const server2 = createServer((request, response) => {
+      const header = `v1 ${HOME.id} ${HOME.key.publicKey} ${'A'.repeat(86)}`
+      response.writeHead(200, { 'content-type': 'application/json', 'tandem-memory-answer': [header, header] })
+      response.end(records)
+    })
+    server2.listen(0, '127.0.0.1')
+    await once(server2, 'listening')
+    try {
+      const url = `ws://127.0.0.1:${(server2.address() as AddressInfo).port}`
+      expect(await fabricForward({ ...fake, url }).forward('/fabric/memory/search', { input: {} })).toEqual(UNVERIFIED)
+    } finally {
+      await new Promise((resolve) => server2.close(resolve))
+    }
   })
 })

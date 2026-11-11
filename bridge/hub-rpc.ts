@@ -100,27 +100,40 @@ const UNVERIFIED = Object.freeze({
   message: 'memory home unverified: the answer was not signed by a computer in this roster',
 })
 
-/** The hub's own answers (no memory data in them): the only ones taken unsigned, and never with status 200. */
-const HUB_BODIES: readonly Record<string, string>[] = [
-  { error: 'memory_home_offline', message: 'memory home offline: the computer that holds memory is not connected to the hub' },
+/**
+ * The hub's own answers, each under the one status the hub gives it: the only ones taken unsigned.
+ * None carries text from outside this computer: five are fixed, and the conflict answer may name
+ * only computers of this computer's own roster, in the hub's exact sentence (isHubConflict).
+ */
+const HUB_BODIES: readonly { status: number; body: Record<string, string> }[] = [
+  { status: 503, body: { error: 'memory_home_offline', message: 'memory home offline: the computer that holds memory is not connected to the hub' } },
   {
-    error: 'memory_home_not_in_roster',
-    message: 'memory home not in roster: the computer that holds memory is not in the roster the hub holds; trust it from a computer in the roster',
+    status: 503,
+    body: {
+      error: 'memory_home_not_in_roster',
+      message: 'memory home not in roster: the computer that holds memory is not in the roster the hub holds; trust it from a computer in the roster',
+    },
   },
-  { error: 'gateway_timeout' },
-  { error: 'payload_too_large' },
-  { error: 'fabric_request_invalid' },
+  { status: 504, body: { error: 'gateway_timeout' } },
+  { status: 413, body: { error: 'payload_too_large' } },
+  { status: 400, body: { error: 'fabric_request_invalid' } },
 ]
 
 const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
-function isHubBody(body: unknown): boolean {
+/** The hub's 409 for two or more memory homes: ids of `members` only, sorted, each once, and the hub's sentence. */
+function isHubConflict(body: Record<string, unknown>, members: { id: string }[] | undefined): boolean {
+  const machines = body.machines
+  if (body.error !== 'memory_home_conflict' || !Array.isArray(machines) || machines.length < 2 || !members) return false
+  if (!machines.every((m, i) => typeof m === 'string' && members.some((member) => member.id === m) && (i === 0 || machines[i - 1] < m))) return false
+  return body.message === `more than one computer holds a memory store (${machines.join(', ')}); turn the store off on all but one`
+}
+
+function isHubBody(status: number, body: unknown, members: { id: string }[] | undefined): boolean {
   if (!isPlain(body)) return false
   const keys = Object.keys(body).sort().join()
-  if (keys === 'error,machines,message') {
-    return body.error === 'memory_home_conflict' && Array.isArray(body.machines) && body.machines.every((m) => typeof m === 'string') && typeof body.message === 'string'
-  }
-  return HUB_BODIES.some((hubBody) => Object.keys(hubBody).sort().join() === keys && Object.keys(hubBody).every((k) => body[k] === hubBody[k]))
+  if (keys === 'error,machines,message') return status === 409 && isHubConflict(body, members)
+  return HUB_BODIES.some((hub) => hub.status === status && Object.keys(hub.body).sort().join() === keys && Object.keys(hub.body).every((k) => body[k] === hub.body[k]))
 }
 
 /** This computer's own verified roster as { id, key }, read at each call; undefined when there is none or it is refused. */
@@ -134,8 +147,9 @@ function rosterMembers(): { id: string; key: string }[] | undefined {
  * `key`, else this computer's device key) and a fresh `tandem-memory-challenge`. An answer signed
  * over that challenge by a computer in `trusted()` (default: this computer's verified roster,
  * read at each call; a throw counts as none) is taken: its JSON whatever the status, a non-JSON
- * one `fabric_unavailable`. Unsigned, only one of the hub's own error bodies with its non-200
- * status is taken; anything else is memory_home_unverified. No answer (network error, 120 s) or
+ * one `fabric_unavailable`. Unsigned, only one of the hub's own error bodies under the hub's own
+ * status is taken (a conflict only when it names computers of that roster); anything else is
+ * memory_home_unverified. No answer (network error, 120 s) or
  * no usable device key is memory_home_offline. The token is only ever in the header.
  */
 export function fabricForward(config: {
@@ -184,21 +198,21 @@ export function fabricForward(config: {
       } catch {
         json = false
       }
+      let members: { id: string; key: string }[] | undefined
+      try {
+        members = trusted()
+      } catch {
+        members = undefined
+      }
       const signed = ANSWER.exec(answerHeader ?? '')
       if (signed) {
         const [, id, key, sig] = signed
-        let members: { id: string; key: string }[] | undefined
-        try {
-          members = trusted()
-        } catch {
-          members = undefined
-        }
         const text = memoryAnswerText({ id, key, challenge, method: 'POST', path, input: inputOf(body), status, body: bytes })
         if (members?.some((m) => m.id === id && m.key === key) && verifySignature(key, text, sig)) {
           return json ? parsed : { error: 'fabric_unavailable' }
         }
       }
-      return status !== 200 && json && isHubBody(parsed) ? parsed : { ...UNVERIFIED }
+      return json && isHubBody(status, parsed, members) ? parsed : { ...UNVERIFIED }
     },
   }
 }

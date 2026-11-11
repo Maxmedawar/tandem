@@ -333,3 +333,176 @@ describe('(31C-1) the home signs memory answers', () => {
     }
   })
 })
+
+/**
+ * Audit rows (U-R1A-31C-1): the real forwarder against the real home through a stand-in hub (a
+ * node:http server that does what the hub's link route and tunnel do: keeps only `input`, adds
+ * the caller, frames the call, hands the home's answer back). The stand-in can also misbehave.
+ */
+describe('audit rows (U-R1A-31C-1): forwarder and home, end to end through a stand-in hub', () => {
+  const c = process.getBuiltinModule('node:crypto') as typeof import('node:crypto')
+  const http = process.getBuiltinModule('node:http') as typeof import('node:http')
+  const memKey = () => {
+    const { privateKey } = c.generateKeyPairSync('ed25519')
+    const publicKey = c.createPublicKey(privateKey).export({ format: 'jwk' }).x as string
+    return { publicKey, fingerprint: '', sign: (d: string | Uint8Array) => c.sign(null, Buffer.from(d), privateKey).toString('base64url') }
+  }
+  const UNVERIFIED = { error: 'memory_home_unverified', message: 'memory home unverified: the answer was not signed by a computer in this roster' }
+  const home = { id: 'r1a31c1-home', key: memKey() }
+  const callerKey = memKey()
+  const caller = { ownerId: `owner-${'a'.repeat(64)}`, deviceId: `mcp-device-${'b'.repeat(64)}`, agentId: `mcp-owner-${'c'.repeat(64)}` }
+  /** What the stand-in hub does to one call: defaults pass it on as the hub does. */
+  type Hub = { input?: (input: unknown) => unknown; path?: string; challenge?: string; replay?: boolean; strip?: boolean }
+  let last: { status: number; headers: Record<string, string>; body: Buffer } | undefined
+  const ran: string[] = []
+
+  /** One call: what the forwarder returned, the status the home gave, and whether the home's header was a signature the forwarder could take. */
+  async function through(hub: Hub, path: string, input: unknown) {
+    const { fabricForward, memoryAnswerText } = await import('../bridge/hub-rpc.ts')
+    const { verifySignature } = await import('../bridge/device-keys.ts')
+    const host = {
+      client: {
+        searchMemory: async (_caller: unknown, got: { query: string }) => { ran.push('search'); return { records: [{ id: 'r1a31c1-m', query: got.query }] } },
+        getMemory: async () => { ran.push('get'); return { id: 'r1a31c1-m' } },
+        forgetMemory: async () => { ran.push('forget') },
+      },
+      close() {},
+    } as unknown as Parameters<typeof handleHubRequest>[1]
+    let status = 0
+    let signedForCaller = false
+    const server = http.createServer((request, response) => {
+      const chunks: Buffer[] = []
+      request.on('data', (d: Buffer) => chunks.push(d))
+      request.on('end', async () => {
+        if (hub.replay && last) {
+          response.writeHead(last.status, last.headers)
+          response.end(last.body)
+          return
+        }
+        const sent = (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { input: unknown }).input
+        const asked = String(request.headers['tandem-memory-challenge'])
+        const answer = await handleHubRequest({
+          ...frame('POST', hub.path ?? (request.url ?? '').replace('/__tunnel/fabric-rpc', ''), { body: { caller, input: hub.input ? hub.input(sent) : sent } }),
+          trusted_surface: FABRIC_MCP_TRUST,
+          headers: { 'tandem-memory-challenge': [hub.challenge ?? asked] },
+        }, host, home)
+        const headers: Record<string, string> = { 'content-type': 'application/json' }
+        const header = answer.headers?.['tandem-memory-answer']?.[0]
+        const body = Buffer.from(answer.body_base64 ?? '', 'base64')
+        status = answer.status_code
+        // Checked here from the caller's own values: its challenge, its path, the input object it holds.
+        signedForCaller = header !== undefined && verifySignature(home.key.publicKey, memoryAnswerText({
+          id: home.id, key: home.key.publicKey, challenge: asked, method: 'POST', path, input, status, body,
+        }), header.split(' ')[3])
+        if (header && !hub.strip) headers['tandem-memory-answer'] = header
+        last = { status, headers, body }
+        response.writeHead(status, headers)
+        response.end(body)
+      })
+    })
+    server.listen(0, '127.0.0.1')
+    await new Promise((resolve) => server.once('listening', resolve))
+    try {
+      const port = (server.address() as import('node:net').AddressInfo).port
+      const forwarder = fabricForward({
+        url: `ws://127.0.0.1:${port}`, token: `r1a31c1-${'t'.repeat(24)}`, bridgeId: 'r1a31c1-caller', key: callerKey as never,
+        trusted: () => [{ id: home.id, key: home.key.publicKey }],
+      })
+      return { answer: await forwarder.forward(path, { caller, input }), status, signedForCaller }
+    } finally {
+      await new Promise((resolve) => server.close(resolve))
+    }
+  }
+
+  const SEARCH = '/fabric/memory/search'
+  it.each([
+    ['a plain query', { query: 'r1a31c1' }, 200],
+    ['text outside ASCII and quotes', { query: 'r1a31c1 \u00e9\u4e2d\ud83d\ude00 \u2028 "\\', limit: 3 }, 200],
+    // The home refuses these inputs (400), and signs that answer over the same input text the caller hashed.
+    ['number-like field names out of order', { query: 'r1a31c1', 10: 'ten', 2: 'two', b: 1, a: 2 }, 400],
+    ['a lone surrogate and control characters', { query: 'r1a31c1 \ud800 \u0000', more: '\udfff' }, 400],
+    ['nested lists, null, -0 and large numbers', { query: 'r1a31c1', more: [null, [-0, 1e21, 0.1 + 0.2], { deep: { deeper: [] } }] }, 400],
+  ] as const)('%s: the home signs over the same input the caller hashed, and the forwarder takes the answer', async (_label, input, status) => {
+    const got = await through({}, SEARCH, input)
+    expect(got.status).toBe(status)
+    expect(got.signedForCaller).toBe(true)
+    expect(got.answer).toEqual(status === 200 ? { records: [{ id: 'r1a31c1-m', query: input.query }] } : { error: 'fabric_request_invalid' })
+  })
+
+  it('a hub that changes the input, swaps the challenge, drops the signature or replays an earlier signed answer: unverified', async () => {
+    const input = { query: 'r1a31c1 first' }
+    const good = await through({}, SEARCH, input)
+    expect([good.status, good.signedForCaller]).toEqual([200, true])
+    const changed = await through({ input: () => ({ query: 'r1a31c1 other' }) }, SEARCH, input)
+    expect([changed.status, changed.signedForCaller, changed.answer]).toEqual([200, false, UNVERIFIED])
+    const swapped = await through({ challenge: 'r1a31c1-challenge_0123' }, SEARCH, input)
+    expect([swapped.status, swapped.signedForCaller, swapped.answer]).toEqual([200, false, UNVERIFIED])
+    const stripped = await through({ strip: true }, SEARCH, input)
+    expect([stripped.status, stripped.signedForCaller, stripped.answer]).toEqual([200, true, UNVERIFIED])
+    // The same call again, answered with the bytes and header of the call before it: a new challenge, so refused.
+    expect((await through({}, SEARCH, input)).answer).toEqual({ records: [{ id: 'r1a31c1-m', query: 'r1a31c1 first' }] })
+    expect((await through({ replay: true }, SEARCH, input)).answer).toEqual(UNVERIFIED)
+  })
+
+  it('a hub that sends a memory_get to the forget route: the home signs for the forget path, so the caller is not told it was a get', async () => {
+    ran.length = 0
+    const got = await through({ path: '/fabric/memory/forget' }, '/fabric/memory/get', { id: 'r1a31c1-m' })
+    expect(ran).toEqual(['forget'])
+    expect([got.status, got.signedForCaller, got.answer]).toEqual([200, false, UNVERIFIED])
+  })
+
+  it("with no `trusted` given the forwarder reads this computer's roster.json under its file rules: absent, mode 0644, a folder others can read or a changed entry: unverified", async () => {
+    const { chmodSync, writeFileSync } = process.getBuiltinModule('node:fs') as typeof import('node:fs')
+    const { fabricForward, memoryAnswerText } = await import('../bridge/hub-rpc.ts')
+    const { initRoster } = await import('../bridge/roster.ts')
+    const records = Buffer.from(JSON.stringify({ records: [{ id: 'r1a31c1-m' }] }))
+    const server = http.createServer((request, response) => {
+      const chunks: Buffer[] = []
+      request.on('data', (d: Buffer) => chunks.push(d))
+      request.on('end', () => {
+        const text = memoryAnswerText({
+          id: home.id, key: home.key.publicKey, challenge: String(request.headers['tandem-memory-challenge']), method: 'POST',
+          path: '/fabric/memory/search', input: (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { input: unknown }).input, status: 200, body: records,
+        })
+        response.writeHead(200, { 'content-type': 'application/json', 'tandem-memory-answer': `v1 ${home.id} ${home.key.publicKey} ${home.key.sign(text)}` })
+        response.end(records)
+      })
+    })
+    server.listen(0, '127.0.0.1')
+    await new Promise((resolve) => server.once('listening', resolve))
+    const tandemHome = mkdtempSync('/tmp/r1a31c1-hubrpc-roster-')
+    const saved = process.env.TANDEM_HOME
+    process.env.TANDEM_HOME = tandemHome
+    try {
+      const port = (server.address() as import('node:net').AddressInfo).port
+      const ask = () => fabricForward({ url: `ws://127.0.0.1:${port}`, token: `r1a31c1-${'t'.repeat(24)}`, bridgeId: 'r1a31c1-caller', key: callerKey as never })
+        .forward('/fabric/memory/search', { input: { query: 'r1a31c1' } })
+      const file = join(tandemHome, 'roster', 'roster.json')
+      expect(await ask()).toEqual(UNVERIFIED)
+      initRoster(home.key as never, home.id)
+      expect(await ask()).toEqual({ records: [{ id: 'r1a31c1-m' }] })
+      chmodSync(file, 0o644)
+      expect(await ask()).toEqual(UNVERIFIED)
+      chmodSync(file, 0o600)
+      chmodSync(join(tandemHome, 'roster'), 0o755)
+      expect(await ask()).toEqual(UNVERIFIED)
+      chmodSync(join(tandemHome, 'roster'), 0o700)
+      expect(await ask()).toEqual({ records: [{ id: 'r1a31c1-m' }] })
+      const good = readFileSync(file, 'utf8')
+      writeFileSync(file, good.replace(home.id, 'r1a31c1-other'), { mode: 0o600 })
+      expect(await ask()).toEqual(UNVERIFIED)
+    } finally {
+      if (saved === undefined) delete process.env.TANDEM_HOME
+      else process.env.TANDEM_HOME = saved
+      rmSync(tandemHome, { recursive: true, force: true })
+      await new Promise((resolve) => server.close(resolve))
+    }
+  })
+
+  it('a frame outside /fabric/ that carries a challenge is answered with no signature', async () => {
+    const response = await handleHubRequest({ ...frame('GET', '/sessions'), headers: { 'tandem-memory-challenge': ['r1a31c1-challenge_0123'] } }, undefined, home)
+    expect(response.headers?.['tandem-memory-answer']).toBeUndefined()
+    const unknown = await handleHubRequest({ ...frame('GET', '/r1a31c1/none'), headers: { 'tandem-memory-challenge': ['r1a31c1-challenge_0123'] } }, undefined, home)
+    expect(unknown.headers?.['tandem-memory-answer']).toBeUndefined()
+  })
+})
