@@ -83,7 +83,14 @@ const fleet = createFleetRuntime({
   defaultDeviceId: buildDefaultDeviceIdFromEnv(),
   localEngines: localCapabilities.filter((entry) => entry.enabled && entry.available).map((entry) => entry.engine),
 });
-const server = await buildMcpServer(fleet, fabric ?? hubForward);
+// This computer's mailbox (bridge/mailbox.ts); several processes may open its file at once.
+let mail: import("../bridge/mailbox.ts").Mailbox | undefined;
+try {
+  mail = (await import("../bridge/mailbox.ts")).openMailbox();
+} catch {
+  console.error("mail: store unavailable; mail tools are off");
+}
+const server = await buildMcpServer(fleet, fabric ?? hubForward, mail);
 await server.connect(new StdioServerTransport());
 
 console.error("tandem MCP bridge ready on stdio (local, no token)");
