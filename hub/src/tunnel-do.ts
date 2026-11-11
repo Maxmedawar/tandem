@@ -82,8 +82,9 @@ interface PendingRequest {
   resolve: (response: Response) => void
   timeoutTimer: ReturnType<typeof setTimeout>
   settled: boolean
-  /** A fabric call: losing the home (socket closed, send failed) answers memory_home_offline. */
-  fabric: boolean
+  /** A fabric call: the home socket it was sent on. Losing that one (closed, send failed)
+   *  answers memory_home_offline; another computer's socket closing leaves the call waiting. */
+  home?: WebSocket
 }
 
 export class TunnelDO extends DurableObject<Env> {
@@ -210,12 +211,12 @@ export class TunnelDO extends DurableObject<Env> {
     }
   }
 
-  async webSocketClose(): Promise<void> {
-    this.failAllPending(503, 'bridge_offline')
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    this.failAllPending(503, 'bridge_offline', ws)
   }
 
-  async webSocketError(): Promise<void> {
-    this.failAllPending(503, 'bridge_offline')
+  async webSocketError(ws: WebSocket): Promise<void> {
+    this.failAllPending(503, 'bridge_offline', ws)
   }
 
   /* ---- MCP side: forward an RPC to the bridge ---- */
@@ -293,7 +294,7 @@ export class TunnelDO extends DurableObject<Env> {
       return json({ error: 'payload_too_large' }, 413)
     }
 
-    const responsePromise = this.awaitResponse(requestId, trustedSurface !== undefined)
+    const responsePromise = this.awaitResponse(requestId, trustedSurface === undefined ? undefined : socket)
     try {
       socket.send(serialized)
     } catch {
@@ -336,7 +337,7 @@ export class TunnelDO extends DurableObject<Env> {
     return dedupeConnectedIds(this.listSockets().infos)
   }
 
-  private awaitResponse(requestId: string, fabric: boolean): Promise<Response> {
+  private awaitResponse(requestId: string, home?: WebSocket): Promise<Response> {
     return new Promise<Response>((resolve) => {
       const timeoutTimer = setTimeout(() => {
         const p = this.pending.get(requestId)
@@ -345,7 +346,7 @@ export class TunnelDO extends DurableObject<Env> {
         this.pending.delete(requestId)
         resolve(json({ error: 'gateway_timeout' }, 504))
       }, RPC_TIMEOUT_MS)
-      this.pending.set(requestId, { resolve, timeoutTimer, settled: false, fabric })
+      this.pending.set(requestId, { resolve, timeoutTimer, settled: false, home })
     })
   }
 
@@ -369,9 +370,10 @@ export class TunnelDO extends DurableObject<Env> {
     p.resolve(failure(p, status, code))
   }
 
-  private failAllPending(status: number, code: string): void {
+  /** `closed` went away: every /__rpc call fails as before (U-R1A-33 owns that), a fabric call only if `closed` was its home. */
+  private failAllPending(status: number, code: string, closed: WebSocket): void {
     for (const [id, p] of this.pending) {
-      if (p.settled) continue
+      if (p.settled || (p.home && p.home !== closed)) continue
       p.settled = true
       clearTimeout(p.timeoutTimer)
       p.resolve(failure(p, status, code))
@@ -384,7 +386,7 @@ export class TunnelDO extends DurableObject<Env> {
 
 /** A fabric call that lost its home (503) says so; every other failure keeps its code. */
 function failure(p: PendingRequest, status: number, code: string): Response {
-  return p.fabric && status === 503 ? json(MEMORY_HOME_OFFLINE, 503) : json({ error: code }, status)
+  return p.home && status === 503 ? json(MEMORY_HOME_OFFLINE, 503) : json({ error: code }, status)
 }
 
 function json(body: unknown, status: number): Response {
