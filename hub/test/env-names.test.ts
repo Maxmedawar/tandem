@@ -4,6 +4,7 @@
  * test input. Rows a) to e) match the unit brief.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
+import { generateKeyPairSync, randomBytes, sign } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type AddressInfo } from 'node:net'
@@ -14,6 +15,7 @@ import WebSocket from 'ws'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { handleAuthorize, parseAllowedOrigins, type AuthGateEnv } from '../src/auth-gate.ts'
 import { CCM_TUNNEL_SUBPROTOCOL } from '../src/protocol.ts'
+import { EMPTY_SHA256, proofText } from '../src/devices.ts'
 
 // mcp.ts extends McpAgent, whose package loads `cloudflare:` modules the node
 // test env cannot; a plain base class stands in so the real resolveTarget runs.
@@ -198,10 +200,20 @@ function stopHub(hub: Hub | undefined): void {
   rmSync(hub.persist, { recursive: true, force: true })
 }
 
+/** U-R1A-31B: a valid `tandem-proof` for a tunnel dial to the local hub on `port` as `id`, signed by this file's own key. */
+const device = generateKeyPairSync('ed25519')
+function tunnelProof(port: number, id: string): string {
+  const key = device.publicKey.export({ format: 'jwk' }).x as string
+  const ts = Date.now()
+  const nonce = randomBytes(16).toString('base64url')
+  const text = proofText({ host: `127.0.0.1:${port}`, method: 'GET', path: '/__tunnel/connect', id, key, ts, nonce, bodySha256: EMPTY_SHA256 })
+  return `v1 ${id} ${key} ${ts} ${nonce} ${sign(null, Buffer.from(text, 'utf8'), device.privateKey).toString('base64url')}`
+}
+
 /** 'open', the HTTP refusal (status + body), or an error message. */
 function dialTunnel(port: number, token: string): Promise<'open' | { status: number; body: string } | string> {
   const socket = new WebSocket(`ws://127.0.0.1:${port}/__tunnel/connect?bridge_id=laptop`, CCM_TUNNEL_SUBPROTOCOL, {
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, 'tandem-proof': tunnelProof(port, 'laptop') },
   })
   return new Promise(resolve => {
     socket.on('error', error => resolve(error.message))

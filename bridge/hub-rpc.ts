@@ -22,12 +22,15 @@
  * servers pass each fabric call over HTTPS to the hub's link route, and the hub sends it
  * to the memory home. HTTPS, not a frame: the stdio server has no link socket.
  */
+import { hostname } from 'node:os'
+import { openDeviceKey, type DeviceKey } from './device-keys.ts'
 import { routeFabricRpc } from './fabric/rpc-router.ts'
 import type { LocalFabricHost } from './fabric/local-fabric-host.ts'
-import { MAX_FRAME_BYTES } from './hub-link.ts'
+import { deriveBridgeId, hubProofHeader, MAX_FRAME_BYTES } from './hub-link.ts'
 import { route } from './router.ts'
 import type { TranscriptSearch } from './transcripts/search.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
+import { PROOF_HEADER } from '../hub/src/devices.ts'
 
 function parseBody(base64: string | undefined): unknown {
   if (!base64) return {}
@@ -68,20 +71,31 @@ const HUB_UNREACHABLE = Object.freeze({
 })
 
 /**
- * POSTs `body` to `<hub>/__tunnel/fabric-rpc<path>` with the link token as bearer and
- * returns the hub's JSON whatever the status. A non-JSON answer is `fabric_unavailable`;
- * no answer (network error, 120 s) is memory_home_offline. The token is only ever in the header.
+ * POSTs `body` to `<hub>/__tunnel/fabric-rpc<path>` with the link token as bearer and a
+ * `tandem-proof` over the exact bytes sent (id `bridgeId`, else this computer's link id; key
+ * `key`, else this computer's device key), and returns the hub's JSON whatever the status. A
+ * non-JSON answer is `fabric_unavailable`; no answer (network error, 120 s) or no usable device
+ * key is memory_home_offline. The token is only ever in the header.
  */
-export function fabricForward(config: { url: string; token: string }): FabricForward {
+export function fabricForward(config: { url: string; token: string; bridgeId?: string; key?: DeviceKey }): FabricForward {
   const base = `${hubHttpOrigin(config.url)}/__tunnel/fabric-rpc`
   return {
     async forward(path, body) {
       let text: string
       try {
-        const answer = await fetch(`${base}${path}`, {
+        const target = `${base}${path}`
+        const bytes = JSON.stringify(body)
+        const proof = hubProofHeader(config.key ?? openDeviceKey(), {
+          url: config.url,
           method: 'POST',
-          headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
-          body: JSON.stringify(body),
+          path: new URL(target).pathname,
+          id: config.bridgeId ?? deriveBridgeId(process.env.TANDEM_HUB_LINK_ID, hostname()),
+          body: bytes,
+        })
+        const answer = await fetch(target, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json', [PROOF_HEADER]: proof },
+          body: bytes,
           signal: AbortSignal.timeout(120_000),
         })
         text = await answer.text()

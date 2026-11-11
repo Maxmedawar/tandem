@@ -9,7 +9,7 @@
  * Skipped only when wrangler or tmux is missing.
  */
 import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { request as httpRequest, type ClientRequest } from 'node:http'
 import { join } from 'node:path'
 import WebSocket from 'ws'
@@ -19,7 +19,8 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { CCM_FRAME_TYPES, CCM_TUNNEL_SUBPROTOCOL } from '../../hub/src/protocol.ts'
 // The hub's WS_MAX_FRAME_BYTES (hub/src/frame-size.ts) is the same number; that file cannot be type-checked from here.
-import { MAX_FRAME_BYTES as WS_MAX_FRAME_BYTES } from '../../bridge/hub-link.ts'
+import { hubProofHeader, MAX_FRAME_BYTES as WS_MAX_FRAME_BYTES } from '../../bridge/hub-link.ts'
+import { openDeviceKey, type DeviceKey } from '../../bridge/device-keys.ts'
 import { fabricCallerFor } from '../../src/fabric/mcp-tools.ts'
 import {
   hub, LINK_TOKEN, missing, rand, repo, signIn, startBridge, startHub, stopBridge, stopHub, type Bridge,
@@ -50,6 +51,29 @@ function databasePath(): string {
   folders.push(folder)
   return join(folder, 'fabric.sqlite3')
 }
+
+/**
+ * U-R1A-31B: the hub admits a link request only with a `tandem-proof` by the key bound to its id
+ * (the first key to dial under it). `keyIn(home)` is the device key of the computer whose HOME is
+ * `home` (<home>/.tandem/keys/device.key, made on first use, as its bridge and stdio server use
+ * it); `sameComputer` puts one computer's key in another HOME, as two processes on one computer
+ * share it. `linkAs` is who the link-route helpers prove they are: an id already bound on the
+ * tunnel, with its key. `standIn` signs every stand-in computer's dial.
+ */
+const keyIn = (home: string): DeviceKey => openDeviceKey({ path: join(home, '.tandem', 'keys', 'device.key') })
+function sameComputer(from: string, to: string): void {
+  const keys = join(to, '.tandem', 'keys')
+  mkdirSync(keys, { recursive: true, mode: 0o700 })
+  copyFileSync(join(from, '.tandem', 'keys', 'device.key'), join(keys, 'device.key'))
+  chmodSync(join(keys, 'device.key'), 0o600)
+}
+const standInHome = mkdtempSync('/tmp/r1a23-key-')
+folders.push(standInHome)
+const standIn = keyIn(standInHome)
+let linkAs: { id: string; key: DeviceKey } | undefined
+/** The proof for one link-route request: POST `path` (its query left out) over `body`. */
+const linkProof = (path: string, body?: string, method = 'POST') =>
+  hubProofHeader(linkAs!.key, { url: hub, method, path: new URL(`${hub}/__tunnel/fabric-rpc${path}`).pathname, id: linkAs!.id, body })
 
 /** One tool call: its JSON answer, or what went wrong at the MCP layer. */
 async function call(client: Client, name: string, args: Record<string, unknown> = {}): Promise<Json> {
@@ -104,7 +128,12 @@ async function route(path: string, init: RequestInit = {}): Promise<{ status: nu
   const response = await fetch(`${hub}/__tunnel/fabric-rpc${path}`, {
     method: 'POST',
     ...init,
-    headers: { authorization: `Bearer ${LINK_TOKEN}`, 'content-type': 'application/json', ...(init.headers as Record<string, string> | undefined) },
+    headers: {
+      authorization: `Bearer ${LINK_TOKEN}`,
+      'content-type': 'application/json',
+      'tandem-proof': linkProof(path, init.body as string | undefined, init.method ?? 'POST'),
+      ...(init.headers as Record<string, string> | undefined),
+    },
   })
   return { status: response.status, text: await response.text() }
 }
@@ -115,9 +144,9 @@ const listBody = JSON.stringify({ input: {} })
  * With `answer` it replies 200 to each request with it (a function gets the request frame),
  * after `delayMs`; without, it never replies. `requests` is every request frame it was sent.
  */
-async function fakeHome(id: string, answer?: unknown, { home = true }: { home?: boolean } = {}) {
+async function fakeHome(id: string, answer?: unknown, { home = true, key = standIn }: { home?: boolean; key?: DeviceKey } = {}) {
   const ws = new WebSocket(`${hub.replace(/^http/, 'ws')}/__tunnel/connect?bridge_id=${id}${home ? '&memory_home=1' : ''}`, CCM_TUNNEL_SUBPROTOCOL, {
-    headers: { Authorization: `Bearer ${LINK_TOKEN}` },
+    headers: { Authorization: `Bearer ${LINK_TOKEN}`, 'tandem-proof': hubProofHeader(key, { url: hub, method: 'GET', path: '/__tunnel/connect', id }) },
   })
   const closed = new Promise<number>((resolve) => ws.once('close', (code) => resolve(code)))
   const stand = {
@@ -186,6 +215,7 @@ describe.skipIf(Boolean(missing))(title, () => {
     await startHub('/tmp/r1a23-')
     alpha = await startBridge('alpha', { CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: alphaDb })
     beta = await startBridge('beta')
+    linkAs = { id: 'beta', key: keyIn(beta.home) }
     agentA = await startStdio({ CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: alphaDb })
     agentB = await startStdio({
       TANDEM_HUB_LINK_URL: hub.replace(/^http/, 'ws'),
@@ -193,6 +223,7 @@ describe.skipIf(Boolean(missing))(title, () => {
       TANDEM_HUB_LINK_ID: 'beta',
       CCM_FABRIC_DB_PATH: bDb,
     })
+    sameComputer(beta.home, agentB.home)
   }, 150_000)
 
   afterAll(async () => {
@@ -412,6 +443,9 @@ describe.skipIf(Boolean(missing))('U-R1A-23-R1 audit: the link route, the caller
       TANDEM_HUB_LINK_ID: 'r1a23-beta',
       CCM_FABRIC_DB_PATH: bDb,
     })
+    // This computer's id is bound on the tunnel by its own key, as its bridge would bind it.
+    linkAs = { id: 'r1a23-beta', key: keyIn(agent.home) }
+    await (await fakeHome('r1a23-beta', undefined, { home: false, key: linkAs.key })).close()
     session = await connect()
     owner = await fabricCallerFor('owner')
   }, 150_000)
@@ -435,7 +469,7 @@ describe.skipIf(Boolean(missing))('U-R1A-23-R1 audit: the link route, the caller
       ['401 before 413: a wrong bearer with CAP + 1 bytes', () => route('/fabric/project/list', { body: 'x'.repeat(CAP + 1), headers: { authorization: `Bearer ${'w'.repeat(32)}` } }), 401, 'unauthorized'],
       ['413: CAP + 1 bytes with a declared length', () => route('/fabric/project/list', { body: 'x'.repeat(CAP + 1) }), 413, '{"error":"payload_too_large"}'],
       ['413: twice CAP streamed with no declared length', () => raw('/fabric/project/list', bearer, (r) => { r.write(Buffer.alloc(2 * CAP, 0x78)); r.end() }), 413, '{"error":"payload_too_large"}'],
-      ['503: the call after that refusal is answered, its body streamed with no declared length', () => raw('/fabric/project/list', bearer, (r) => { r.write('{"inp'); r.write('ut":{}}'); r.end() }), 503, JSON.stringify(OFFLINE)],
+      ['503: the call after that refusal is answered, its body streamed with no declared length', () => raw('/fabric/project/list', { ...bearer, 'tandem-proof': linkProof('/fabric/project/list', '{"input":{}}') }, (r) => { r.write('{"inp'); r.write('ut":{}}'); r.end() }), 503, JSON.stringify(OFFLINE)],
       ['400, not 413: exactly CAP bytes that are not JSON', () => route('/fabric/project/list', { body: 'x'.repeat(CAP) }), 400, '{"error":"fabric_request_invalid"}'],
       ['400: an empty body', () => route('/fabric/project/list', { body: '' }), 400, '{"error":"fabric_request_invalid"}'],
       ['400: a JSON array', () => route('/fabric/project/list', { body: '[]' }), 400, '{"error":"fabric_request_invalid"}'],

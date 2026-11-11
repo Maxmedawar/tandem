@@ -33,6 +33,7 @@
     "src",
     "hub/src/protocol.ts",
     "hub/src/bridge-id.ts",
+    "hub/src/devices.ts",
     "harnesses",
     "skills",
     "assets/tandem-logo.png",

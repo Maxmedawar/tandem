@@ -141,6 +141,10 @@ const title = missing
 
 describe.skipIf(Boolean(missing))(title, () => {
   const dbPath = databasePath()
+  // U-R1A-31B: alpha's TANDEM_HOME (and so its device key) outlives its bridge folder, so the
+  // restarted alpha is the same computer to the hub, which binds the id to the first key.
+  const alphaHome = mkdtempSync('/tmp/r1a22-alpha-')
+  folders.push(alphaHome)
   let alpha: Bridge | undefined
   let client: Client | undefined
   let projectId = ''
@@ -158,7 +162,7 @@ describe.skipIf(Boolean(missing))(title, () => {
 
   beforeAll(async () => {
     await startHub('/tmp/r1a22-')
-    alpha = await startBridge('alpha', { CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: dbPath })
+    alpha = await startBridge('alpha', { CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: dbPath, TANDEM_HOME: alphaHome })
     client = await connect()
   }, 150_000)
 
@@ -248,7 +252,7 @@ describe.skipIf(Boolean(missing))(title, () => {
   }, WAIT)
 
   it('alpha restarted without the fabric store: a new session still lists the 11 fabric tools and project_list answers memory_home_offline; the session tools stay', async () => {
-    alpha = await startBridge('alpha')
+    alpha = await startBridge('alpha', { TANDEM_HOME: alphaHome })
     client = await connect()
     const listed = await names(client)
     for (const name of FABRIC_TOOLS) expect(listed).toContain(name)
