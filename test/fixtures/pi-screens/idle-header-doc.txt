@@ -1,0 +1,28 @@
+ pi v0.49.3
+ escape to interrupt
+ ctrl+c to clear
+ ctrl+c twice to exit
+ ctrl+d to exit (empty)
+ ctrl+z to suspend
+ ctrl+k to delete to end
+ shift+tab to cycle thinking level
+ ctrl+p/shift+ctrl+p to cycle models
+ ctrl+l to select model
+ ctrl+o to expand tools
+ ctrl+t to expand thinking
+ ctrl+g for external editor
+ / for commands
+ ! to run bash
+ !! to run bash (no context)
+ alt+enter to queue follow-up
+ alt+up to edit all queued messages
+ ctrl+v to paste image
+ drop files to attach
+
+ Which module or package should I work on?
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+~/workspaces/pi-mono (main)
+↑4.7k ↓44 R3.8k $0.009 (sub) 1.7%/272k (auto)                                                                          (openai-codex) gpt-5.2-codex • medium

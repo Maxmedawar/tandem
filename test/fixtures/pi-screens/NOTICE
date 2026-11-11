@@ -1,0 +1,13 @@
+Pi screens in this folder are plain-text transcriptions (no colour) for harnesses/pi.toml.
+
+idle-doc.txt and idle-header-doc.txt are transcribed from docs/images/interactive-mode.png, a
+pi v0.49.3 screenshot shipped in Pi's own documentation (npm package
+@earendil-works/pi-coding-agent 0.79.7, MIT License per its package.json, author Mario Zechner,
+https://github.com/earendil-works/pi). idle-doc.txt is the bottom of that image: the last
+assistant line, the editor between two rules, the footer's cwd and usage lines.
+idle-header-doc.txt adds the image's startup header hint lines (`pi v0.49.3` through
+`drop files to attach`) above the same bottom.
+
+working-doc.txt is CONSTRUCTED, not a capture: idle-doc.txt with a `⠋ Working...` line above the
+editor, built from the CHANGELOG's text about Pi's default "Working..." message during streaming.
+None of these is a real 0.79.7 screen.
