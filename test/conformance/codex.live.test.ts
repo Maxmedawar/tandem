@@ -11,13 +11,17 @@
  * Drives HarnessSession directly, never route(), so Tandem writes nothing under the real HOME:
  * the owner id is injected and the transcript folder is fixed under a temporary HOME while the
  * bridge modules load (Codex's own files under ~/.codex are expected). No sign-in, no bypass, no
- * account or settings change, never `codex exec`; nothing here answers a Codex prompt.
+ * account or settings change, never `codex exec`; nothing here answers a Codex prompt: every send
+ * waits for an idle screen (an update, trust or approval menu never reads idle), so a menu fails
+ * the step instead of taking the typed text and Enter (a first run typed into the update menu).
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomBytes, randomInt } from "node:crypto";
+import { readScreen } from "../../bridge/harness-detect.ts";
+import type { Harness } from "../../bridge/harness-registry.ts";
 
 const LIVE = process.env.TANDEM_LIVE === "1";
 // Under TMUX_TMPDIR (the run folder), so the run cleanup removes it too.
@@ -54,6 +58,7 @@ const redact = (s: string) =>
   s.split(REAL_HOME).join("<redacted>").replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "<redacted>");
 
 describe.skipIf(!LIVE)("codex live: the built-in harness file through HarnessSession (U-R1A-12)", () => {
+  let codex: Harness;
   let session: InstanceType<typeof mods.HarnessSession>;
   let terminal: Awaited<ReturnType<typeof mods.TerminalSession.spawn>>;
 
@@ -84,6 +89,13 @@ describe.skipIf(!LIVE)("codex live: the built-in harness file through HarnessSes
     throw new Error(`${NAME}: agentState never became ${state} in ${ms} ms; last ${last.agentState}`);
   }
 
+  /** Types only once the screen has read idle (debounced) and still reads idle right before typing. */
+  async function sendWhenIdle(text: string) {
+    await readUntil("idle", 30_000, 0);
+    if (readScreen(codex, await terminal.screen()) !== "idle") throw new Error(`${NAME}: screen left idle; not typing`);
+    return session.send(text);
+  }
+
   beforeAll(() => {
     // Never the default tmux server, where real agents run.
     if (!process.env.TMUX_TMPDIR || process.env.TMUX) throw new Error("live run needs TMUX_TMPDIR set and TMUX unset");
@@ -96,11 +108,11 @@ describe.skipIf(!LIVE)("codex live: the built-in harness file through HarnessSes
 
   it("start: the built-in codex file spawns and reaches its prompt (ready)", () =>
     step(async () => {
-      const codex = mods.loadHarnesses().harnesses.get("codex");
+      codex = mods.loadHarnesses().harnesses.get("codex")!;
       expect(codex?.source).toBe("builtin");
       expect(codex?.programPath).toBeDefined();
       session = await mods.HarnessSession.spawn(
-        codex!,
+        codex,
         { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)] },
         async (o) => (terminal = await mods.TerminalSession.spawn({ ...o, ownerIdProvider: async () => "r1a12-live-owner" })),
       );
@@ -112,7 +124,7 @@ describe.skipIf(!LIVE)("codex live: the built-in harness file through HarnessSes
   it("send: an exact-reply prompt, read until idle with the token in the text", () =>
     step(async () => {
       const token = `TANDEM-OK-${String(randomInt(0, 1_000_000)).padStart(6, "0")}`;
-      const sent = await session.send(`Reply with exactly ${token} and nothing else. Do not run any command.`);
+      const sent = await sendWhenIdle(`Reply with exactly ${token} and nothing else. Do not run any command.`);
       const page = await readUntil("idle", 120_000, sent.cursor);
       expect(sent.report + page.text).toContain(token);
       // The reply itself, not only the echoed prompt.
@@ -122,7 +134,7 @@ describe.skipIf(!LIVE)("codex live: the built-in harness file through HarnessSes
 
   it("interrupt: a long counting task reads working, then idle within 30 s of interrupt(); the session stays alive", () =>
     step(async () => {
-      const sent = await session.send("Count from 1 to 400, one number per line, without running any command.");
+      const sent = await sendWhenIdle("Count from 1 to 400, one number per line, without running any command.");
       const working = await readUntil("working", 60_000, sent.cursor);
       await session.interrupt();
       await readUntil("idle", 30_000, working.cursor);
