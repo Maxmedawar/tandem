@@ -120,6 +120,17 @@ describe('read audit', () => {
     expect(entry).toMatchObject({ route: 'GET /relay/:loopId/read', loopId: 'feedf00d' })
     expect(Object.keys(entry).sort()).toEqual(['loopId', 'route', 'ts'])
   })
+
+  it('a send with empty text is a read (the router returns the transcript), so it adds one line too', async () => {
+    const before = auditLines().length
+    const response = await handleHubRequest(frame('POST', '/sessions/r1a07-probe/send', { body: { text: '' } }))
+    expect(response.status_code).toBe(409) // not live here; a live session answers with its transcript
+    const after = auditLines()
+    expect(after).toHaveLength(before + 1)
+    const entry = after[after.length - 1]
+    expect(entry).toMatchObject({ route: 'POST /sessions/:name/send', name: 'r1a07-probe', read: true })
+    expect(Object.keys(entry).sort()).toEqual(['name', 'read', 'route', 'ts'])
+  })
 })
 
 describe('agent filter (pure)', () => {
@@ -158,6 +169,14 @@ describe('the response frame', () => {
     expect(response.type).toBe(CCM_FRAME_TYPES.httpResponse)
     expect(response.request_id).toBe('keep-me-0123')
     expect(response.headers).toEqual({ 'content-type': ['application/json'] })
+  })
+
+  it('a response frame over the 1 MiB link cap is answered 413 payload_too_large instead', async () => {
+    // The router's 404 names the path, so a long path makes a body over the cap.
+    const response = await handleHubRequest(frame('GET', `/${'x'.repeat(1_100_000)}`))
+    expect(response.status_code).toBe(413)
+    expect(bodyOf(response)).toEqual({ error: 'payload_too_large' })
+    expect(Buffer.byteLength(JSON.stringify(response), 'utf8')).toBeLessThanOrEqual(1_048_576)
   })
 
   it("an unknown path gives the router's 404", async () => {

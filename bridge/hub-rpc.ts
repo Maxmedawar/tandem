@@ -5,9 +5,11 @@
  * The body is base64, then UTF-8, then JSON; no body or bad JSON is `{}`, and any
  * other parsed value goes to route() unchanged so its statuses hold. Hub headers
  * are ignored: none grants or changes anything. A router throw answers 500
- * `internal_error`; its message goes to stderr only.
+ * `internal_error`; its message goes to stderr only. A response frame over the
+ * link cap is answered 413 `payload_too_large` instead of being sent.
  */
 import { audit } from './audit.ts'
+import { MAX_FRAME_BYTES } from './hub-link.ts'
 import { route } from './router.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
 
@@ -32,13 +34,18 @@ function parseBody(base64: string | undefined): unknown {
 }
 
 function response(requestId: string, status: number, body: unknown): CcmHttpResponseFrame {
-  return {
+  const frame: CcmHttpResponseFrame = {
     type: CCM_FRAME_TYPES.httpResponse,
     request_id: requestId,
     status_code: status,
     headers: { 'content-type': ['application/json'] },
     body_base64: Buffer.from(JSON.stringify(body ?? null), 'utf8').toString('base64'),
   }
+  // The link cap holds in this direction too: a frame over it can cost the bridge its socket.
+  if (status !== 413 && Buffer.byteLength(JSON.stringify(frame), 'utf8') > MAX_FRAME_BYTES) {
+    return response(requestId, 413, { error: 'payload_too_large' })
+  }
+  return frame
 }
 
 export async function handleHubRequest(frame: CcmHttpRequestFrame): Promise<CcmHttpResponseFrame> {
@@ -53,6 +60,10 @@ export async function handleHubRequest(frame: CcmHttpRequestFrame): Promise<CcmH
     if (method === 'GET' && parts.length === 3 && parts[2] === 'read') {
       if (parts[0] === 'sessions') audit({ route: 'GET /sessions/:name/read', name: decodeURIComponent(parts[1]) })
       if (parts[0] === 'relay') audit({ route: 'GET /relay/:loopId/read', loopId: decodeURIComponent(parts[1]) })
+    }
+    // A send with empty text is the router's poll mode: it returns the transcript, so it is a read.
+    if (method === 'POST' && parts.length === 3 && parts[0] === 'sessions' && parts[2] === 'send' && !String(body?.['text'] ?? '')) {
+      audit({ route: 'POST /sessions/:name/send', name: decodeURIComponent(parts[1]), read: true })
     }
 
     // ponytail: agent filter here, move into router.route when a later unit owns router.ts.

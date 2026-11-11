@@ -296,6 +296,11 @@ describe.skipIf(Boolean(missing))(title, () => {
       expect(sent).toMatchObject({ name, engine: 'shell' })
       expect(sent.report).toContain(marker)
 
+      // The hub link secret is not in a session's environment: it would let an agent pose as another computer.
+      const probe = await tool('send_to_session', { name, text: `echo ${marker}-[$TANDEM_HUB_LINK_TOKEN]`, machine: id })
+      expect(probe.report).toContain(`${marker}-[]`)
+      expect(JSON.stringify(probe)).not.toContain(LINK_TOKEN)
+
       const read = await tool('read_session', { name, sinceCursor: 0, machine: id })
       expect(read).toMatchObject({ live: true, engine: 'shell' })
       expect(read.text).toContain(marker)
