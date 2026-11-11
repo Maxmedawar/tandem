@@ -38,7 +38,7 @@ export interface Harness {
   has_prompts: boolean
   account_env?: string
   history?: string
-  states?: { working?: string[]; idle?: string[]; waiting_for_approval?: string[]; debounce_ms: number; precedence: StateName[] }
+  states?: { working?: string[]; idle?: string[]; waiting_for_approval?: string[]; empty_prompt?: string[]; debounce_ms: number; precedence: StateName[] }
   keys?: { approve?: KeySpec; deny?: KeySpec; interrupt?: KeySpec }
   dialogs?: Dialog[]
   delivery: 'hook' | 'notice'
@@ -199,7 +199,7 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
   let states: Harness['states']
   const st = table(raw, 'states')
   if (st) {
-    only(st, [...STATE_NAMES, 'debounce_ms', 'precedence'], 'states.')
+    only(st, [...STATE_NAMES, 'empty_prompt', 'debounce_ms', 'precedence'], 'states.')
     const pats: Partial<Record<StateName, string[]>> = {}
     for (const s of STATE_NAMES) {
       pats[s] = strs(st, s, 'states.')
@@ -207,12 +207,17 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
         try { RE2JS.compile(p) } catch { fail(`bad pattern in states.${s}`) }
       }
     }
+    const empty_prompt = strs(st, 'empty_prompt', 'states.')
+    if (empty_prompt !== undefined && (empty_prompt.length < 1 || empty_prompt.length > 8)) fail('bad states.empty_prompt: 1 to 8 patterns')
+    for (const p of empty_prompt ?? []) {
+      try { RE2JS.compile(p) } catch { fail('bad pattern in states.empty_prompt') }
+    }
     const d = st.debounce_ms ?? 1500n
     if (typeof d !== 'bigint') fail('wrong type for states.debounce_ms: expected an integer')
     if ((d as bigint) < 0n || (d as bigint) > 10000n) fail('bad states.debounce_ms: 0 to 10000')
     const precedence = strs(st, 'precedence', 'states.') ?? ['waiting_for_approval', 'working', 'idle']
     if (precedence.length !== 3 || STATE_NAMES.some((s) => !precedence.includes(s))) fail('bad states.precedence: all three state names, each once')
-    states = compact({ ...pats, debounce_ms: Number(d), precedence: precedence as StateName[] })
+    states = compact({ ...pats, empty_prompt, debounce_ms: Number(d), precedence: precedence as StateName[] })
   }
 
   let keys: Harness['keys']

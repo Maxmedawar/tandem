@@ -29,6 +29,9 @@ working = [
   '(?i)\([^)]*\d[^)]*tokens\s*\)',
 ]
 idle = ['^─{20,}[ \t]*\n❯(?:[ \t\x{A0}][^\n]*)?\n─{20,}']
+# U-R1A-18D: an agent's text enters only this box empty: nothing typed, or one of claude 2.1.321's eight placeholder templates (Try "...").
+# Only the last box counts: no line after it starts a border (an older box left above the one in use is not the prompt).
+empty_prompt = ['^─{20,}[ \t]*\n❯(?:[ \t\x{A0}]*|[ \t\x{A0}]Try "(?:fix lint errors|fix typecheck errors|how does [^\s"]+ work\?|refactor [^\s"]+|how do I log an error\?|edit [^\s"]+ to\.\.\.|write a test for [^\s"]+|create a util logging\.py that\.\.\.)"[ \t\x{A0}]*)\n─{20,}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z']
 debounce_ms = 2250
 
 [keys]
