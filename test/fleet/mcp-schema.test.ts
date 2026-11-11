@@ -33,15 +33,17 @@ afterEach(async () => {
 });
 
 describe("buildMcpServer: list_devices tool (binding — correction 10)", () => {
-  it("is registered even with no remote fleet runtime, and returns the local hub", async () => {
+  it("is registered even with no remote fleet runtime, and returns the local hub with no agent on by default", async () => {
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", undefined);
     const { server, client } = await connectedClient(undefined);
+    vi.unstubAllEnvs();
     cleanups.push(async () => {
       await client.close();
       await server.close();
     });
     const result = await client.callTool({ name: "list_devices", arguments: {} });
     const text = (result.content as Array<{ type: string; text: string }>)[0]!.text;
-    expect(JSON.parse(text)).toEqual({ devices: [{ id: "local", name: "local", online: true, engines: ["claude"] }] });
+    expect(JSON.parse(text)).toEqual({ devices: [{ id: "local", name: "local", online: true, engines: [] }] });
   });
 
   it("returns exactly {id,name,online,engines} per device when a fleet runtime is supplied", async () => {

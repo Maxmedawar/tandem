@@ -1,12 +1,14 @@
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   parseEngineId,
   buildEnabledEngines,
+  enabledEngineIds,
   resolveEngine,
   capabilityReport,
+  loadedHarnesses,
   resetHarnessCache,
   UnknownEngineError,
   EngineDisabledError,
@@ -14,19 +16,25 @@ import {
   KNOWN_ENGINE_IDS,
 } from "../bridge/engine-registry.ts";
 
-// codex runs from its built-in harness file: its presence is the file's programPath, found on PATH.
-const tmp = mkdtempSync(join(tmpdir(), "r1a12-registry-"));
-const CODEX_BIN = join(tmp, "bin");
-mkdirSync(CODEX_BIN);
-writeFileSync(join(CODEX_BIN, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
-/** PATH holds a fake `codex` (never run) or nothing; no owner harness files. */
-function codexOnPath(present: boolean): void {
-  vi.stubEnv("TANDEM_HOME", join(tmp, "empty-home"));
-  vi.stubEnv("PATH", present ? CODEX_BIN : join(tmp, "no-such-bin"));
+// U-R1A-13: no agent is on by default; claude, codex and shell run from their built-in harness
+// files and need their program on PATH. The fakes below are never run.
+const BUILTIN = fileURLToPath(new URL("../harnesses/", import.meta.url));
+const tmp = mkdtempSync("/tmp/r1a13-registry-");
+const BIN = join(tmp, "bin");
+const EMPTY_BIN = join(tmp, "empty-bin");
+mkdirSync(BIN);
+mkdirSync(EMPTY_BIN);
+for (const p of ["claude", "codex", "sh"]) writeFileSync(join(BIN, p), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+/** PATH starts with the fake programs or with an empty folder; no owner harness files. */
+function programsOnPath(present: boolean, tandemHome = join(tmp, "empty-home")): void {
+  vi.stubEnv("TANDEM_HOME", tandemHome);
+  vi.stubEnv("PATH", `${present ? BIN : EMPTY_BIN}:/usr/bin:/bin`);
   resetHarnessCache();
 }
 afterEach(() => {
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
   resetHarnessCache();
 });
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
@@ -42,134 +50,110 @@ describe("parseEngineId — strict known-id parsing", () => {
   });
 });
 
-describe("buildEnabledEngines — claude-only default, explicit opt-in for others", () => {
-  it("unset/blank enables only claude", () => {
-    expect([...buildEnabledEngines(undefined)]).toEqual(["claude"]);
-    expect([...buildEnabledEngines("   ")]).toEqual(["claude"]);
+describe("buildEnabledEngines — no agent on by default, explicit opt-in only", () => {
+  it("unset and blank enable nothing", () => {
+    programsOnPath(true);
+    expect([...buildEnabledEngines(undefined)]).toEqual([]);
+    expect([...buildEnabledEngines("   ")]).toEqual([]);
+    expect([...enabledEngineIds(undefined)]).toEqual([]);
+    expect([...enabledEngineIds("")]).toEqual([]);
   });
-  it("adds explicitly listed engines", () => {
-    const enabled = buildEnabledEngines("codex:shell");
-    expect(enabled.has("claude")).toBe(true);
-    expect(enabled.has("codex")).toBe(true);
-    expect(enabled.has("shell")).toBe(true);
-    expect(enabled.has("hermes")).toBe(false);
-  });
-  it("accepts comma-separated and mixed delimiters", () => {
-    expect([...buildEnabledEngines("codex, shell:hermes")].sort()).toEqual([
-      "claude",
-      "codex",
-      "hermes",
-      "shell",
-    ]);
+  it("adds only the listed engines, any delimiter", () => {
+    expect([...buildEnabledEngines("codex:shell")].sort()).toEqual(["codex", "shell"]);
+    expect([...buildEnabledEngines("claude, shell:hermes")].sort()).toEqual(["claude", "hermes", "shell"]);
   });
   it("throws UnknownEngineError for a garbage entry", () => {
     expect(() => buildEnabledEngines("codex:not-a-real-engine")).toThrow(UnknownEngineError);
   });
 });
 
-describe("resolveEngine — order: parse -> enabled -> executable-available", () => {
-  it("defaults to claude when no id is given", async () => {
-    const resolution = await resolveEngine(undefined, { enabledEngines: new Set(["claude"]) });
-    expect(resolution.id).toBe("claude");
-    expect(resolution.harness?.name).toBe("claude");
-  });
-
-  it("claude is EXEMPT from the executable-presence check (no regression from Phase 1, no subprocess on the hot path)", async () => {
-    let called = false;
-    const resolution = await resolveEngine("claude", {
-      enabledEngines: new Set(["claude"]),
-      detectExecutable: async () => {
-        called = true;
-        return false; // even a detector that says "missing" must not block claude
-      },
-    });
-    expect(resolution.id).toBe("claude");
-    expect(called).toBe(false);
+describe("resolveEngine — order: engine given -> known -> enabled -> program found", () => {
+  it("no engine (undefined or blank) throws `engine is required` naming the enabled agents", async () => {
+    programsOnPath(true);
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", undefined);
+    for (const raw of [undefined, "", "  "]) {
+      await expect(resolveEngine(raw)).rejects.toThrow(UnknownEngineError);
+      await expect(resolveEngine(raw)).rejects.toThrow("engine is required. Enabled: none");
+    }
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", "shell,codex");
+    await expect(resolveEngine(undefined)).rejects.toThrow("engine is required. Enabled: codex, shell");
+    await expect(resolveEngine("", { enabledEngines: new Set(["shell", "claude"]) })).rejects.toThrow(
+      "engine is required. Enabled: claude, shell",
+    );
   });
 
   it("throws UnknownEngineError for a garbage id", async () => {
     await expect(resolveEngine("not-a-real-engine")).rejects.toThrow(UnknownEngineError);
   });
 
-  it("throws EngineDisabledError for a known id not in the enabled set", async () => {
-    await expect(
-      resolveEngine("codex", { enabledEngines: new Set(["claude"]) }),
-    ).rejects.toThrow(EngineDisabledError);
+  it("throws EngineDisabledError for a known id not enabled, before the program check", async () => {
+    programsOnPath(false);
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", undefined);
+    for (const id of KNOWN_ENGINE_IDS) {
+      await expect(resolveEngine(id)).rejects.toThrow(EngineDisabledError);
+    }
+    await expect(resolveEngine("codex", { enabledEngines: new Set(["claude"]) })).rejects.toThrow(EngineDisabledError);
   });
 
-  it("throws EngineUnavailableError when enabled but no codex is on PATH", async () => {
-    codexOnPath(false);
-    await expect(
-      resolveEngine("codex", {
-        enabledEngines: new Set(["claude", "codex"]),
-      }),
-    ).rejects.toThrow(EngineUnavailableError);
+  it("claude enabled with no claude on PATH is EngineUnavailableError naming the program", async () => {
+    programsOnPath(false);
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", "claude");
+    await expect(resolveEngine("claude")).rejects.toThrow(EngineUnavailableError);
+    await expect(resolveEngine("claude")).rejects.toThrow(/program "claude" was not found/);
   });
 
-  it("succeeds when enabled and a codex is on PATH: the built-in codex harness file", async () => {
-    codexOnPath(true);
-    const resolution = await resolveEngine("codex", {
-      enabledEngines: new Set(["claude", "codex"]),
-    });
-    expect(resolution.id).toBe("codex");
-    expect(resolution.harness?.name).toBe("codex");
-    expect(resolution.harness?.programPath).toBe(join(CODEX_BIN, "codex"));
+  it("claude, codex and shell each resolve to their built-in file with a fake program first on PATH", async () => {
+    programsOnPath(true);
+    const program: Record<string, string> = { claude: "claude", codex: "codex", shell: "sh" };
+    for (const id of ["claude", "codex", "shell"]) {
+      const r = await resolveEngine(id, { enabledEngines: new Set([id]) });
+      expect(r.id).toBe(id);
+      expect(r.harness?.source).toBe("builtin");
+      expect(r.harness?.file).toBe(join(BUILTIN, `${id}.toml`));
+      expect(r.harness?.programPath).toBe(join(BIN, program[id]!));
+      expect(r).not.toHaveProperty("descriptor");
+    }
   });
 
-  it("shell needs no executable check (no fixed binary) even with a detector that always fails", async () => {
-    const resolution = await resolveEngine("shell", {
-      enabledEngines: new Set(["claude", "shell"]),
-      detectExecutable: async () => false,
-    });
-    expect(resolution.id).toBe("shell");
+  it("hermes resolves with no harness (its code path until U-R1A-16)", async () => {
+    programsOnPath(false);
+    const r = await resolveEngine("hermes", { enabledEngines: new Set(["hermes"]) });
+    expect(r).toEqual({ id: "hermes" });
   });
 
-  it("hermes has no tmux descriptor and needs no executable check", async () => {
-    const resolution = await resolveEngine("hermes", {
-      enabledEngines: new Set(["claude", "hermes"]),
-      detectExecutable: async () => false,
-    });
-    expect(resolution.id).toBe("hermes");
-    expect(resolution.descriptor).toBeUndefined();
-  });
-
-  it("never calls the detector for a disabled engine (enablement checked first)", async () => {
-    let called = false;
-    await expect(
-      resolveEngine("codex", {
-        enabledEngines: new Set(["claude"]),
-        detectExecutable: async () => {
-          called = true;
-          return true;
-        },
-      }),
-    ).rejects.toThrow(EngineDisabledError);
-    expect(called).toBe(false);
+  it("an owner file named like a built-in id is skipped with its stderr line", async () => {
+    const home = mkdtempSync(join(tmp, "home-"));
+    const owner = join(home, "harnesses");
+    mkdirSync(owner);
+    chmodSync(owner, 0o700);
+    writeFileSync(join(owner, "hermes.toml"), 'name = "hermes"\nprogram = "/bin/sh"\nhas_prompts = false\n', { mode: 0o600 });
+    programsOnPath(true, home);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+    expect(loadedHarnesses().has("hermes")).toBe(false);
+    expect(stderr.mock.calls.map((c) => String(c[0]))).toContainEqual(
+      `[bridge] harness file skipped: ${join(owner, "hermes.toml")}: "hermes" keeps its built-in engine\n`,
+    );
+    expect(await resolveEngine("hermes", { enabledEngines: new Set(["hermes"]) })).toEqual({ id: "hermes" });
   });
 });
 
 describe("capabilityReport", () => {
-  it("reports every known engine with enabled/available flags (codex: its file's programPath)", async () => {
-    codexOnPath(true);
-    const report = await capabilityReport({
-      enabledEngines: new Set(["claude", "codex"]),
-    });
-    const byEngine = Object.fromEntries(report.map((r) => [r.engine, r]));
-    expect(byEngine.claude).toEqual({ engine: "claude", enabled: true, available: true });
-    expect(byEngine.codex).toEqual({ engine: "codex", enabled: true, available: true });
-    expect(byEngine.shell).toEqual({ engine: "shell", enabled: false, available: false });
-    expect(byEngine.hermes).toEqual({ engine: "hermes", enabled: false, available: false });
-    codexOnPath(false);
-    const missing = await capabilityReport({ enabledEngines: new Set(["claude", "codex"]) });
-    expect(missing.find((r) => r.engine === "codex")).toEqual({ engine: "codex", enabled: true, available: false });
-  });
-
-  it("shell is available when enabled regardless of the detector", async () => {
-    const report = await capabilityReport({
-      enabledEngines: new Set(["claude", "shell"]),
-      detectExecutable: async () => false,
-    });
-    const shell = report.find((r) => r.engine === "shell");
-    expect(shell).toEqual({ engine: "shell", enabled: true, available: true });
+  it("available = the built-in file's programPath is set; hermes true; disabled false", async () => {
+    programsOnPath(true);
+    const all = new Set(["claude", "codex", "shell", "hermes"]);
+    expect(await capabilityReport({ enabledEngines: all })).toEqual([
+      { engine: "claude", enabled: true, available: true },
+      { engine: "codex", enabled: true, available: true },
+      { engine: "shell", enabled: true, available: true },
+      { engine: "hermes", enabled: true, available: true },
+    ]);
+    programsOnPath(false);
+    // /usr/bin or /bin may still hold a sh; claude and codex are never there.
+    const missing = Object.fromEntries((await capabilityReport({ enabledEngines: all })).map((r) => [r.engine, r.available]));
+    expect(missing.claude).toBe(false);
+    expect(missing.codex).toBe(false);
+    expect(missing.hermes).toBe(true);
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", undefined);
+    expect(await capabilityReport()).toEqual(KNOWN_ENGINE_IDS.map((engine) => ({ engine, enabled: false, available: false })));
   });
 });

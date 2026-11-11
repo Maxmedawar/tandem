@@ -333,7 +333,7 @@ describe.skipIf(Boolean(missing))(title, () => {
       const bridge = bridges[id]
       const elsewhere = bridges[other(id)]
       const started = await tool('start_relay', { goal: 'e2e goal', cwd: bridges.alpha.folder, machine: id })
-      if (id === 'alpha') expect(started.error).toMatch(/^relay refused to start/) // 400: no bypass
+      if (id === 'alpha') expect(started.error).toMatch(/^engine "claude" is disabled/) // 403: claude not enabled
       else expect(started.error).toBe(`cwd not allowed: ${bridges.alpha.folder}`) // 403: not beta's folder
 
       const loopId = `${id}-loop-${rand(8)}`

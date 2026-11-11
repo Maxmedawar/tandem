@@ -36,14 +36,11 @@ import { readSessionProvenance } from './terminal-session.ts'
 const HOME = homedir()
 const SESSION_PREFIX = 'ccm-'
 
-/** Built-in engine ids that are tmux-hosted (i.e. can appear as a ccm-* tmux session).
- *  `hermes` is intentionally excluded — it is never tmux-hosted, so a tmux
- *  session claiming `@tandem_engine=hermes` is never valid provenance. */
-const TMUX_ENGINE_IDS = new Set<EngineId>(['claude', 'codex', 'shell'])
-
-/** A tmux engine tag is valid provenance when it names a tmux built-in or a loaded harness file. */
+/** A tmux engine tag is valid provenance when it names a loaded harness file (the built-in
+ *  claude, codex and shell files included). `hermes` has no file and is never tmux-hosted, so a
+ *  tmux session claiming `@tandem_engine=hermes` is never valid provenance. */
 function isTmuxEngineTag(tag: string): boolean {
-  return TMUX_ENGINE_IDS.has(tag) || loadedHarnesses().has(tag)
+  return loadedHarnesses().has(tag)
 }
 
 const SESSION_NAME_RE = /^[A-Za-z0-9._-]+$/

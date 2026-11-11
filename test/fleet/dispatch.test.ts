@@ -29,6 +29,9 @@ type FleetRuntime = import("../../bridge/fleet-runtime.ts").FleetRuntime;
 type FleetBroker = import("../../bridge/fleet-broker.ts").FleetBroker;
 type FleetSocket = import("../../bridge/fleet-registry.ts").FleetSocket;
 
+/** The hub with claude enabled: no agent is on by default, so these routing cases enable it. */
+const LOCAL_CLAUDE = { id: "local", name: "local", online: true, engines: ["claude"] };
+
 function fakeSocket(): FleetSocket {
   return { send: () => {}, close: () => {}, bufferedAmount: 0 };
 }
@@ -94,14 +97,14 @@ describe("resolveExistingTarget (binding — correction 2)", () => {
 describe("resolveOpenDevice (binding — correction 2)", () => {
   it("resolves to local when no fleet device is online (backward compatible)", () => {
     const registry = createFleetRegistry();
-    const runtime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler() };
+    const runtime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler(), localDevice: LOCAL_CLAUDE };
     expect(resolveOpenDevice(runtime, undefined, "claude")).toBeUndefined();
   });
 
   it("device='local' always resolves to local even with other devices online", () => {
     const registry = createFleetRegistry();
     registry.register("device-a", "studio", ["claude"], fakeSocket());
-    const runtime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler() };
+    const runtime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler(), localDevice: LOCAL_CLAUDE };
     expect(resolveOpenDevice(runtime, "local", "claude")).toBeUndefined();
   });
 
@@ -121,7 +124,7 @@ describe("resolveOpenDevice (binding — correction 2)", () => {
   it("local is a candidate too: with one remote device also capable, ambiguity fails deterministically listing both", () => {
     const registry = createFleetRegistry();
     registry.register("device-a", "studio", ["claude"], fakeSocket());
-    const runtime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler() };
+    const runtime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler(), localDevice: LOCAL_CLAUDE };
     try {
       resolveOpenDevice(runtime, undefined, "claude");
       throw new Error("expected DeviceAmbiguousError");
@@ -198,7 +201,7 @@ describe("dispatchOpenSession: remote responses never return a bare name (bindin
     // tmux/engine process), dispatch must not alter it in any way when the
     // call resolves to local.
     const registry = createFleetRegistry();
-    const runtime: FleetRuntime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler() };
+    const runtime: FleetRuntime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler(), localDevice: LOCAL_CLAUDE };
     const direct = await routeForTest("POST", "/sessions/open", { name: "local-sess-direct", engine: "claude" });
     const result = await dispatchOpenSession(runtime, { name: "local-sess-dispatch", engine: "claude" });
     expect(result.status).toBe(direct.status);
@@ -210,7 +213,7 @@ describe("dispatchOpenSession: remote responses never return a bare name (bindin
   it("an ambiguous open returns 409 with candidates, never silently picking one", async () => {
     const registry = createFleetRegistry();
     registry.register("device-a", "studio", ["claude"], fakeSocket());
-    const runtime: FleetRuntime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler() };
+    const runtime: FleetRuntime = { registry, broker: scriptedBroker(async () => ({ status: 200, body: {} })), scheduler: createFleetScheduler(), localDevice: LOCAL_CLAUDE };
     const result = await dispatchOpenSession(runtime, { engine: "claude" });
     expect(result.status).toBe(409);
   });

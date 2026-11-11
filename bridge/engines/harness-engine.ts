@@ -1,8 +1,8 @@
 /**
  * engines/harness-engine.ts — the one engine that runs any CLI agent from its harness file
- * (harnesses/SCHEMA.md), Claude Code included (harnesses/claude.toml). A thin binding of the
- * shared TerminalAdapterSession (./terminal-adapter.ts), like engines/shell.ts: the file gives
- * the argv, the screen rules and the interrupt keys, so a new agent is one file and no code.
+ * (harnesses/SCHEMA.md), the built-in claude, codex and shell files included. A thin binding of
+ * the shared TerminalAdapterSession (./terminal-adapter.ts): the file gives the argv, the screen
+ * rules and the interrupt keys, so a new agent is one file and no code.
  *
  * Gates (enabled, `shell` for a shell program, program found) live in engine-registry.ts;
  * model/effort/bypass stay Claude-only and are refused, never ignored.
@@ -28,26 +28,25 @@ export interface HarnessSpawnOptions {
 
 /**
  * The descriptor a harness file makes. argv is `/usr/bin/env -- <programPath> ...args`, so
- * tmux always gets 3+ arguments and never runs `sh -c` (decision D7). With an `idle` rule the
- * screen rules say ready and working; without one the agent is markerless (5000 ms), so its
- * turns end `quiet`.
+ * tmux always gets 3+ arguments and never runs `sh -c` (decision D7); no program found throws
+ * (the registry answers 503 before this runs). With an `idle` rule the screen rules say ready
+ * and working; without one the agent is markerless, so its turns end `quiet` once the screen
+ * holds still for `states.debounce_ms` (5000 ms when the file has no `states` table).
  */
 export function harnessDescriptor(h: Harness): EngineDescriptor {
-  // ponytail: claude keeps its no-presence-check exemption (a missing claude fails at spawn, as
-  // before the harness file); U-R1A-13 drops it.
-  const program = h.programPath ?? (h.name === 'claude' ? h.program : undefined)
-  if (!program) throw new Error(`harness "${h.name}": program "${h.program}" was not found`)
-  const argv = ['/usr/bin/env', '--', program, ...h.args]
+  if (!h.programPath) throw new Error(`harness "${h.name}": program "${h.program}" was not found`)
+  const argv = ['/usr/bin/env', '--', h.programPath, ...h.args]
+  const minStableMs = h.states?.debounce_ms ?? 5000
   if (h.states?.idle?.length) {
     return {
       id: h.name,
       argv,
       isReady: (pane: string) => readScreen(h, pane) === 'idle',
       isWorking: (pane: string) => readScreen(h, pane) !== 'idle',
-      minStableMs: h.states.debounce_ms,
+      minStableMs,
     }
   }
-  return { id: h.name, argv, minStableMs: 5000 }
+  return { id: h.name, argv, minStableMs }
 }
 
 export class HarnessSession extends TerminalAdapterSession {

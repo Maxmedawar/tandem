@@ -10,7 +10,7 @@ The normal installation has one Tailscale hub and zero or more outbound device b
 - `tailscale up` completed on each machine
 - Claude Code, or an explicitly enabled supported engine
 
-Claude is the only default engine. Codex, shell, and Hermes require `TANDEM_ENABLED_ENGINES`.
+No engine is on by default. Each one, Claude included, needs `TANDEM_ENABLED_ENGINES`.
 
 ## 1. Configure the hub
 

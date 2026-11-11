@@ -73,7 +73,7 @@ describe("two-device routing (spec: exact routing across two simulated devices)"
     const devices = (result.body as { devices: unknown[] }).devices;
     expect(devices).toEqual(
       expect.arrayContaining([
-        { id: "local", name: "local", online: true, engines: ["claude"] },
+        { id: "local", name: "local", online: true, engines: [] }, // no agent is on by default
         { id: "device-alpha", name: "alpha-studio", online: true, engines: ["claude"] },
         { id: "device-beta", name: "beta-laptop", online: true, engines: ["claude", "codex"] },
       ]),

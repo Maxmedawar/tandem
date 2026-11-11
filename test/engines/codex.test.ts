@@ -126,7 +126,7 @@ describe("codex: the built-in harness file", () => {
     vi.stubEnv("TANDEM_ENABLED_ENGINES", "codex");
     const r = await resolveEngine("codex");
     expect(r.id).toBe("codex");
-    expect(r.descriptor).toBeUndefined();
+    expect(r).not.toHaveProperty("descriptor");
     expect(r.harness?.file).toBe(join(BUILTIN, "codex.toml"));
     expect(r.harness?.programPath).toBe(FAKE_CODEX);
 

@@ -1,0 +1,14 @@
+# Plain POSIX shell, started as a login shell. It has no fixed prompt (PS1 differs per user), so
+# there is no idle rule: it is markerless and a turn ends `quiet` once the screen holds still for
+# debounce_ms (1500 ms, the shell floor). It is `sh`, not $SHELL: a harness file names one fixed
+# program; for zsh write an owner zsh.toml (kind shell, so `shell` must be enabled too).
+name = "shell"
+program = "sh"
+args = ["-l"]
+has_prompts = false
+
+[states]
+debounce_ms = 1500
+
+[keys]
+interrupt = "C-c"

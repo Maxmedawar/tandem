@@ -39,7 +39,7 @@
  *
  * Config (env): TANDEM_CWD_ALLOWLIST / TANDEM_DEFAULT_CWD are mapped to the
  * engine's CCM_* names by the entrypoint before this module loads.
- * TANDEM_ENABLED_ENGINES opts non-default engines in (see engine-registry.ts).
+ * TANDEM_ENABLED_ENGINES opts engines in; none is on by default (see engine-registry.ts).
  */
 
 import { homedir } from 'node:os'
@@ -52,7 +52,6 @@ import {
   EngineDisabledError,
   EngineUnavailableError,
 } from './engine-registry.ts'
-import { ShellSession } from './engines/shell.ts'
 import { HarnessSession } from './engines/harness-engine.ts'
 import { HermesSession, loadHermesConfig } from './engines/hermes.ts'
 import {
@@ -242,19 +241,16 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
   }
 
   // Resolve + validate the engine FIRST — before any cwd/tmux/network side
-  // effect (binding — Phase 2 correction E). Defaults to "claude" (the only
-  // engine enabled by default); codex/shell/hermes require explicit opt-in via
-  // TANDEM_ENABLED_ENGINES.
+  // effect (binding — Phase 2 correction E). No engine is on by default and an
+  // open must name one (400 naming the enabled ones); each engine needs explicit
+  // opt-in via TANDEM_ENABLED_ENGINES.
   const rawEngine = req.body['engine'] !== undefined ? String(req.body['engine']) : undefined
   let engine: EngineId
   let harness: Harness | undefined
   try {
     ;({ id: engine, harness } = await resolveEngine(rawEngine))
   } catch (e) {
-    if (e instanceof UnknownEngineError) return err(400, e.message)
-    if (e instanceof EngineDisabledError) return err(403, e.message)
-    if (e instanceof EngineUnavailableError) return err(503, e.message)
-    return err(500, e instanceof Error ? e.message : String(e))
+    return engineError(e)
   }
 
   // An engine mismatch on name reuse is rejected before any further work,
@@ -268,7 +264,16 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
   if (engine === 'hermes') {
     return handleOpenHermes(name, req)
   }
+  if (!harness) return err(503, `engine "${engine}" has no harness file loaded`)
   return handleOpenTmux(engine, name, req, harness)
+}
+
+/** resolveEngine's typed errors as router answers: unknown or missing 400, disabled 403, program missing 503. */
+function engineError(e: unknown): RpcResult {
+  if (e instanceof UnknownEngineError) return err(400, e.message)
+  if (e instanceof EngineDisabledError) return err(403, e.message)
+  if (e instanceof EngineUnavailableError) return err(503, e.message)
+  return err(500, e instanceof Error ? e.message : String(e))
 }
 
 /** open_session for the `hermes` engine: attach to an existing, explicitly
@@ -328,9 +333,9 @@ async function handleOpenHermes(name: string, req: RpcRequest): Promise<RpcResul
   }
 }
 
-/** open_session for shell and harness engines (claude and codex included): the shared tmux
+/** open_session for harness engines (claude, codex and shell included): the shared tmux
  *  lifecycle, generalized from Phase 1's Claude-only path. model/effort remain Claude-only. */
-async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, harness?: Harness): Promise<RpcResult> {
+async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, harness: Harness): Promise<RpcResult> {
   // Per-session model/effort (optional, Claude only — binding Phase 2 correction
   // C: no silent option loss for codex/shell). Validated up front so a bad value
   // fails as a clean 400 rather than a generic 500 from spawn.
@@ -376,18 +381,15 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
 
   // Re-adopt a ccm-* session that survived a bridge restart (re-validates
-  // provenance tags + cwd). Claude and codex sessions keep the tags `claude` and
-  // `codex`, so live ones started before they ran from their harness files are adopted too.
-  const adopted = harness
-    ? await HarnessSession.attachExisting(harness, name, ALLOWLIST)
-    : await ShellSession.attachExisting(name, ALLOWLIST)
+  // provenance tags + cwd). Built-in engines keep their ids as tags, so live ones
+  // started before they ran from their harness files are adopted too.
+  const adopted = await HarnessSession.attachExisting(harness, name, ALLOWLIST)
   if (adopted) {
     registerLive(adopted)
     audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, adopted: true })
     return ok({ name: adopted.id, engine, cwd: adopted.cwd, attachHint: adopted.attachHint(), reused: true })
   }
-  const stillExists = harness ? await HarnessSession.exists(name) : await ShellSession.exists(name)
-  if (stillExists) {
+  if (await HarnessSession.exists(name)) {
     audit({ route: 'POST /sessions/open', name, engine, denied: 'adopt-provenance-or-cwd' })
     return err(
       403,
@@ -396,9 +398,7 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
 
   try {
-    const session = harness
-      ? await HarnessSession.spawn(harness, { name, cwd, allowlist: ALLOWLIST, model, effort })
-      : await ShellSession.spawn({ name, cwd, allowlist: ALLOWLIST })
+    const session = await HarnessSession.spawn(harness, { name, cwd, allowlist: ALLOWLIST, model, effort })
     registerLive(session)
     audit({ route: 'POST /sessions/open', name: session.id, engine, cwd, model, effort, ready: session.ready })
     // Surface readiness: when the TUI did NOT reach its prompt (the classic
@@ -528,6 +528,12 @@ async function handleRelayStart(req: RpcRequest): Promise<RpcResult> {
   const cwdInput = req.body['cwd'] !== undefined ? String(req.body['cwd']) : DEFAULT_CWD
   if (!isCwdAllowed(cwdInput, ALLOWLIST)) return err(403, `cwd not allowed: ${cwdInput}`)
   const cwd = safeResolve(cwdInput)
+  // The relay runs two Claude Code sessions: claude must be enabled and found, as for an open.
+  try {
+    await resolveEngine('claude')
+  } catch (e) {
+    return engineError(e)
+  }
   const maxTurns = req.body['maxTurns'] !== undefined ? Number(req.body['maxTurns']) : undefined
   const context = req.body['context'] !== undefined ? String(req.body['context']) : undefined
 
