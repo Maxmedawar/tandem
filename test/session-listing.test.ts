@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DrivableSession, EngineId } from '../bridge/drivable.ts'
 import { resetHarnessCache } from '../bridge/engine-registry.ts'
-import { listSessions, registerLive, unregisterLive } from '../bridge/sessions.ts'
+import { listLiveTmuxSessions, listSessions, registerLive, unregisterLive } from '../bridge/sessions.ts'
 
 const registered: string[] = []
 
@@ -98,11 +98,15 @@ describe('listSessions privacy and admission filters', () => {
       'ccm-fa-live\t200\t/allowed/project',
       'ccm-nobody\t201\t/allowed/project',
       'ccm-cl\t202\t/allowed/project',
+      'ccm-fa-other\t203\t/allowed/project',
+      'ccm-cl-other\t204\t/allowed/project',
     ].join('\n')
     const provenance: Record<string, { engine: string; owner: string }> = {
       'fa-live': { engine: 'fake-agent', owner: 'owner-a' },
       nobody: { engine: 'no-such-agent', owner: 'owner-a' },
       cl: { engine: 'claude', owner: 'owner-a' },
+      'fa-other': { engine: 'fake-agent', owner: 'owner-b' },
+      'cl-other': { engine: 'claude', owner: 'owner-b' },
     }
     const listingDependencies = {
       ownerIdProvider: async () => 'owner-a',
@@ -143,6 +147,15 @@ describe('listSessions privacy and admission filters', () => {
       })
       expect(result.sessions.map((s) => s.id)).not.toContain('nobody')
       expect(result.sessions.map((s) => s.id).sort()).toEqual(['cl', 'fa-live', 'fa-reg'])
+    })
+
+    it('the restart listing shows the owner\'s harness and claude sessions, never another owner\'s', async () => {
+      withHarness('fake-agent')
+      const live = await listLiveTmuxSessions(listingDependencies)
+      expect(live.map((s) => [s.name, s.engine])).toEqual([
+        ['fa-live', 'fake-agent'],
+        ['cl', 'claude'],
+      ])
     })
 
     it('claude rows are unchanged', async () => {

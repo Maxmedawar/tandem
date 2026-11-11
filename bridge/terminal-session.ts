@@ -357,11 +357,20 @@ export function describeMarkerlessReadiness(
   return formatUnreadyMessage(pane, load1, cpuCount, name)
 }
 
-/** The keys that answer Claude's trust-folder dialog "yes, I trust this folder". Claude Code
- *  2.1.321 highlights "No, exit" first, where a plain Enter would exit; then Down comes first. */
-export function trustAnswerKeys(pane: string): string[] {
-  const selected = pane.split('\n').find((l) => l.trimStart().startsWith('❯')) ?? ''
-  return /\bno\b/i.test(selected) ? ['Down', 'Enter'] : ['Enter']
+/** The one key this screen poll sends to Claude's trust-folder dialog: Enter only when the
+ *  highlight (`❯`) is on "Yes, I trust this folder", else one arrow toward it (the list wraps, so
+ *  never a blind Down+Enter; Claude Code 2.1.321 highlights "No, exit" first, older versions "Yes").
+ *  Undefined unless the highlight and that option sit in one block of option lines, so another
+ *  dialog (bypass warning, update prompt) or the prompt box never gets a key. */
+export function trustAnswerKey(pane: string): 'Enter' | 'Down' | 'Up' | undefined {
+  const lines = pane.split('\n')
+  const yes = lines.findIndex((l) => /^\s*(?:❯\s*)?(?:\d+\.\s*)?yes, i trust this folder\b/i.test(l))
+  if (yes < 0) return undefined
+  const inBlock = (i: number) => (lines[i] ?? '').trim() !== '' && !/^\s*─/.test(lines[i]!)
+  const highlighted = (i: number) => lines[i]!.trimStart().startsWith('❯')
+  for (let i = yes; inBlock(i); i--) if (highlighted(i)) return i === yes ? 'Enter' : 'Down'
+  for (let i = yes + 1; inBlock(i); i++) if (highlighted(i)) return 'Up'
+  return undefined
 }
 
 /** Stability-tracking state threaded through stepStability() across polls. */
@@ -710,17 +719,18 @@ export class TerminalSession {
     // Claude's own dialogs only: another agent's trust dialog never gets a key it was not sent.
     const isClaude = this.descriptor.id === 'claude'
     let trusted = false
+    let movedOn: string | undefined // the screen the last trust arrow was sent on
     let bypassAccepted = false
     while (Date.now() < deadline) {
       const pane = await this.capture()
       const lower = pane.toLowerCase()
-      if (isClaude && !trusted && lower.includes(TRUST_PROMPT_MARKER)) {
-        // Confirm "Yes, I trust this folder" (Enter, after a Down when "No, exit" is highlighted).
-        for (const [i, key] of trustAnswerKeys(pane).entries()) {
-          if (i > 0) await sleep(150)
-          await tmux(['send-keys', '-t', this.tmuxTarget, key])
-        }
-        trusted = true
+      const trustKey: string | undefined = isClaude && !trusted && lower.includes(TRUST_PROMPT_MARKER) ? trustAnswerKey(pane) : undefined
+      // One key per poll toward "Yes, I trust this folder", Enter only once it is highlighted; no
+      // next key until the screen shows the last arrow landed (a slow TUI never gets two in flight).
+      if (trustKey && pane !== movedOn) {
+        await tmux(['send-keys', '-t', this.tmuxTarget, trustKey])
+        trusted = trustKey === 'Enter'
+        movedOn = pane
         await sleep(POLL_MS)
         continue
       }

@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { loadHarnesses, type Harness } from "../../bridge/harness-registry.ts";
 import { HarnessSession, harnessDescriptor, type HarnessTerminal } from "../../bridge/engines/harness-engine.ts";
 import { loadedHarnesses, resetHarnessCache, resolveEngine } from "../../bridge/engine-registry.ts";
-import { spawnArgv, trustAnswerKeys, type SpawnOptions } from "../../bridge/terminal-session.ts";
+import { spawnArgv, trustAnswerKey, type SpawnOptions } from "../../bridge/terminal-session.ts";
 
 const BUILTIN = fileURLToPath(new URL("../../harnesses/", import.meta.url));
 const SCREENS = fileURLToPath(new URL("../fixtures/screens/", import.meta.url));
@@ -181,12 +181,76 @@ describe("claude: spawn flags (injected spawn function)", () => {
     expect(await spawned({ model: "opus", effort: "high" })).toEqual(["/usr/bin/env", "--", program, "--model", "opus", "--effort", "high"]);
   });
 
-  it("warmup answers the trust dialog yes: Down, Enter when 'No, exit' is highlighted (claude 2.1.321), else Enter", () => {
-    const dialog = (first: string, second: string) =>
-      ` Accessing workspace:\n /tmp/w\n Claude Code'll be able to read, edit, and execute files here.\n${first}\n${second}\n Enter to confirm · Esc to cancel`;
-    expect(trustAnswerKeys(dialog(" ❯ No, exit", "   Yes, I trust this folder"))).toEqual(["Down", "Enter"]);
-    expect(trustAnswerKeys(dialog(" ❯ Yes, I trust this folder", "   No, exit"))).toEqual(["Enter"]);
-    expect(trustAnswerKeys(dialog(" ❯ 1. Yes, proceed", "   2. No, exit"))).toEqual(["Enter"]);
+  describe("warmup's trust answer: one key per screen poll, Enter only on a highlighted 'Yes, I trust this folder'", () => {
+    // The real trust dialog of claude 2.1.321 (private tmux socket, new folder), with the options swapped in.
+    const dialog = (...options: string[]) =>
+      [
+        "",
+        "─".repeat(120),
+        " Accessing workspace:",
+        "",
+        " /private/tmp/w",
+        "",
+        " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this",
+        " folder first.",
+        "",
+        " Claude Code'll be able to read, edit, and execute files here.",
+        "",
+        " Security guide",
+        "",
+        ...options,
+        "",
+        " Enter to confirm · Esc to cancel",
+        "",
+        "",
+      ].join("\n");
+
+    it.each([
+      ["claude 2.1.321: 'No, exit' highlighted first", [" ❯ No, exit", "   Yes, I trust this folder"], "Down"],
+      ["claude 2.1.321 after one Down: Yes highlighted", ["   No, exit", " ❯ Yes, I trust this folder"], "Enter"],
+      ["older numbered layout: Yes highlighted first", [" ❯ 1. Yes, I trust this folder", "   2. No, exit"], "Enter"],
+      ["older numbered layout: No highlighted, Yes above", ["   1. Yes, I trust this folder", " ❯ 2. No, exit"], "Up"],
+      ["Yes two options below the highlight: one Down this poll", [" ❯ No, exit", "   Not now", "   Yes, I trust this folder"], "Down"],
+      ["the highlighted Yes says 'no' in its own text", [" ❯ Yes, I trust this folder (no MCP servers)", "   No, exit"], "Enter"],
+    ])("%s", (_label, options, key) => {
+      expect(trustAnswerKey(dialog(...options))).toBe(key);
+    });
+
+    // A wrapping list (claude 2.1.321: a second Down returns to "No, exit"), one poll per key.
+    it.each([
+      ["claude 2.1.321", ["No, exit", "Yes, I trust this folder"], 0, ["Down", "Enter"]],
+      ["older numbered", ["1. Yes, I trust this folder", "2. No, exit"], 0, ["Enter"]],
+      ["older numbered, No highlighted", ["1. Yes, I trust this folder", "2. No, exit"], 1, ["Up", "Enter"]],
+      ["three options", ["No, exit", "Not now", "Yes, I trust this folder"], 0, ["Down", "Down", "Enter"]],
+    ])("%s: the polls send %j and Enter lands on Yes", (_label, options, start, want) => {
+      let at = start as number;
+      const sent: string[] = [];
+      for (let poll = 0; poll < 6 && sent.at(-1) !== "Enter"; poll++) {
+        const key = trustAnswerKey(dialog(...options.map((o, i) => (i === at ? ` ❯ ${o}` : `   ${o}`))));
+        expect(key).toBeDefined();
+        sent.push(key!);
+        if (key === "Enter") expect(options[at]).toMatch(/Yes, I trust this folder/);
+        if (key === "Down") at = (at + 1) % options.length;
+        if (key === "Up") at = (at - 1 + options.length) % options.length;
+      }
+      expect(sent).toEqual(want);
+    });
+
+    it.each([
+      [
+        "the bypass-permissions warning, even with 'trust this folder' on screen",
+        " WARNING: Claude Code running in Bypass Permissions mode\n\n Only use it in a folder you trust this folder to be safe.\n\n ❯ 1. No, exit\n   2. Yes, I accept\n\n Enter to confirm · Esc to cancel",
+      ],
+      ["an update prompt", " A new version of Claude Code is available. Do you trust this folder's updater?\n\n ❯ 1. Update now\n   2. Not now\n"],
+      ["an older dialog with no 'Yes, I trust this folder' option", dialog(" ❯ 1. Yes, proceed", "   2. No, exit")],
+      [
+        "the prompt box under transcript text that quotes the option",
+        "  Yes, I trust this folder\n\n" + "─".repeat(80) + "\n❯ \n" + "─".repeat(80) + "\n  ⏵⏵ auto mode on (shift+tab to cycle)",
+      ],
+      ["the option with no highlight in its block", dialog("   No, exit", "   Yes, I trust this folder")],
+    ])("no key for %s", (_label, pane) => {
+      expect(trustAnswerKey(pane)).toBeUndefined();
+    });
   });
 
   it("a bad model or effort throws before the spawn function is called", async () => {
