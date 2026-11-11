@@ -36,7 +36,8 @@ const OUTSIDE = join(BOX, "outside");
 const FAKE_HIST = join(BOX, "fake-history");
 const LINK_HIST = join(BOX, "link-history");
 const IX_HIST = join(BOX, "ix-history");
-for (const d of [HOME, OWNER, OUTSIDE, FAKE_HIST, LINK_HIST, IX_HIST]) mkdirSync(d, { recursive: true });
+const ORDER_HIST = join(BOX, "order-history");
+for (const d of [HOME, OWNER, OUTSIDE, FAKE_HIST, LINK_HIST, IX_HIST, ORDER_HIST]) mkdirSync(d, { recursive: true });
 chmodSync(OWNER, 0o700);
 process.env.HOME = HOME;
 process.env.TANDEM_HOME = TANDEM_HOME;
@@ -47,6 +48,7 @@ const OWNER_FILES: Record<string, string> = {
   "fake-link": `program = "${FAKE}"\nhas_prompts = true\nhistory = "${LINK_HIST}"\n`,
   "fake-ix": `program = "${FAKE}"\nhas_prompts = true\nhistory = "${IX_HIST}"\n${RULES}`,
   "fake-none": `program = "${FAKE}"\nhas_prompts = true\n`,
+  "fake-order": `program = "${FAKE}"\nhas_prompts = true\nhistory = "${ORDER_HIST}"\n`,
 };
 for (const [name, body] of Object.entries(OWNER_FILES)) {
   writeFileSync(join(OWNER, `${name}.toml`), `name = "${name}"\n${body}`, { mode: 0o600 });
@@ -82,6 +84,21 @@ const claudeFile = (cwd: string, id: string, body = '{"type":"user","message":{"
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, `${id}.jsonl`), body);
   return join(dir, `${id}.jsonl`);
+};
+const created = (st: { birthtimeMs: number; mtimeMs: number }) => (st.birthtimeMs > 0 ? st.birthtimeMs : st.mtimeMs);
+/** A new history file of `agent` for a session in `cwd`, where its reader (or its folder) finds it. */
+const historyFile = (agent: string, cwd: string) => {
+  const id = `${randomBytes(4).toString("hex")}-0000-0000-0000-${randomBytes(6).toString("hex")}`;
+  if (agent === "claude") return claudeFile(cwd, id);
+  if (agent === "fake-order") {
+    writeFileSync(join(ORDER_HIST, `${id}.log`), "owner history\n");
+    return join(ORDER_HIST, `${id}.log`);
+  }
+  const day = join(HOME, ".codex", "sessions", "2026", "11", "10");
+  mkdirSync(day, { recursive: true });
+  const file = join(day, `rollout-2026-11-10T00-00-00-${id}.jsonl`);
+  writeFileSync(file, JSON.stringify({ type: "session_meta", payload: { id, cwd } }) + "\n");
+  return file;
 };
 
 describe("transcript pointers", () => {
@@ -159,6 +176,57 @@ describe("transcript pointers", () => {
     const [pa, pb] = [await tx.transcriptFor(a), await tx.transcriptFor(b)];
     expect(pa?.path).toBe(f1);
     expect(pb?.path).toBe(f2);
+  });
+
+  it("review-fix R1: two sessions started in one folder seconds apart, looked up in reverse order, each get their own file (claude, codex, an owner harness)", async () => {
+    for (const agent of ["claude", "codex", "fake-order"]) {
+      const cwd = work(`rev-${agent}`);
+      const a = `r1a37-rev-a-${tag()}`;
+      const b = `r1a37-rev-b-${tag()}`;
+      const fa = historyFile(agent, cwd);
+      await sleep(30);
+      const fb = historyFile(agent, cwd);
+      // A started 4 s before its first prompt made its file, B 3 s after A: A's file is inside B's window.
+      const at = created(statSync(fa));
+      tx.noteSessionStart({ name: a, agent, cwd, startedAtMs: at - 4000 });
+      tx.noteSessionStart({ name: b, agent, cwd, startedAtMs: at - 1000 });
+      expect((await tx.transcriptFor(b))?.path, `${agent} later session`).toBe(fb);
+      expect((await tx.transcriptFor(a))?.path, `${agent} earlier session`).toBe(fa);
+    }
+  });
+
+  it("review-fix R1: a session closed before its file appeared, or one not yet prompted, never takes a later session's file", async () => {
+    for (const agent of ["claude", "codex", "fake-order"]) {
+      // Closed with no file, then two sessions prompted in order and looked up in order.
+      const cwd = work(`closed-${agent}`);
+      const dead = `r1a37-dead-${tag()}`;
+      const r = `r1a37-r-${tag()}`;
+      const s = `r1a37-s-${tag()}`;
+      tx.noteSessionStart({ name: dead, agent, cwd, startedAtMs: Date.now() - 5000 });
+      await tx.noteSessionClose(dead);
+      tx.noteSessionStart({ name: r, agent, cwd, startedAtMs: Date.now() - 4000 });
+      tx.noteSessionStart({ name: s, agent, cwd, startedAtMs: Date.now() - 3000 });
+      await sleep(20);
+      const fr = historyFile(agent, cwd);
+      await sleep(30);
+      const fs = historyFile(agent, cwd);
+      expect((await tx.transcriptFor(r))?.path, `${agent} first`).toBe(fr);
+      expect((await tx.transcriptFor(s))?.path, `${agent} second`).toBe(fs);
+      expect((await tx.transcriptFor(dead))?.path, `${agent} closed`).toBeUndefined();
+
+      // An earlier session still open and not yet prompted: the later session's file stays its own.
+      const cwd2 = work(`idle-${agent}`);
+      const idle = `r1a37-idle-${tag()}`;
+      const busy = `r1a37-busy-${tag()}`;
+      tx.noteSessionStart({ name: idle, agent, cwd: cwd2, startedAtMs: Date.now() - 4000 });
+      tx.noteSessionStart({ name: busy, agent, cwd: cwd2, startedAtMs: Date.now() - 3000 });
+      await sleep(20);
+      const fbusy = historyFile(agent, cwd2);
+      expect((await tx.transcriptFor(busy))?.path, `${agent} prompted`).toBe(fbusy);
+      await sleep(30);
+      const fidle = historyFile(agent, cwd2);
+      expect((await tx.transcriptFor(idle))?.path, `${agent} prompted later`).toBe(fidle);
+    }
   });
 
   it("appending and then noteSessionClose changes the sha256; rows survive a module reload", async () => {

@@ -173,7 +173,22 @@ async function lookup(name: string): Promise<Pointer | undefined> {
         (d.prepare('SELECT path FROM transcript_pointers WHERE path IS NOT NULL AND rowid != ?').all(row.rowid) as { path: string }[]).map((r) => r.path),
       )
       const reader = READERS.get(row.agent)
-      path = (await (reader ? reader.locate(expand(history), row.cwd, row.started_at, taken) : locateAny(expand(history), row.started_at, taken))) ?? null
+      const locate = (r: Row, skip: Set<string>) =>
+        reader ? reader.locate(expand(history), r.cwd, r.started_at, skip) : locateAny(expand(history), r.started_at, skip)
+      // Earlier sessions of this agent that are still open and have no file yet set theirs aside first
+      // (not stored), so a later session never takes an earlier one's file, whatever the lookup order.
+      // None left for this one: those sessions have no file of their own yet, so nothing is set aside.
+      const reserved = new Set(taken)
+      const earlier = d
+        .prepare(
+          'SELECT rowid, * FROM transcript_pointers WHERE agent = ? AND path IS NULL AND recorded_at IS NULL AND (started_at < ? OR (started_at = ? AND rowid < ?)) ORDER BY started_at, rowid',
+        )
+        .all(row.agent, row.started_at, row.started_at, row.rowid) as unknown as Row[]
+      for (const e of earlier) {
+        const f = await locate(e, reserved)
+        if (f) reserved.add(f)
+      }
+      path = (await locate(row, reserved)) ?? (earlier.length ? await locate(row, taken) : undefined) ?? null
       if (path === null) return toPointer(row)
     }
     const st = await stat(path).catch(() => undefined)
@@ -189,9 +204,18 @@ async function lookup(name: string): Promise<Pointer | undefined> {
   }
 }
 
-/** A final transcriptFor when the session closes. */
+/** A final transcriptFor when the session closes. A row still with no file gets `recorded_at` (closed
+ *  before its file was found), so it never sets aside a later session's file. */
 export async function noteSessionClose(name: string): Promise<void> {
-  await transcriptFor(name)
+  const p = await transcriptFor(name)
+  if (!p || p.path) return
+  try {
+    db()
+      .prepare('UPDATE transcript_pointers SET recorded_at = ? WHERE rowid = (SELECT rowid FROM transcript_pointers WHERE name = ? ORDER BY started_at DESC, rowid DESC LIMIT 1) AND path IS NULL')
+      .run(Date.now(), name)
+  } catch (e) {
+    warn('note session close', e)
+  }
 }
 
 /** The pointer, plus the messages when a reader exists for its agent and its file is known. */
