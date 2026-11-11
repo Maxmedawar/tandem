@@ -408,3 +408,94 @@ describe("(q) audit: only the prompt in use counts", () => {
     expect(detect.isPromptEmpty!(codex, `${CX.trimEnd()}\n${cxPane("› ")}`)).toBe(true);
   });
 });
+
+// U-R1A-18D-2: the other built-in agents (grok, antigravity, opencode, pi, gemini, cursor-agent,
+// copilot, cline, droid, goose) each bring an empty_prompt row, so an agent's text enters their
+// empty prompt again and is held at a prompt holding a person's unsent text.
+describe("(18D-2) the other built-in agents: empty prompt enters, typed text is held", () => {
+  const T = "delete the old bra";
+  const h = (name: string) => builtins.get(name)!;
+  const f = (p: string) => read(join(FIXTURES, p));
+  const EMPTY: [string, string][] = [
+    ["grok", "screens/grok-idle-real.txt"],
+    ["antigravity", "agy-screens/idle-real.txt"],
+    ["antigravity", "agy-screens/idle-reply-real.txt"],
+    ["antigravity", "agy-screens/idle-interrupted-real.txt"],
+    ["opencode", "screens/opencode-idle-real.txt"],
+    ["pi", "pi-screens/idle-doc.txt"],
+    ["pi", "pi-screens/idle-compacted-doc.txt"],
+    ["pi", "pi-screens/idle-header-doc.txt"],
+    ["gemini", "gemini-screens/idle-src.txt"],
+    ["cursor-agent", "cursor-screens/idle-src.txt"],
+    ["cursor-agent", "cursor-screens/idle-followup-src.txt"],
+    ["copilot", "copilot-screens/idle-src.txt"],
+    ["cline", "cline-screens/idle-home-src.txt"],
+    ["cline", "cline-screens/idle-chat-src.txt"],
+    ["cline", "cline-screens/idle-plan-src.txt"],
+    ["droid", "droid-screens/idle-src.txt"],
+    ["droid", "droid-screens/idle-alt-src.txt"],
+    ["goose", "goose-screens/idle-src.txt"],
+    ["goose", "goose-screens/idle-interrupted-src.txt"],
+    ["goose", "goose-screens/idle-maybeexit-src.txt"],
+    ["goose", "goose-screens/idle-after-approval-src.txt"],
+  ];
+  it.each(EMPTY)("(q) %s %s: reads idle and empty", (name, p) => {
+    const s = f(p);
+    expect(detect.readScreen!(h(name), s)).toBe("idle");
+    expect(detect.isPromptEmpty!(h(name), s)).toBe(true);
+  });
+
+  type Derive = ((s: string) => string) | null;
+  const agyTyped: Derive = (s) => s.replace(/^>[ \t]*$/m, "> " + T);
+  const R: [string, string, string, Derive][] = [
+    ["grok, typed into the empty box", "grok", "screens/grok-idle-real.txt", (s) => s.replace(/❯ {20}/, "❯ " + T + " ")],
+    ["grok, the real prompt put back after Ctrl+C", "grok", "screens/grok-idle-real2.txt", null],
+    ["antigravity, idle-real", "antigravity", "agy-screens/idle-real.txt", agyTyped],
+    ["antigravity, idle-reply-real", "antigravity", "agy-screens/idle-reply-real.txt", agyTyped],
+    ["antigravity, idle-interrupted-real", "antigravity", "agy-screens/idle-interrupted-real.txt", agyTyped],
+    ["opencode", "opencode", "screens/opencode-idle-real.txt", (s) => s.replace('Ask anything… "Fix broken tests"', T)],
+    ["pi", "pi", "pi-screens/idle-doc.txt", (s) => s.replace(/(─{20,}\n)[ \t]*\n(─{20,})/, "$1" + T + "\n$2")],
+  ];
+  it.each(R)("(r) %s: reads idle; agent text held (prompt not empty); owner text enters", async (_l, name, p, derive) => {
+    const s = f(p);
+    const typed = derive ? derive(s) : s;
+    if (derive) expect(typed).not.toBe(s);
+    expect(detect.readScreen!(h(name), typed)).toBe("idle");
+    expect(detect.isPromptEmpty!(h(name), typed)).toBe(false);
+    await heldNow(over(h(name), typed));
+    expect(await gate.admitInput!(over(h(name), typed), "owner", "type")).toStrictEqual(ENTER);
+  });
+
+  const S: [string, string, string, Derive][] = [
+    ["gemini", "gemini", "gemini-screens/idle-src.txt", (s) => s.replace("Type your message or @path/to/file", T)],
+    ["cursor-agent", "cursor-agent", "cursor-screens/idle-src.txt", (s) => s.replace("→ Plan, search, build anything", "→ " + T.padEnd(28))],
+    ["copilot, the real idle-typed screen", "copilot", "copilot-screens/idle-typed-src.txt", null],
+    ["cline", "cline", "cline-screens/idle-home-src.txt", (s) => s.replace("❯ What can I do for you?", "❯ " + T)],
+    ["droid", "droid", "droid-screens/idle-src.txt", (s) => s.replace('Try "Write unit tests for this file"', T + " ".repeat(17))],
+    ["goose, default hint", "goose", "goose-screens/idle-src.txt", (s) => s.replace("> Enter to send · Ctrl+J newline", "> " + T)],
+    ["goose, interrupted hint", "goose", "goose-screens/idle-interrupted-src.txt", (s) => s.replace("> Interrupted, what should goose work on instead?", "> " + T)],
+  ];
+  it.each(S)("(s) %s: typed text reads unknown, not empty; agent text held (unknown)", async (_l, name, p, derive) => {
+    const s = f(p);
+    const typed = derive ? derive(s) : s;
+    if (derive) expect(typed).not.toBe(s);
+    expect(detect.readScreen!(h(name), typed)).toBe("unknown");
+    expect(detect.isPromptEmpty!(h(name), typed)).toBe(false);
+    expect(await gate.admitInput!(over(h(name), typed), "agent", "type")).toStrictEqual({ verdict: "held", state: "unknown" });
+  });
+
+  const firsts = EMPTY.filter(([name], i) => EMPTY.findIndex(([n]) => n === name) === i);
+  it("(t) one gate row per harness", () => {
+    expect(firsts.map(([n]) => n)).toEqual(["grok", "antigravity", "opencode", "pi", "gemini", "cursor-agent", "copilot", "cline", "droid", "goose"]);
+  });
+  it.each(firsts.map(([name, p]): [string, string, number] => [name, p, name === "cline" ? 5000 : 1500]))(
+    "(t) gate: agent text at %s %s enters after the debounce (%i ms)",
+    async (name, p, ms) => {
+      expect(h(name).states?.debounce_ms).toBe(ms);
+      const { answer, took } = await timed(over(h(name), f(p)), "agent", "type");
+      expect(answer).toStrictEqual(ENTER);
+      expect(took).toBeGreaterThanOrEqual(ms);
+    },
+    20_000,
+  );
+});

@@ -33,6 +33,8 @@ waiting_for_approval = [
 ]
 working = ['ctrl\+c (?:interrupt|stop agents|clear input|exit shell mode)', 'esc (?:interrupt|stop agents|edit prompt)', 'esc again to ']
 idle = ['/ commands']
+# U-R1A-18D: an agent's text enters only an empty prompt (a bare ❯ row, a blank line, then `/ commands`).
+empty_prompt = ['^┃ ❯[ \t]*\n[ \t]*\n/ commands']
 
 [keys]
 interrupt = ["C-c"]

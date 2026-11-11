@@ -20,6 +20,8 @@ delivery = "notice"
 waiting_for_approval = ['△ Permission required', 'esc (?:dismiss|close)']
 working = ['(?i)esc.*interrupt']
 idle = ['╹▀+\n[^\n]*ctrl\+p commands']
+# U-R1A-18D: an agent's text enters only an empty prompt (the composer shows only its `Ask anything… "..."` placeholder).
+empty_prompt = ['^[ \t]*┃[ \t]*\n[ \t]*┃[ \t]+Ask anything… "[^"\n]*"[ \t]*\n[ \t]*┃[ \t]*\n[ \t]*┃[^\n]*\n[ \t]*╹▀+']
 
 [keys]
 interrupt = ["Escape"]
