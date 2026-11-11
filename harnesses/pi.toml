@@ -1,0 +1,25 @@
+# Pi, program `pi`, checked against 0.79.7 (its README, CHANGELOG and docs; never run for this
+# file). idle is a positive match of the editor box (the input line between two full-width `─`
+# rules) with the footer's cwd and usage lines under it, from Pi's own screenshot
+# docs/images/interactive-mode.png (test/fixtures/pi-screens/NOTICE); unproven on a real 0.79.7
+# screen until the live row runs. working is Pi's default `Working...` message, which an
+# extension can change or hide (a known limit). Pi has no approval prompts by design ("No
+# permission popups."), so no waiting_for_approval rule and no skip_prompts_args. interrupt is one
+# Escape; a second Escape opens /tree, and Ctrl+C only clears the editor. delivery is `notice`:
+# Pi has no hook Tandem can set without loading an extension (`-e`), left for a later unit. Pi's
+# project-trust prompt text is not in its docs, so there is no dialog row.
+name = "pi"
+program = "pi"
+has_prompts = false
+resume = ["--session", "{id}"]
+fork = ["--fork", "{id}"]
+account_env = "PI_CODING_AGENT_DIR"
+history = "~/.pi/agent/sessions"
+delivery = "notice"
+
+[states]
+working = ['Working\.\.\.']
+idle = ['─{20,}\n[^\n]*\n─{20,}\n[^\n]*\n[^\n]*\d%/\d']
+
+[keys]
+interrupt = ["Escape"]
