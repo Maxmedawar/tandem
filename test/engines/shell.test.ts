@@ -31,6 +31,8 @@ const { HarnessSession, harnessDescriptor } = await import("../../bridge/engines
 const { EngineDisabledError, loadedHarnesses, resetHarnessCache, resolveEngine } = await import("../../bridge/engine-registry.ts");
 const { spawnArgv } = await import("../../bridge/terminal-session.ts");
 const { routeForTest } = await import("../../bridge/router.ts");
+const { applyLimits } = await import("../../bridge/limits.ts");
+const { agentEntry, writeLimits } = await import("../fixtures/limits.ts");
 
 const BUILTIN = fileURLToPath(new URL("../../harnesses/", import.meta.url));
 const NO_OWNER = join(BOX, "no-owner");
@@ -191,6 +193,9 @@ describe("shell: a real sh -l in tmux on a private socket", () => {
     vi.stubEnv("TANDEM_ENABLED_ENGINES", "shell");
     vi.stubEnv("PATH", `/usr/bin:/bin:${process.env.PATH ?? ""}`);
     resetHarnessCache();
+    // U-R1A-17: the limits file allows only this: the shell, pinned to the sh found, in WORK.
+    writeLimits(process.env.TANDEM_HOME!, { folders: [WORK], shell: true, agents: { shell: agentEntry(loadedHarnesses().get("shell")!) } });
+    applyLimits();
     const name = `r1a13-sh-${Math.random().toString(36).slice(2, 8)}`;
     const opened = await routeForTest("POST", "/sessions/open", { name, engine: "shell", cwd: WORK });
     expect(opened.status).toBe(200);

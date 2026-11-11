@@ -29,6 +29,9 @@
  *     Paths are realpath-canonicalized before the check so `..` / symlink escapes
  *     can't slip through, and the prefix comparison uses a trailing separator so
  *     "/srv/code" does NOT match "/srv/code-evil".
+ *   - LIMITS FILE (limits.ts): after those env switches, opens and relay starts also need the
+ *     limits file's agents (pinned program), shell, folders and, for prompts off, permission_skip.
+ *     It is read at start and only applied at this computer; nothing remote widens it.
  *   - Only ccm-* tmux sessions (claude/codex/shell) or an allowlisted Hermes
  *     agent id are drivable.
  *   - tmux send-keys is injection-safe (-l literal + -- end-of-options).
@@ -66,6 +69,7 @@ import {
 import * as relay from './relay.ts'
 import { emitCompletion, summarize } from './events.ts'
 import { audit } from './audit.ts'
+import { limitsGate } from './limits.ts'
 
 // ---- config ---------------------------------------------------------------
 
@@ -371,6 +375,15 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
   const cwd = safeResolve(cwdInput)
 
+  // The limits file (bridge/limits.ts) is the ceiling over the env switches above: the agent
+  // (pinned program, an owner file's sha256, shell) and the folder, before any tmux call.
+  const gate = limitsGate()
+  const denied = gate.agent(harness) ?? gate.folder(cwd)
+  if (denied) {
+    audit({ route: 'POST /sessions/open', name, engine, cwd, denied: 'limits' })
+    return err(403, denied)
+  }
+
   // A same-named ccm-* tmux session tagged with a DIFFERENT engine is a 409
   // conflict, distinct from a provenance/cwd adoption failure (403) — checked
   // before attempting adoption so the caller gets the precise reason.
@@ -385,6 +398,11 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   // started before they ran from their harness files are adopted too.
   const adopted = await HarnessSession.attachExisting(harness, name, ALLOWLIST)
   if (adopted) {
+    const outside = gate.folder(adopted.cwd)
+    if (outside) {
+      audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, denied: 'limits' })
+      return err(403, outside)
+    }
     registerLive(adopted)
     audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, adopted: true })
     return ok({ name: adopted.id, engine, cwd: adopted.cwd, attachHint: adopted.attachHint(), reused: true })
@@ -398,7 +416,9 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
 
   try {
-    const session = await HarnessSession.spawn(harness, { name, cwd, allowlist: ALLOWLIST, model, effort })
+    const session = await HarnessSession.spawn(harness, {
+      name, cwd, allowlist: ALLOWLIST, model, effort, skipPrompts: gate.skipPrompts(cwd),
+    })
     registerLive(session)
     audit({ route: 'POST /sessions/open', name: session.id, engine, cwd, model, effort, ready: session.ready })
     // Surface readiness: when the TUI did NOT reach its prompt (the classic
@@ -529,10 +549,19 @@ async function handleRelayStart(req: RpcRequest): Promise<RpcResult> {
   if (!isCwdAllowed(cwdInput, ALLOWLIST)) return err(403, `cwd not allowed: ${cwdInput}`)
   const cwd = safeResolve(cwdInput)
   // The relay runs two Claude Code sessions: claude must be enabled and found, as for an open.
+  let relayHarness: Harness | undefined
   try {
-    await resolveEngine('claude')
+    ;({ harness: relayHarness } = await resolveEngine('claude'))
   } catch (e) {
     return engineError(e)
+  }
+  // The limits file holds for both sessions: their agent, the folder, and permission_skip, since
+  // the relay starts them with their prompts off (startRelay keeps its TANDEM_ALLOW_BYPASS guard).
+  const gate = limitsGate()
+  const denied = gate.agent(relayHarness) ?? gate.folder(cwd) ?? gate.permissionSkip(cwd)
+  if (denied) {
+    audit({ route: 'POST /relay/start', cwd, denied: 'limits' })
+    return err(403, denied)
   }
   const maxTurns = req.body['maxTurns'] !== undefined ? Number(req.body['maxTurns']) : undefined
   const context = req.body['context'] !== undefined ? String(req.body['context']) : undefined

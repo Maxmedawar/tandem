@@ -121,7 +121,8 @@ export function warnLegacySkipPermissionsIfSet(): void {
   if (process.env.TANDEM_SKIP_PERMISSIONS === undefined) return
   process.stderr.write(
     '[bridge] TANDEM_SKIP_PERMISSIONS is ignored and does not enable bypass. ' +
-      'Set TANDEM_ALLOW_BYPASS=1 to run Claude with --dangerously-skip-permissions.\n',
+      "Agents start with their prompts off only in the limits file's permission_skip folders " +
+      '(the relay also needs TANDEM_ALLOW_BYPASS=1).\n',
   )
 }
 
@@ -493,7 +494,9 @@ export function stepStability(
  * model/effort/bypass rather than quietly ignoring them. Claude's flags follow its argv, whether
  * that is CLAUDE_DESCRIPTOR's executable (the default) or the claude harness file's argv (the
  * harness engine and the relay). No side effect: spawn writes the legacy-variable warning.
- * ponytail: U-R1A-17 moves bypass to the file's skip_prompts_args under `permission_skip`.
+ * Bypass is added only for `allowBypass: true`, which only the relay passes: TANDEM_ALLOW_BYPASS no
+ * longer adds a flag to an opened session, which starts with its harness file's skip_prompts_args
+ * only in a limits-file `permission_skip` folder (bridge/limits.ts, engines/harness-engine.ts).
  */
 export function spawnArgv(
   descriptor: EngineDescriptor,
@@ -521,7 +524,7 @@ export function spawnArgv(
     engineArgv.push(shellBin, '-l')
   }
   if (descriptor.id === 'claude') {
-    const skip = opts.allowBypass ?? bypassPermissionsEnabled()
+    const skip = opts.allowBypass === true
     if (skip) engineArgv.push('--dangerously-skip-permissions')
     if (opts.model !== undefined) engineArgv.push('--model', validateModel(opts.model))
     if (opts.effort !== undefined) engineArgv.push('--effort', validateEffort(opts.effort))

@@ -136,6 +136,14 @@ export async function startBridge(id: string, extraEnv: Record<string, string> =
       TANDEM_HUB_LINK_TOKEN: LINK_TOKEN,
       TANDEM_HUB_LINK_ID: id,
     }, extraEnv)
+    // U-R1A-17: the limits file, where this bridge looks (TANDEM_HOME when extraEnv sets it, else its
+    // HOME's .tandem), allowing what it already enables: its work folder, and the shell pinned to the
+    // sh its PATH finds.
+    const tandemHome = env.TANDEM_HOME || join(env.HOME!, '.tandem')
+    const { agentEntry, writeLimits } = await import('../fixtures/limits.ts')
+    const { loadHarnesses } = await import('../../bridge/harness-registry.ts')
+    const sh = loadHarnesses({ ownerDir: join(tandemHome, 'harnesses'), path: env.PATH ?? '' }).harnesses.get('shell')!
+    writeLimits(tandemHome, { folders: [bridge.folder], shell: true, agents: { shell: agentEntry(sh) } })
     const child = spawn(process.execPath, ['--experimental-strip-types', 'src/server.ts'], {
       cwd: repo,
       env,

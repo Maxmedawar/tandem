@@ -1,4 +1,4 @@
-import { constants as fsConstants } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from "node:fs";
 import { chmod, lstat, mkdir, open, readFile, rename, unlink } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -22,6 +22,42 @@ async function assertProtectedRegularFile(file: string): Promise<void> {
   }
   if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
     throw new UnsafeRuntimeConfigError("runtime configuration has the wrong owner");
+  }
+}
+
+/** assertProtectedRegularFile's checks, made on the open descriptor so nothing can swap the file
+ * between the check and the read: O_NOFOLLOW refuses a symlink, O_NONBLOCK keeps a FIFO from
+ * blocking, then fstat. Returns the bytes. A missing file throws the plain ENOENT error. */
+export function readProtectedRegularFileSync(file: string): Buffer {
+  let fd: number;
+  try {
+    fd = openSync(path.resolve(file), fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") {
+      throw new UnsafeRuntimeConfigError("protected file is a symlink, not a regular file");
+    }
+    throw error;
+  }
+  try {
+    const info = fstatSync(fd);
+    if (!info.isFile()) throw new UnsafeRuntimeConfigError("protected file must be a regular file");
+    if (typeof process.getuid === "function" && info.uid !== process.getuid()) {
+      throw new UnsafeRuntimeConfigError("protected file has the wrong owner");
+    }
+    if ((info.mode & 0o077) !== 0) throw new UnsafeRuntimeConfigError("protected file permissions are too broad");
+    if (info.size > MAX_CONFIG_BYTES) throw new UnsafeRuntimeConfigError("protected file is over 64 KiB");
+    // One byte past the cap tells a file that grew after the fstat.
+    const buffer = Buffer.alloc(MAX_CONFIG_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = readSync(fd, buffer, length, buffer.length - length, null);
+      if (read === 0) break;
+      length += read;
+    }
+    if (length > MAX_CONFIG_BYTES) throw new UnsafeRuntimeConfigError("protected file is over 64 KiB");
+    return buffer.subarray(0, length);
+  } finally {
+    closeSync(fd);
   }
 }
 
