@@ -43,20 +43,23 @@
  *
  * TRANSCRIPT + CURSOR: on spawn we attach
  *   tmux pipe-pane -o -t <tgt> 'cat >> <transcriptsDir>/<name>.log'
- * The append-only log's byte length is the cursor. readSince(offset) reads from a
- * byte offset and strips ANSI for a human-readable slice.
+ * (<transcriptsDir> = TANDEM_HOME/transcripts, else ~/.tandem/transcripts; folder 0700, logs 0600).
+ * The append-only log's byte length is the cursor. readSince(offset) reads one page from a
+ * byte offset (readLogPage: every page fits through the hub) and strips ANSI for a
+ * human-readable slice. spawn and close also note the session for its agent's own
+ * transcript pointer (./transcripts/index.ts).
  */
 
 import { execFile } from 'node:child_process'
-import { existsSync, realpathSync, statSync } from 'node:fs'
-import { open, mkdir } from 'node:fs/promises'
+import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs'
+import { chmod, open, mkdir } from 'node:fs/promises'
 import { cpus, homedir, loadavg } from 'node:os'
 import { join, sep } from 'node:path'
 import { CLAUDE_DESCRIPTOR, type EngineDescriptor } from './drivable.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
+import { noteSessionClose, noteSessionStart, TRANSCRIPTS_DIR } from './transcripts/index.ts'
 
 const HOME = homedir()
-const TRANSCRIPTS_DIR = join(HOME, '.tandem', 'transcripts')
 
 /** tmux session-name prefix. Only ccm-* sessions are drivable by the bridge,
  *  regardless of engine — the engine identity lives in the @tandem_engine tag. */
@@ -182,6 +185,62 @@ export interface ReadResult {
   cursor: number
   idle: boolean
   state: 'working' | 'done' | 'quiet'
+  /** More log bytes follow this page: read again from `cursor`. */
+  more: boolean
+}
+
+/** A log page is at most this many bytes. */
+const LOG_PAGE_BYTES = 65_536
+/** ...and its text at most this many bytes as JSON. The hub counts every frame character as 4 bytes
+ *  against 1,048,576, so a frame holds 262,144 characters; base64 makes the JSON body 4/3 longer, so
+ *  a 98,304-byte page text keeps the frame near 131,500 characters, half the limit. */
+const LOG_PAGE_JSON_BYTES = 98_304
+
+/** Where a page of `buf` that stops before `len` may end: after its last newline, else at a UTF-8
+ *  character boundary, and never before its first whole character. A character is at most 4 bytes,
+ *  so its boundary is at most 3 bytes back; none there means the bytes are not UTF-8: cut at `len`. */
+function pageEnd(buf: Buffer, len: number): number {
+  const nl = buf.lastIndexOf(0x0a, len - 1)
+  if (nl >= 0) return nl + 1
+  for (let end = len; end > 0 && end >= len - 3; end--) if ((buf[end]! & 0xc0) !== 0x80) return end
+  if (len > 3) return len
+  let end = 1
+  while (end < 4 && end < buf.length && (buf[end]! & 0xc0) === 0x80) end++
+  return end
+}
+
+/**
+ * One page of an append-only log from byte offset `from`: at most 65,536 bytes; when more bytes
+ * remain it ends after its last newline (none: at a UTF-8 boundary); halved (same boundary rules,
+ * at least one character) until its text is at most 98,304 bytes as JSON. `next` is the offset
+ * after the page. `from` at or past the end, or a missing file: no text, `next` = the file size
+ * (0 if missing). Synchronous, so relay.readSince and the router's relay read stay synchronous.
+ */
+export function readLogPage(path: string, from: number): { text: string; next: number; more: boolean } {
+  let fd: number
+  try {
+    fd = openSync(path, 'r')
+  } catch {
+    return { text: '', next: 0, more: false }
+  }
+  try {
+    const size = fstatSync(fd).size
+    const start = Number.isFinite(from) && from > 0 ? Math.floor(from) : 0
+    if (start >= size) return { text: '', next: size, more: false }
+    // One byte past the page, so a cut there can see whether it splits a character.
+    const buf = Buffer.alloc(Math.min(LOG_PAGE_BYTES + 1, size - start))
+    const read = readSync(fd, buf, 0, buf.length, start)
+    let len = Math.min(read, LOG_PAGE_BYTES)
+    if (start + len < size) len = pageEnd(buf, len)
+    let text = buf.toString('utf8', 0, len)
+    while (Buffer.byteLength(JSON.stringify(text)) > LOG_PAGE_JSON_BYTES) {
+      len = pageEnd(buf, Math.max(1, Math.floor(len / 2)))
+      text = buf.toString('utf8', 0, len)
+    }
+    return { text, next: start + len, more: start + len < size }
+  } finally {
+    closeSync(fd)
+  }
 }
 
 function sleep(ms: number): Promise<void> {
@@ -559,14 +618,17 @@ export class TerminalSession {
     const ownerIdProvider = opts.ownerIdProvider ?? makeOwnerIdProvider()
     const ownerId = await ownerIdProvider()
 
-    await mkdir(TRANSCRIPTS_DIR, { recursive: true })
+    await mkdir(TRANSCRIPTS_DIR, { recursive: true, mode: 0o700 })
+    await chmod(TRANSCRIPTS_DIR, 0o700)
     const logPath = join(TRANSCRIPTS_DIR, `${name}.log`)
     // Truncate any stale transcript so the byte cursor starts clean.
-    await (await open(logPath, 'w')).close()
+    await (await open(logPath, 'w', 0o600)).close()
+    await chmod(logPath, 0o600)
 
     // Inject text injection-safe — but here the args are all bridge-controlled
     // (constants + validated flags), so this is a normal new-session. The engine
     // binary (or login shell) runs INSIDE the pane; the cwd is set via -c.
+    const startedAtMs = Date.now()
     await tmux([
       'new-session',
       '-d',
@@ -580,6 +642,7 @@ export class TerminalSession {
       cwd,
       ...engineArgv,
     ])
+    noteSessionStart({ name, agent: descriptor.id, cwd, startedAtMs })
 
     // Provenance tags (binding — Phase 2 correction A): required before a later
     // restart may ever consider this session adoptable. Set right after create,
@@ -943,16 +1006,17 @@ export class TerminalSession {
   }
 
   /**
-   * Read the ANSI-stripped transcript slice since a byte offset, plus the new
-   * cursor and whether the session is currently idle. Synchronous-ish: reads the
-   * file from `cursor` to EOF.
+   * Read one ANSI-stripped page of the transcript from a byte offset (readLogPage),
+   * plus the cursor after it, whether more pages follow, and whether the session is
+   * currently idle.
    */
   async readSince(cursor: number): Promise<ReadResult> {
-    const size = this.cursor()
-    const text = stripAnsi(await this.readRaw(cursor, size))
-    const working = await this.isCurrentlyWorking()
+    const page = readLogPage(this.logPath, cursor)
+    // While more pages follow, the turn is not reported idle: poll loops keep reading, and the
+    // router's completion event fires once, on the last page.
+    const working = page.more || (await this.isCurrentlyWorking())
     const state = working ? 'working' : this.descriptor.isWorking ? 'done' : 'quiet'
-    return { text, cursor: size, idle: !working, state }
+    return { text: stripAnsi(page.text), cursor: page.next, idle: !working, state, more: page.more }
   }
 
   /** Read raw transcript bytes in [from, to) as UTF-8. */
@@ -1031,12 +1095,13 @@ export class TerminalSession {
     }
   }
 
-  /** Kill the tmux session. Idempotent. */
+  /** Kill the tmux session, then record its transcript pointer one last time. Idempotent. */
   async close(): Promise<void> {
     try {
       await tmux(['kill-session', '-t', sessionTarget(this._name)])
     } catch {
       /* already gone */
     }
+    await noteSessionClose(this._name)
   }
 }

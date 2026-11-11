@@ -57,6 +57,8 @@ export interface ReadResult {
   state?: 'working' | 'done' | 'quiet'
   /** A harness engine's state read from its screen by its `states` rules (bridge/harness-detect.ts). */
   agentState?: 'working' | 'idle' | 'waiting_for_approval' | 'unknown'
+  /** More log bytes follow this page: read again from `cursor` (idle stays false until the last page). */
+  more?: boolean
 }
 
 /**
