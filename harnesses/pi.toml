@@ -21,7 +21,7 @@ delivery = "notice"
 working = ['Working\.\.\.']
 idle = ['─{20,}\n[^\n]*\n─{20,}\n[^\n]*\n[^\n]*(?:\d%|\?)/\d']
 # U-R1A-18D: an agent's text enters only an empty prompt (a blank row between the two rules above the footer).
-empty_prompt = ['─{20,}\n[ \t]*\n─{20,}\n[^\n]*\n[^\n]*(?:\d%|\?)/\d']
+empty_prompt = ['─{20,}\n[ \t]*\n─{20,}\n[^\n]*\n[^\n]*(?:\d%|\?)/\d[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z']
 
 [keys]
 interrupt = ["Escape"]

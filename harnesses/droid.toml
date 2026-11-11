@@ -40,7 +40,7 @@ idle = [
   '(?m)^ *│ > +│ *\n *╰─+╯',
 ]
 # U-R1A-18D: an agent's text enters only an empty prompt (the box row shows only a placeholder, or nothing).
-empty_prompt = ['^ *│ > (?:(?:Try|Type) "(?:How do I handle errors in async functions\?|Write unit tests for this file|Search the documentation for this library|Optimize the performance of this component|Debug why users can.t login|Implement a REST endpoint for user data|Add proper error handling to API calls|Set up GitHub Actions for CI/CD|Fix all lint warnings|Create a PR with these changes|Review the changes in my current branch|Explain how the codebase is organized|Review this code for security issues)"|Droid will research and plan before making changes|Mission control for huge projects) *│ *$', '^ *│ > +│ *\n *╰─+╯']
+empty_prompt = ['^ *│ > (?:(?:Try|Type) "(?:How do I handle errors in async functions\?|Write unit tests for this file|Search the documentation for this library|Optimize the performance of this component|Debug why users can.t login|Implement a REST endpoint for user data|Add proper error handling to API calls|Set up GitHub Actions for CI/CD|Fix all lint warnings|Create a PR with these changes|Review the changes in my current branch|Explain how the codebase is organized|Review this code for security issues)"|Droid will research and plan before making changes|Mission control for huge projects) *│ *(?:\n[ \t]*(?:[^ \t╭│\n][^\n]*)?)*\z', '^ *│ > +│ *\n *╰─+╯[ \t]*(?:\n[ \t]*(?:[^ \t╭│\n][^\n]*)?)*\z']
 
 [keys]
 interrupt = ["Escape"]

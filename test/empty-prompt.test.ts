@@ -499,3 +499,90 @@ describe("(18D-2) the other built-in agents: empty prompt enters, typed text is 
     20_000,
   );
 });
+
+// U-R1A-18D-2 audit: each row tied to the prompt in use (the 18D-1 F1 class). A leftover empty
+// prompt frame (a resize leftover, or one quoted in a reply) above the frame in use that holds
+// typed text must not read empty; the same frames the other way round (typed above, empty in use)
+// still read empty. Cursor's real prompt bar (half-block rows, `  → ` padded, no box) reads empty.
+describe("(18D-2 audit) only the prompt in use counts, for every built-in agent", () => {
+  const T = "delete the old bra";
+  const h = (name: string) => builtins.get(name)!;
+  const f = (p: string) => read(join(FIXTURES, p)).replace(/\s+$/, "");
+  // [agent, fixture, the empty row, the same row holding text, lines of the prompt frame at the end]
+  const A: [string, string, RegExp, (t: string) => string, number][] = [
+    ["grok", "screens/grok-idle-real.txt", /^[ \t]*│ ❯ +│$/m, (t) => "  │ ❯ " + t.padEnd(192) + "│", 5],
+    ["antigravity", "agy-screens/idle-reply-real.txt", /^>[ \t]*$/m, (t) => "> " + t, 4],
+    ["opencode", "screens/opencode-idle-real.txt", /^[ \t]*┃[ \t]+Ask anything… "Fix broken tests"$/m, (t) => "                       ┃  " + t, 19],
+    ["pi", "pi-screens/idle-doc.txt", /(?<=─{20,}\n)[ \t]*(?=\n─{20,})/, (t) => t, 5],
+    ["gemini", "gemini-screens/idle-src.txt", /^│ >   Type your message or @path\/to\/file$/m, (t) => "│ >   " + t, 3],
+    ["cursor-agent", "cursor-screens/idle-src.txt", /^│ → Plan, search, build anything +│$/m, (t) => "│ → " + t.padEnd(57) + "│", 4],
+    ["copilot", "copilot-screens/idle-src.txt", /^┃ ❯ $/m, (t) => "┃ ❯ " + t, 4],
+    ["cline", "cline-screens/idle-chat-src.txt", /^❯ Ask anything\.\.\.$/m, (t) => "❯ " + t, 4],
+    ["droid", "droid-screens/idle-src.txt", /^│ > Try "Write unit tests for this file" +│$/m, (t) => "│ > " + t.padEnd(69) + "│", 4],
+    ["goose", "goose-screens/idle-src.txt", /^> Enter to send · Ctrl\+J newline$/m, (t) => "> " + t, 1],
+  ];
+  const typedOf = (s: string, re: RegExp, put: (t: string) => string, t: string) => {
+    const typed = s.replace(re, put(t));
+    expect(typed).not.toBe(s);
+    return typed;
+  };
+  const tail = (s: string, n: number) => s.split("\n").slice(-n).join("\n");
+
+  it.each(A)("%s: a leftover empty frame above the frame in use holding text is not empty; agent text held", async (name, p, re, put, n) => {
+    const s = f(p);
+    expect(detect.isPromptEmpty!(h(name), s)).toBe(true);
+    for (const gap of ["\n", "\n\n"]) {
+      const screen = s + gap + tail(typedOf(s, re, put, T), n);
+      expect(detect.isPromptEmpty!(h(name), screen)).toBe(false);
+      const st = detect.readScreen!(h(name), screen);
+      const answer = await gate.admitInput!(over(h(name), screen), "agent", "type");
+      expect(answer).toStrictEqual(st === "idle" ? HELD_REASON : { verdict: "held", state: st });
+    }
+  });
+
+  it.each(A)("%s: a frame holding text above the empty frame in use reads empty", (name, p, re, put, n) => {
+    const s = f(p);
+    const screen = typedOf(s, re, put, T) + "\n" + tail(s, n);
+    expect(detect.readScreen!(h(name), screen)).toBe("idle");
+    expect(detect.isPromptEmpty!(h(name), screen)).toBe(true);
+  });
+
+  const VARIANTS: [string, string][] = [
+    ["short", T],
+    ["long", "x".repeat(300)],
+    ["wrapped", T + "\n  continued on the next row"],
+    ["pasted", "[Pasted text #1 +20 lines]"],
+    ["slash menu", "/"],
+    ["file menu", "@src/"],
+  ];
+  it.each(A.flatMap(([name, p, re, put]) => VARIANTS.map(([v, t]): [string, string, string, RegExp, (t: string) => string, string] => [name, v, p, re, put, t])))(
+    "%s: typed text (%s) is never idle and empty",
+    (name, _v, p, re, put, t) => {
+      const screen = typedOf(f(p), re, put, t);
+      expect(detect.readScreen!(h(name), screen) === "idle" && detect.isPromptEmpty!(h(name), screen)).toBe(false);
+    },
+  );
+
+  // Cursor's real prompt bar (from its UI code: marginX 1 + paddingLeft 1, ▄/▀ half-block rows).
+  const BAR = (c: string) => ` ${c.repeat(118)}`;
+  const PAD = (s: string) => s.padEnd(118);
+  const CUR = (row: string, foot = "  Auto") => ["Done.", "", BAR("▄"), PAD(row), BAR("▀"), foot].join("\n");
+  it.each([
+    ["first turn", "  → Plan, search, build anything"],
+    ["follow-up", "  → Add a follow-up"],
+    ["follow-up with the /plan hint", "  → Add a follow-up — /plan to review and build"],
+  ])("cursor-agent real layout, %s: reads idle and empty; agent text enters", async (_l, row) => {
+    const screen = CUR(row, "  claude-4.5-sonnet-thinking-extended-context · 37.2%");
+    expect(detect.readScreen!(h("cursor-agent"), screen)).toBe("idle");
+    expect(detect.isPromptEmpty!(h("cursor-agent"), screen)).toBe(true);
+    expect(await gate.admitInput!(over(h("cursor-agent"), screen), "agent", "type")).toStrictEqual(ENTER);
+  }, 20_000);
+  it("cursor-agent real layout: typed text, text after the placeholder, and a leftover empty bar above a typed one are not empty", () => {
+    for (const screen of [
+      CUR("  → " + T),
+      CUR("  → Add a follow-up now"),
+      CUR("  → Add a follow-up — /plan to review and build it"),
+      CUR("  → Plan, search, build anything") + "\n" + [BAR("▄"), PAD("  → " + T), BAR("▀"), "  Auto"].join("\n"),
+    ]) expect(detect.isPromptEmpty!(h("cursor-agent"), screen)).toBe(false);
+  });
+});
