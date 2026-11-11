@@ -92,7 +92,14 @@ try {
 }
 // Who is up on this computer (bridge/presence.ts): read on a call, never on a timer.
 const presence = (await import("../bridge/presence.ts")).createPresence();
-const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence);
+// Past sessions' messages, masked and project-scoped (bridge/transcripts/search.ts); its file opens on first use.
+let transcripts: import("../bridge/transcripts/search.ts").TranscriptSearch | undefined;
+try {
+  transcripts = (await import("../bridge/transcripts/search.ts")).openTranscriptSearch();
+} catch {
+  console.error("transcripts: search unavailable; transcript tools are off");
+}
+const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence, transcripts);
 await server.connect(new StdioServerTransport());
 
 console.error("tandem MCP bridge ready on stdio (local, no token)");
