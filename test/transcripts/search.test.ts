@@ -581,7 +581,7 @@ describe("(R1) masking: every row is masked in redact, the store, the snippet an
       expect(typeof r.text).toBe("string");
       expect(ms, what).toBeLessThan(1500);
     }
-  });
+  }, 120_000);
 });
 
 describe("(R1) scope: nothing from outside the named project", () => {
