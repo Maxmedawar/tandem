@@ -10,7 +10,8 @@
  * claude/codex/shell TUI in a tmux session "ccm-<name>" (driven by the shared
  * TerminalSession lifecycle via keystroke injection + pane scraping; claude, codex
  * and every other harness-file agent through engines/harness-engine.ts), or an
- * attached Hermes writable-agent id (a loopback HTTP gateway, not tmux). We
+ * agent attached through the adapter its built-in harness file names (ADAPTERS
+ * in harness-registry.ts; Hermes, over loopback HTTP, not tmux). We
  * NEVER run `claude -p` / headless and NEVER set ANTHROPIC_API_KEY, so Claude
  * usage stays on the user's interactive subscription. The autonomous capability
  * is the zero-API two-session relay, which stays Claude-only and unaffected by
@@ -18,7 +19,7 @@
  *
  * ENGINE RESOLUTION ORDER (binding — Phase 2 correction E): every open_session
  * call resolves and validates the engine (unknown id → 400, disabled → 403,
- * enabled-but-unavailable executable → 503) via engine-registry.ts BEFORE any
+ * enabled-but-unavailable: no file loaded or no program → 503) via engine-registry.ts BEFORE any
  * cwd resolution, tmux lookup, spawn, or network side effect. An engine
  * mismatch on session-NAME reuse (a name already open under a different
  * engine) is rejected with 409 before any further work too.
@@ -32,8 +33,8 @@
  *   - LIMITS FILE (limits.ts): after those env switches, opens and relay starts also need the
  *     limits file's agents (pinned program), shell, folders and, for prompts off, permission_skip.
  *     It is read at start and only applied at this computer; nothing remote widens it.
- *   - Only ccm-* tmux sessions (claude/codex/shell) or an allowlisted Hermes
- *     agent id are drivable.
+ *   - Only ccm-* tmux sessions (harness-file agents) or an agent an adapter
+ *     attached (its own allowlist, e.g. Hermes's writable agent ids) are drivable.
  *   - tmux send-keys is injection-safe (-l literal + -- end-of-options).
  *   - INPUT GATE (input-gate.ts): typed input (send text with its per-send model/effort, and
  *     interrupt keys) enters a session only as the input gate allows, by who is typing:
@@ -57,7 +58,7 @@
 import { homedir } from 'node:os'
 import { validateModel, validateEffort, TerminalSession } from './terminal-session.ts'
 import type { DrivableSession, EngineId } from './drivable.ts'
-import type { Harness } from './harness-registry.ts'
+import { ADAPTERS, type AdapterOpenResult, type Harness } from './harness-registry.ts'
 import {
   resolveEngine,
   UnknownEngineError,
@@ -65,7 +66,6 @@ import {
   EngineUnavailableError,
 } from './engine-registry.ts'
 import { HarnessSession } from './engines/harness-engine.ts'
-import { HermesSession, loadHermesConfig } from './engines/hermes.ts'
 import {
   buildAllowlist,
   isCwdAllowed,
@@ -271,7 +271,7 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
   // opt-in via TANDEM_ENABLED_ENGINES.
   const rawEngine = req.body['engine'] !== undefined ? String(req.body['engine']) : undefined
   let engine: EngineId
-  let harness: Harness | undefined
+  let harness: Harness
   try {
     ;({ id: engine, harness } = await resolveEngine(rawEngine))
   } catch (e) {
@@ -286,14 +286,11 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
     return err(409, `session "${name}" already exists with engine "${liveExisting.engine}"`)
   }
 
-  if (engine === 'hermes') {
-    return handleOpenHermes(name, req)
-  }
-  if (!harness) return err(503, `engine "${engine}" has no harness file loaded`)
+  if (harness.adapter !== undefined) return handleOpenAdapter(engine, name, req, harness)
   return handleOpenTmux(engine, name, req, harness)
 }
 
-/** resolveEngine's typed errors as router answers: unknown or missing 400, disabled 403, program missing 503. */
+/** resolveEngine's typed errors as router answers: unknown or missing 400, disabled 403, no file or program 503. */
 function engineError(e: unknown): RpcResult {
   if (e instanceof UnknownEngineError) return err(400, e.message)
   if (e instanceof EngineDisabledError) return err(403, e.message)
@@ -301,22 +298,22 @@ function engineError(e: unknown): RpcResult {
   return err(500, e instanceof Error ? e.message : String(e))
 }
 
-/** open_session for the `hermes` engine: attach to an existing, explicitly
- *  allowlisted writable agent id. No spawn, no cwd, no model/effort — Hermes
- *  rejects all three (binding — Phase 2 correction E). */
-async function handleOpenHermes(name: string, req: RpcRequest): Promise<RpcResult> {
-  if (req.body['cwd'] !== undefined) return err(400, 'cwd is not supported for engine "hermes"')
-  if (req.body['model'] !== undefined) return err(400, 'model is not supported for engine "hermes"')
-  if (req.body['effort'] !== undefined) return err(400, 'effort is not supported for engine "hermes"')
+/** open_session for an adapter agent (its built-in harness file names `adapter`): attach through
+ *  ADAPTERS[harness.adapter], which checks the agent answers. No spawn, no cwd, no model/effort,
+ *  and outside the limits file (bridge/limits.ts pins programs; an adapter agent has none). */
+async function handleOpenAdapter(engine: EngineId, name: string, req: RpcRequest, harness: Harness): Promise<RpcResult> {
+  for (const field of ['cwd', 'model', 'effort']) {
+    if (req.body[field] !== undefined) return err(400, `${field} is not supported for engine "${engine}"`)
+  }
 
   const existing = getLive(name)
   if (existing) {
-    audit({ route: 'POST /sessions/open', name, engine: 'hermes', reused: true })
-    return ok({ name: existing.id, engine: 'hermes', attachHint: existing.attachHint(), reused: true })
+    audit({ route: 'POST /sessions/open', name, engine, reused: true })
+    return ok({ name: existing.id, engine, attachHint: existing.attachHint(), reused: true })
   }
 
   // A tmux-hosted session may have survived a bridge restart without yet being
-  // re-adopted into the in-memory registry. Never let a Hermes attachment claim
+  // re-adopted into the in-memory registry. Never let an adapter attachment claim
   // that live session's name and hide/misroute it. Any ccm-<name> collision is a
   // conflict, including an untagged one.
   if (await TerminalSession.exists(name)) {
@@ -324,7 +321,7 @@ async function handleOpenHermes(name: string, req: RpcRequest): Promise<RpcResul
     audit({
       route: 'POST /sessions/open',
       name,
-      engine: 'hermes',
+      engine,
       denied: 'tmux-name-conflict',
       ...(existingEngine ? { existingEngine } : {}),
     })
@@ -336,26 +333,19 @@ async function handleOpenHermes(name: string, req: RpcRequest): Promise<RpcResul
     )
   }
 
-  const config = loadHermesConfig()
-  if (!config) {
-    audit({ route: 'POST /sessions/open', name, engine: 'hermes', denied: 'not-configured' })
-    return err(503, 'Hermes is not configured (set TANDEM_HERMES_BASE_URL)')
-  }
-  // Allowlist enforced HERE (registry/router) AND again inside HermesSession.attach
-  // (binding — Phase 2 correction D: "enforce the writable-agent id allowlist in
-  // both the registry/router and the Hermes adapter").
-  if (!config.writableAgents.has(name)) {
-    audit({ route: 'POST /sessions/open', name, engine: 'hermes', denied: 'not-writable-allowlisted' })
-    return err(403, `Hermes agent "${name}" is not on the writable-agent allowlist`)
-  }
+  let opened: AdapterOpenResult
   try {
-    const session = HermesSession.attach({ agentId: name, config })
-    registerLive(session)
-    audit({ route: 'POST /sessions/open', name: session.id, engine: 'hermes' })
-    return ok({ name: session.id, engine: 'hermes', attachHint: session.attachHint() })
+    opened = await ADAPTERS[harness.adapter!](name)
   } catch (e) {
-    return err(500, `failed to attach Hermes agent: ${e instanceof Error ? e.message : String(e)}`)
+    return err(500, `failed to attach: ${e instanceof Error ? e.message : String(e)}`)
   }
+  if (!('session' in opened)) {
+    audit({ route: 'POST /sessions/open', name, engine, denied: opened.denied })
+    return err(opened.status, opened.error)
+  }
+  registerLive(opened.session)
+  audit({ route: 'POST /sessions/open', name: opened.session.id, engine })
+  return ok({ name: opened.session.id, engine, attachHint: opened.session.attachHint() })
 }
 
 /** open_session for harness engines (claude, codex and shell included): the shared tmux

@@ -1,13 +1,14 @@
 /**
  * engine-registry.ts — which engines are known, which are enabled, and whether an enabled
- * engine's program is actually present.
+ * engine can run: its program is present, or its file names an adapter.
  *
  * NO AGENT IS ON BY DEFAULT: an engine runs only when TANDEM_ENABLED_ENGINES (comma- or
- * colon-separated) names it, and an open must name its engine. Every agent with a harness file
- * (harnesses/SCHEMA.md), the built-in ones included, runs from that file through the one harness
- * engine (engines/harness-engine.ts) and needs the file's program on PATH (`programPath`). The
- * built-in ids keep their names here because fleet frames carry them; a built-in id with no
- * built-in file keeps its code engine.
+ * colon-separated) names it, and an open must name its engine. Every agent runs from its harness
+ * file (harnesses/SCHEMA.md), the built-in ones included: a terminal agent through the one harness
+ * engine (engines/harness-engine.ts), needing the file's program on PATH (`programPath`); an
+ * adapter agent through the adapter its built-in file names (ADAPTERS in harness-registry.ts),
+ * with no program. The built-in ids keep their names here because fleet frames carry them; each
+ * has a built-in file, and one whose file is not loaded is unavailable.
  *
  * ORDERING (binding — Phase 2 correction E): the router MUST resolve enablement and program
  * availability BEFORE cwd resolution, tmux lookup, spawn, or any network side effect —
@@ -27,18 +28,12 @@ let harnessCache: Map<string, Harness> | undefined
 
 /**
  * The loaded harness files by name (harnesses/SCHEMA.md), read once per process. Each refused
- * file writes one stderr line. An owner file named like a built-in id is skipped with a stderr
- * line (the loader already refuses one that names a built-in file).
+ * file writes one stderr line (an owner file named like a built-in is refused by the loader).
  */
 export function loadedHarnesses(): Map<string, Harness> {
   if (harnessCache) return harnessCache
   const { harnesses, errors } = loadHarnesses()
   for (const e of errors) process.stderr.write(`[bridge] harness file refused: ${e.file}: ${e.reason}\n`)
-  for (const [name, h] of harnesses) {
-    if (!isBuiltinEngine(name) || h.source === 'builtin') continue
-    harnesses.delete(name)
-    process.stderr.write(`[bridge] harness file skipped: ${h.file}: "${name}" keeps its built-in engine\n`)
-  }
   harnessCache = harnesses
   return harnesses
 }
@@ -54,15 +49,17 @@ export class UnknownEngineError extends Error {}
 /** Thrown when a known engine id was not explicitly enabled. */
 export class EngineDisabledError extends Error {}
 
-/** Thrown when an enabled engine's required program was not found. */
+/** Thrown when an enabled engine cannot run: its program was not found, or no file is loaded for it. */
 export class EngineUnavailableError extends Error {}
 
 /** Strict known-id parsing: case-insensitive match against KNOWN_ENGINE_IDS,
- *  otherwise a clear UnknownEngineError (never a silent fallback). */
+ *  otherwise a clear UnknownEngineError (never a silent fallback) naming the built-in ids and
+ *  every loaded harness name, sorted, each once. */
 export function parseEngineId(value: string): BuiltinEngineId {
   const v = value.trim().toLowerCase()
   if (isBuiltinEngine(v)) return v
-  throw new UnknownEngineError(`unknown engine: "${value}". Supported engines: ${KNOWN_ENGINE_IDS.join(', ')}.`)
+  const names = [...new Set([...KNOWN_ENGINE_IDS, ...loadedHarnesses().keys()])].sort()
+  throw new UnknownEngineError(`unknown engine: "${value}". Supported engines: ${names.join(', ')}.`)
 }
 
 /** Parse TANDEM_ENABLED_ENGINES into the explicit opt-in set of BUILT-IN engines (fleet frames
@@ -96,16 +93,17 @@ export interface ResolveEngineOptions {
 
 export interface EngineResolution {
   readonly id: EngineId
-  /** The harness file the engine runs from; absent for a built-in id with no built-in file (its code engine). */
-  readonly harness?: Harness
+  /** The harness file the engine runs from. */
+  readonly harness: Harness
 }
 
 /**
- * Resolve and validate a caller-supplied engine id. Order: given → known → enabled → program
- * found. Throws typed errors on the FIRST failing check and does nothing else — no cwd/tmux/network
- * access, so the router can call this before any side effect (binding — Phase 2 correction E).
- * A harness needs its name enabled, and `shell` too when its program is a shell (kind = shell),
- * and its `programPath`.
+ * Resolve and validate a caller-supplied engine id. Order: given → known → enabled → file loaded
+ * → (an adapter file: done) → program found. Throws typed errors on the FIRST failing check and
+ * does nothing else — no cwd/tmux/network access, so the router can call this before any side
+ * effect (binding — Phase 2 correction E). A harness needs its name enabled; a terminal one also
+ * `shell` when its program is a shell (kind = shell), and its `programPath`. An adapter file has
+ * no program: its adapter makes its own checks when the router opens it.
  */
 export async function resolveEngine(
   rawId: string | undefined,
@@ -122,7 +120,8 @@ export async function resolveEngine(
   if (!enabled.has(name)) {
     throw new EngineDisabledError(`engine "${name}" is disabled. Enable it by adding it to TANDEM_ENABLED_ENGINES.`)
   }
-  if (!harness) return { id: name }
+  if (!harness) throw new EngineUnavailableError(`engine "${name}" has no harness file loaded`)
+  if (harness.adapter !== undefined) return { id: name, harness }
   if (harness.kind === 'shell' && !enabled.has('shell')) {
     throw new EngineDisabledError(
       `engine "${name}" runs a shell or interpreter, so it also needs "shell" in TANDEM_ENABLED_ENGINES.`,
@@ -137,8 +136,7 @@ export async function resolveEngine(
 export interface EngineCapability {
   engine: EngineId
   enabled: boolean
-  /** False when disabled. When enabled: whether the built-in file's program was found; true for
-   *  an id with no built-in file (its code engine checks its own availability at runtime). */
+  /** Enabled, its built-in file loaded, and that file names an adapter or its program was found. */
   available: boolean
 }
 
@@ -149,7 +147,7 @@ export async function capabilityReport(opts: ResolveEngineOptions = {}): Promise
   const enabled = opts.enabledEngines ?? buildEnabledEngines()
   return KNOWN_ENGINE_IDS.map((id) => {
     const harness = loadedHarnesses().get(id)
-    const available = enabled.has(id) && (harness ? harness.programPath !== undefined : true)
+    const available = enabled.has(id) && harness !== undefined && (harness.adapter !== undefined || harness.programPath !== undefined)
     return { engine: id, enabled: enabled.has(id), available }
   })
 }

@@ -321,3 +321,57 @@ describe("loadHarnesses: reserved names (the session list filter reads all and t
     expect(res.harnesses.size).toBe(0);
   });
 });
+
+// U-R1A-16: hermes is a built-in adapter file (harnesses/hermes.toml); an adapter file names no
+// program, and a file without an adapter still needs one.
+describe("loadHarnesses: adapter files", () => {
+  const box = mkdtempSync("/tmp/r1a16-harness-");
+  afterAll(() => rmSync(box, { recursive: true, force: true }));
+  const none = join(box, "missing");
+  let k = 0;
+  /** Loads one built-in folder holding `files`, with no owner folder and an empty PATH. */
+  function loadBuiltin(files: Record<string, string>) {
+    const dir = join(box, `builtin-${k++}`);
+    mkdirSync(dir);
+    for (const [f, t] of Object.entries(files)) writeFileSync(join(dir, f), t);
+    return { dir, res: loadHarnesses({ installDir: dir, ownerDir: none, path: none }) };
+  }
+
+  it("the real harnesses/ loads hermes: built-in, adapter hermes, kind agent, no program or programPath", () => {
+    const res = loadHarnesses({ ownerDir: none, path: none });
+    const h = res.harnesses.get("hermes");
+    expect(h).toMatchObject({ name: "hermes", source: "builtin", adapter: "hermes", kind: "agent", has_prompts: true });
+    expect(h).not.toHaveProperty("program");
+    expect(h).not.toHaveProperty("programPath");
+    expect(res.errors.filter((e) => e.file.endsWith("hermes.toml") || e.reason.includes("hermes.toml"))).toEqual([]);
+  });
+
+  it("a built-in file with adapter and program is refused: an adapter file names no program", () => {
+    const { dir, res } = loadBuiltin({ "r1a16-both.toml": 'name = "r1a16-both"\nadapter = "hermes"\nprogram = "agent"\nhas_prompts = true\n' });
+    expect(res.errors).toEqual([{ file: join(dir, "r1a16-both.toml"), reason: "an adapter file names no program" }]);
+    expect(res.harnesses.size).toBe(0);
+  });
+
+  it("a built-in file with neither adapter nor program is refused: missing program", () => {
+    const { dir, res } = loadBuiltin({ "r1a16-none.toml": 'name = "r1a16-none"\nhas_prompts = true\n' });
+    expect(res.errors).toEqual([{ file: join(dir, "r1a16-none.toml"), reason: "missing program" }]);
+    expect(res.harnesses.size).toBe(0);
+  });
+
+  it("the adapter refusals keep their texts, ahead of the program check", () => {
+    const { dir, res } = loadBuiltin({
+      "r1a16-other.toml": 'name = "r1a16-other"\nadapter = "nosuch"\nhas_prompts = true\n',
+      "r1a16-proto.toml": 'name = "r1a16-proto"\nadapter = "constructor"\nhas_prompts = true\n',
+    });
+    expect(res.errors.map((e) => [basename(e.file), e.reason.startsWith("bad adapter")])).toEqual([
+      ["r1a16-other.toml", true],
+      ["r1a16-proto.toml", true],
+    ]);
+    const owner = join(box, `owner-${k++}`);
+    mkdirSync(owner, { mode: 0o700 });
+    chmodSync(owner, 0o700);
+    writeFileSync(join(owner, "r1a16-own.toml"), 'name = "r1a16-own"\nadapter = "hermes"\nhas_prompts = true\n', { mode: 0o600 });
+    const own = loadHarnesses({ installDir: dir, ownerDir: owner, path: none });
+    expect(own.errors).toContainEqual({ file: join(owner, "r1a16-own.toml"), reason: "adapter is allowed only in a built-in file" });
+  });
+});

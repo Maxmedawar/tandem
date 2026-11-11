@@ -83,9 +83,9 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
           'Claude Code AND Codex history. Read-only; does not start or send ' +
           'anything. Sorted most-recent first. Use the returned id as the name for ' +
           'send_to_session / read_session / interrupt_session / close_session. ' +
-          'Also lists Hermes sessions (engine:"hermes"): writable WebUI agent ' +
-          'sessions (writable:true, drivable) and read-only channel conversations ' +
-          'like Telegram/WhatsApp (writable:false — readable, not sendable). ' +
+          'Also lists the Hermes WebUI agents this bridge has attached: each an ' +
+          'allowlisted writable agent id, opened by id after a check that it answers. ' +
+          'Channel conversations are never listed or read. ' +
           'NOTE: a Codex pane NOT spawned by the bridge may surface under ' +
           'engine:"shell" (codex runs as a node process, so it is detected by ' +
           'foreground command); this is cosmetic — it drives identically — until a ' +
@@ -151,11 +151,10 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
           'a codex session, or a bare shell — not just a ccm-* session the bridge ' +
           'spawned; an unknown live pane is adopted on first use (engine ' +
           'auto-detected). For a bare shell this submits a command line. It may ' +
-          'also be a Hermes session id: a writable WebUI AGENT session is driven ' +
-          '(this fires a REAL Hermes agent turn that may take actions), but a ' +
-          'Hermes CHANNEL conversation (Telegram/WhatsApp, key "agent:…") is ' +
-          'READ-ONLY and returns { status:"error" } with a refusal — you cannot ' +
-          'message channel contacts through this tool. If the turn runs past the ' +
+          'also be the id of an attached Hermes WebUI agent (only an allowlisted ' +
+          'writable agent id, attached by id): this fires a REAL agent turn that may ' +
+          'take actions. Channel conversations are never listed, read or sent to. ' +
+          'If the turn runs past the ' +
           'tunnel window the bridge returns { status:"running", name, cursor } — ' +
           'when you see that, IMMEDIATELY call read_session in a loop with the ' +
           'returned cursor until read_session returns idle:true, then read the ' +
@@ -166,7 +165,7 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
           text: z.string()
             .describe('The instruction / command line to type into the session.'),
           engine: z.string().regex(AGENT_NAME).optional()
-            .describe('Optional engine hint: any agent name. Use "hermes" to drive a Hermes WebUI agent session by id; tmux hints help when adopting an unknown pane.'),
+            .describe('Optional engine hint: any agent name, Hermes included (a Hermes WebUI agent is driven by its id); tmux hints help when adopting an unknown pane.'),
           waitForTurn: z.boolean().optional()
             .describe('Block until the turn completes (default true). The bridge always caps the wait and may return status:"running".'),
           machine: z.string().optional().describe(MACHINE_DESC),
@@ -191,9 +190,9 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
           'Read the transcript of ANY live terminal session WITHOUT sending ' +
           'anything — the review/audit + poll primitive. Works for any live tmux ' +
           'pane (claude, codex, or a bare shell); an unknown live pane is adopted ' +
-          'on first use. Also reads a Hermes session by id (both writable agent ' +
-          'sessions AND read-only channel conversations — reading is always safe ' +
-          'and fires no agent turn). Returns { text, cursor, idle, state }: state ' +
+          'on first use. Also reads an attached Hermes WebUI agent by id (reading ' +
+          'fires no agent turn; channel conversations are never read). Returns ' +
+          '{ text, cursor, idle, state }: state ' +
           '"quiet" = a codex or shell pane printed nothing for its stability window ' +
           'and gave no completion signal, so it may still be working; state "done" ' +
           '= the engine\'s working marker cleared (ready for input); idle is true ' +
@@ -206,7 +205,7 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
           sinceCursor: z.number().int().nonnegative().optional()
             .describe('Cursor (byte offset / message index) from a previous read/send; returns only newer transcript.'),
           engine: z.string().regex(AGENT_NAME).optional()
-            .describe('Optional engine hint: any agent name. Use "hermes" to read a Hermes session by id; tmux hints help when adopting an unknown pane.'),
+            .describe('Optional engine hint: any agent name, Hermes included (a Hermes WebUI agent is read by its id); tmux hints help when adopting an unknown pane.'),
           machine: z.string().optional().describe(MACHINE_DESC),
         },
       },

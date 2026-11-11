@@ -8,6 +8,9 @@
  * built-in, a key field holds only named keys, a shell or interpreter is marked
  * `kind = 'shell'` whatever the file calls itself, and loading reads files only: it
  * starts no process. A bad file never throws; it lands in `errors` and the rest load.
+ *
+ * An agent that is not a terminal program runs through a small code adapter instead of a
+ * program: a built-in file names it with `adapter`, and ADAPTERS below is the table of them.
  */
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -15,13 +18,16 @@ import { basename, delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
 import { RE2JS } from 're2js'
+import type { DrivableSession } from './drivable.ts'
+import { openHermes } from './engines/hermes.ts'
 
 export type StateName = 'working' | 'idle' | 'waiting_for_approval'
 export type KeySpec = string | string[]
 
 export interface Harness {
   name: string
-  program: string
+  /** Absent in an adapter file (`adapter`): such an agent has no program. */
+  program?: string
   args: string[]
   skip_prompts_args: string[]
   resume: string[]
@@ -35,7 +41,7 @@ export interface Harness {
   hook?: string
   permission_hook: boolean
   reports_context: boolean
-  adapter?: 'hermes'
+  adapter?: string
   logo?: string
   source: 'builtin' | 'owner'
   file: string
@@ -44,6 +50,13 @@ export interface Harness {
 }
 
 export interface HarnessError { file: string; reason: string }
+
+/** An adapter's open: a session to register, or a refusal (HTTP status, error text, the audit line's `denied`). */
+export type AdapterOpenResult = { session: DrivableSession } | { status: number; error: string; denied: string }
+
+/** The built-in adapters by name, the values an `adapter` field may hold. The router opens an
+ *  adapter agent through `ADAPTERS[harness.adapter]`; nothing else names one. */
+export const ADAPTERS: Readonly<Record<string, (name: string) => Promise<AdapterOpenResult>>> = Object.freeze({ hermes: openHermes })
 
 const MAX_BYTES = 64 * 1024
 const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
@@ -110,9 +123,16 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
   only(raw, FIELDS, '')
   const name = str(raw, 'name') ?? fail('missing name')
   if (name !== stem) fail('name does not match the file name')
-  const program = str(raw, 'program') ?? fail('missing program')
-  const bare = BARE_PROGRAM.test(program) && program !== '.' && program !== '..'
-  if (!bare && !(ABS_PROGRAM.test(program) && !program.includes('..'))) fail('bad program: a bare name or an absolute path without .. (letters, digits and . _ + - only)')
+  const adapter = str(raw, 'adapter')
+  if (adapter !== undefined && source !== 'builtin') fail('adapter is allowed only in a built-in file')
+  if (adapter !== undefined && !Object.hasOwn(ADAPTERS, adapter)) fail(`bad adapter: one of ${Object.keys(ADAPTERS).join(', ')}`)
+  const program = str(raw, 'program')
+  if (adapter !== undefined && program !== undefined) fail('an adapter file names no program')
+  if (adapter === undefined && program === undefined) fail('missing program')
+  if (program !== undefined) {
+    const bare = BARE_PROGRAM.test(program) && program !== '.' && program !== '..'
+    if (!bare && !(ABS_PROGRAM.test(program) && !program.includes('..'))) fail('bad program: a bare name or an absolute path without .. (letters, digits and . _ + - only)')
+  }
   const has_prompts = bool(raw, 'has_prompts') ?? fail('missing has_prompts')
   const account_env = str(raw, 'account_env')
   if (account_env !== undefined && !ACCOUNT_ENV.test(account_env)) fail('bad account_env')
@@ -157,9 +177,6 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
   if (delivery !== 'hook' && delivery !== 'notice') fail('bad delivery: "hook" or "notice"')
   const hook = str(raw, 'hook')
   if (delivery === 'hook' && !hook) fail('delivery = "hook" needs hook')
-  const adapter = str(raw, 'adapter')
-  if (adapter !== undefined && source !== 'builtin') fail('adapter is allowed only in a built-in file')
-  if (adapter !== undefined && adapter !== 'hermes') fail('bad adapter: only "hermes"')
   const logo = str(raw, 'logo')
   if (logo !== undefined && !LOGO.test(logo)) fail('bad logo')
 
@@ -173,7 +190,7 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
     delivery: delivery as Harness['delivery'], hook,
     permission_hook: bool(raw, 'permission_hook') ?? false,
     reports_context: bool(raw, 'reports_context') ?? false,
-    adapter: adapter as Harness['adapter'], logo,
+    adapter, logo,
   })
   for (const [k, v] of Object.entries(raw)) if (k !== 'states') checkText(v, k)
   return out
@@ -264,8 +281,10 @@ export function loadHarnesses(opts: { installDir?: string; ownerDir?: string; pa
 
   const add = (raw: Table, stem: string, source: Harness['source'], file: string) => {
     const h = validate(raw, stem, source)
-    const programPath = findProgram(h.program, searchPath)
-    harnesses.set(h.name, compact({ ...h, source, file, kind: kindOf(h.program, programPath), programPath }))
+    // An adapter file has no program: no PATH lookup, and it is an agent.
+    const programPath = h.program === undefined ? undefined : findProgram(h.program, searchPath)
+    const kind = h.program === undefined ? 'agent' : kindOf(h.program, programPath)
+    harnesses.set(h.name, compact({ ...h, source, file, kind, programPath }))
   }
 
   // Built-in names are reserved even when that built-in file is itself refused.

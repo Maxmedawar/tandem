@@ -15,10 +15,16 @@
  * chat/start + session-poll turn shape) rather than inventing a simplified
  * one, while keeping Tandem's stricter scope and bounds:
  *
+ * OPENED THROUGH ITS HARNESS FILE: harnesses/hermes.toml names this adapter
+ * (`adapter = "hermes"`), bridge/harness-registry.ts maps that name to
+ * openHermes() below, and the router opens any adapter agent through that
+ * table without naming one. For Hermes, start means attach to the running
+ * agent and check that it answers.
+ *
  * BOUNDED AND ALLOWLISTED TWICE (binding — Phase 2 correction D):
- *   - the writable-agent id allowlist is enforced HERE (attach()) AND again by
- *     the router/registry before it ever reaches this module — either gate
- *     alone refusing is enough to keep an agent undrivable;
+ *   - the writable-agent id allowlist is enforced in openHermes() AND again in
+ *     attach() — either check alone refusing is enough to keep an agent
+ *     undrivable;
  *   - every agent id is validated against a strict bounded charset/length
  *     rule BEFORE any network call;
  *   - the base URL is canonicalized and restricted to a loopback host
@@ -44,6 +50,7 @@ import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { DrivableSession, EngineId, ReadOptions, ReadResult, SendOptions, SendResult } from '../drivable.ts'
+import type { AdapterOpenResult } from '../harness-registry.ts'
 
 const DEFAULT_TIMEOUT_MS = 15_000
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024 // 256 KiB — a chat reply, not a file transfer
@@ -390,8 +397,7 @@ export class HermesSession implements DrivableSession {
 
   /** Attach to an existing, explicitly allowlisted writable Hermes agent.
    *  There is no `spawn` — Tandem never creates a Hermes agent. Throws if the
-   *  id is malformed or not on the allowlist (checked again by the router
-   *  before this is ever called — see bridge/router.ts). */
+   *  id is malformed or not on the allowlist (checked first by openHermes()). */
   static attach(opts: HermesSessionOptions): HermesSession {
     const agentId = validateHermesAgentId(opts.agentId)
     if (!opts.config.writableAgents.has(agentId)) {
@@ -548,4 +554,27 @@ export class HermesSession implements DrivableSession {
 
   /** No teardown: Tandem did not create this agent and must not destroy it. */
   async close(): Promise<void> {}
+}
+
+/**
+ * The adapter's open (ADAPTERS in bridge/harness-registry.ts): attach to the running Hermes agent
+ * `name` and check that it answers. Tandem starts nothing there. Refusals carry the HTTP status,
+ * a short error (no password, cookie or URL) and the audit line's `denied`; nothing is registered
+ * by a refusal. The answer check is one login and one session read, each under the request
+ * timeout, and is blocked by TANDEM_HERMES_DISABLE_LIVE.
+ */
+export async function openHermes(name: string): Promise<AdapterOpenResult> {
+  let config: HermesConfig | undefined
+  try {
+    config = loadHermesConfig(process.env)
+  } catch (e) {
+    return { status: 503, error: e instanceof Error ? e.message : String(e), denied: 'bad-config' }
+  }
+  if (!config) return { status: 503, error: 'Hermes is not configured (set TANDEM_HERMES_BASE_URL)', denied: 'not-configured' }
+  if (!config.writableAgents.has(name)) {
+    return { status: 403, error: `Hermes agent "${name}" is not on the writable-agent allowlist`, denied: 'not-writable-allowlisted' }
+  }
+  const session = HermesSession.attach({ agentId: name, config })
+  if (!(await session.isAlive())) return { status: 503, error: `Hermes agent "${session.id}" did not answer`, denied: 'no-answer' }
+  return { session }
 }
