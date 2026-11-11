@@ -1,4 +1,4 @@
-import { afterAll, describe, it, expect } from "vitest";
+import { afterAll, beforeAll, describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
@@ -50,7 +50,7 @@ describe("a TANDEM_HOME inside the real home is dropped, however it is spelled",
   const absent = `.tandem-setup-home-probe-${process.pid}`; // never created
   const box = mkdtempSync(join(tmpdir(), "setup-home-link-"));
   const link = join(box, "home-link");
-  symlinkSync(home, link, "junction"); // a link to the real home; nothing goes through it
+  beforeAll(() => symlinkSync(home, link, "junction")); // a link to the real home; nothing goes through it
   afterAll(() => unlinkSync(link));
   const swapCase = (s: string) => [...s].map((c) => (c === c.toLowerCase() ? c.toUpperCase() : c.toLowerCase())).join("");
 
