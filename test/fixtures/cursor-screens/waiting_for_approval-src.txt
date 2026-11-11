@@ -1,0 +1,5 @@
+Run this command?
+$ npm test
+▶ Run (once) (y)
+  Add Shell(npm) to allowlist? (tab)
+  Skip (esc or n)
