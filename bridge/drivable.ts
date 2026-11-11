@@ -16,7 +16,11 @@
  * call send() again with the same prompt; send() again means a NEW instruction.
  */
 
-export type EngineId = 'claude' | 'codex' | 'shell' | 'hermes'
+/** The four engines with code of their own. */
+export type BuiltinEngineId = 'claude' | 'codex' | 'shell' | 'hermes'
+
+/** A built-in id or the name of a loaded harness file (harnesses/SCHEMA.md). */
+export type EngineId = string
 
 /** Per-turn overrides a caller may pass to send(). Claude-only — every other
  *  engine's adapter MUST reject a request that sets either field rather than
@@ -51,6 +55,8 @@ export interface ReadResult {
   /** Same split as SendResult: 'quiet' is idle without a completion signal.
    *  Optional because engines without a pane (hermes) do not report it yet. */
   state?: 'working' | 'done' | 'quiet'
+  /** A harness engine's state read from its screen by its `states` rules (bridge/harness-detect.ts). */
+  agentState?: 'working' | 'idle' | 'waiting_for_approval' | 'unknown'
 }
 
 /**
@@ -95,6 +101,9 @@ export interface EngineDescriptor {
   /** The binary tmux spawns inside the pane. Absent = spawn the pane's default
    *  login shell instead of a named executable (shell engine only). */
   readonly executable?: string
+  /** The full argv tmux runs, used verbatim when set (a harness engine). Never one command
+   *  string (decision D7): it starts `/usr/bin/env --`, so tmux gets 3+ arguments and no `sh -c`. */
+  readonly argv?: readonly string[]
   /** True while pane text indicates a turn is actively running. Absent =
    *  markerless — working/idle is inferred purely from pane-stability. */
   isWorking?(paneText: string): boolean

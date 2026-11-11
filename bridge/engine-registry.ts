@@ -25,13 +25,50 @@
  * tests. codex/shell/hermes have no such Phase 1 baseline to preserve.
  */
 import { execFile } from 'node:child_process'
-import { CLAUDE_DESCRIPTOR, CODEX_DESCRIPTOR, SHELL_DESCRIPTOR, type EngineDescriptor, type EngineId } from './drivable.ts'
+import {
+  CLAUDE_DESCRIPTOR,
+  CODEX_DESCRIPTOR,
+  SHELL_DESCRIPTOR,
+  type BuiltinEngineId,
+  type EngineDescriptor,
+  type EngineId,
+} from './drivable.ts'
+import { loadHarnesses, type Harness } from './harness-registry.ts'
 
-export const KNOWN_ENGINE_IDS: readonly EngineId[] = ['claude', 'codex', 'shell', 'hermes']
+export const KNOWN_ENGINE_IDS: readonly BuiltinEngineId[] = ['claude', 'codex', 'shell', 'hermes']
+
+export function isBuiltinEngine(id: string): id is BuiltinEngineId {
+  return (KNOWN_ENGINE_IDS as readonly string[]).includes(id)
+}
+
+let harnessCache: Map<string, Harness> | undefined
+
+/**
+ * The loaded harness files by name (harnesses/SCHEMA.md), read once per process. Each refused
+ * file writes one stderr line. A file named claude, codex, shell or hermes is skipped with a
+ * stderr line: those four keep their code engines.
+ */
+export function loadedHarnesses(): Map<string, Harness> {
+  if (harnessCache) return harnessCache
+  const { harnesses, errors } = loadHarnesses()
+  for (const e of errors) process.stderr.write(`[bridge] harness file refused: ${e.file}: ${e.reason}\n`)
+  for (const [name, h] of harnesses) {
+    if (!isBuiltinEngine(name)) continue
+    harnesses.delete(name)
+    process.stderr.write(`[bridge] harness file skipped: ${h.file}: "${name}" keeps its built-in engine\n`)
+  }
+  harnessCache = harnesses
+  return harnesses
+}
+
+/** Tests: the next loadedHarnesses() reads the files again. */
+export function resetHarnessCache(): void {
+  harnessCache = undefined
+}
 
 /** Tmux-hosted engines' descriptors, keyed by id. `hermes` has none — it is not
  *  tmux-hosted (see engines/hermes.ts). */
-const TMUX_DESCRIPTORS: Partial<Record<EngineId, EngineDescriptor>> = {
+const TMUX_DESCRIPTORS: Partial<Record<BuiltinEngineId, EngineDescriptor>> = {
   claude: CLAUDE_DESCRIPTOR,
   codex: CODEX_DESCRIPTOR,
   shell: SHELL_DESCRIPTOR,
@@ -48,22 +85,35 @@ export class EngineUnavailableError extends Error {}
 
 /** Strict known-id parsing: case-insensitive match against KNOWN_ENGINE_IDS,
  *  otherwise a clear UnknownEngineError (never a silent fallback to claude). */
-export function parseEngineId(value: string): EngineId {
+export function parseEngineId(value: string): BuiltinEngineId {
   const v = value.trim().toLowerCase()
-  if ((KNOWN_ENGINE_IDS as readonly string[]).includes(v)) return v as EngineId
+  if (isBuiltinEngine(v)) return v
   throw new UnknownEngineError(`unknown engine: "${value}". Supported engines: ${KNOWN_ENGINE_IDS.join(', ')}.`)
 }
 
-/** Parse TANDEM_ENABLED_ENGINES into the explicit opt-in set. `claude` is
+/** Parse TANDEM_ENABLED_ENGINES into the explicit opt-in set of BUILT-IN engines
+ *  (fleet frames and capabilityReport carry only these). `claude` is
  *  ALWAYS included — it is the sole default-enabled engine and this MVP has no
- *  mechanism to disable it. Unset/blank enables no other engine. */
-export function buildEnabledEngines(envValue = process.env.TANDEM_ENABLED_ENGINES): Set<EngineId> {
-  const enabled = new Set<EngineId>(['claude'])
+ *  mechanism to disable it. Unset/blank enables no other engine. An entry that
+ *  names a loaded harness file is skipped here (resolveEngine reads it). */
+export function buildEnabledEngines(envValue = process.env.TANDEM_ENABLED_ENGINES): Set<BuiltinEngineId> {
+  const enabled = new Set<BuiltinEngineId>(['claude'])
   if (!envValue?.trim()) return enabled
   for (const raw of envValue.split(/[,:]/)) {
     const t = raw.trim()
     if (!t) continue
+    if (!isBuiltinEngine(t.toLowerCase()) && loadedHarnesses().has(t.toLowerCase())) continue
     enabled.add(parseEngineId(t))
+  }
+  return enabled
+}
+
+/** buildEnabledEngines plus the loaded harness names TANDEM_ENABLED_ENGINES lists. */
+function enabledEngineIds(envValue = process.env.TANDEM_ENABLED_ENGINES): Set<EngineId> {
+  const enabled = new Set<EngineId>(buildEnabledEngines(envValue))
+  for (const raw of (envValue ?? '').split(/[,:]/)) {
+    const t = raw.trim().toLowerCase()
+    if (loadedHarnesses().has(t)) enabled.add(t)
   }
   return enabled
 }
@@ -89,6 +139,8 @@ export interface EngineResolution {
   readonly id: EngineId
   /** Present for tmux-hosted engines (claude/codex/shell); absent for hermes. */
   readonly descriptor?: EngineDescriptor
+  /** Present for a harness engine (bridge/engines/harness-engine.ts builds its descriptor). */
+  readonly harness?: Harness
 }
 
 /**
@@ -96,12 +148,30 @@ export interface EngineResolution {
  * Order: parse → enabled → executable-available. Throws typed errors on the
  * FIRST failing check and does nothing else — no cwd/tmux/network access, so
  * the router can call this before any side effect (binding — Phase 2
- * correction E).
+ * correction E). A loaded harness name needs its name enabled, and `shell` too
+ * when its program is a shell (kind = shell); no programPath is unavailable.
  */
 export async function resolveEngine(
   rawId: string | undefined,
   opts: ResolveEngineOptions = {},
 ): Promise<EngineResolution> {
+  const name = (rawId ?? '').trim().toLowerCase()
+  const harness = name && !isBuiltinEngine(name) ? loadedHarnesses().get(name) : undefined
+  if (harness) {
+    const enabled = opts.enabledEngines ?? enabledEngineIds()
+    if (!enabled.has(name)) {
+      throw new EngineDisabledError(`engine "${name}" is disabled. Enable it by adding it to TANDEM_ENABLED_ENGINES.`)
+    }
+    if (harness.kind === 'shell' && !enabled.has('shell')) {
+      throw new EngineDisabledError(
+        `engine "${name}" runs a shell or interpreter, so it also needs "shell" in TANDEM_ENABLED_ENGINES.`,
+      )
+    }
+    if (!harness.programPath) {
+      throw new EngineUnavailableError(`engine "${name}" is enabled but its program "${harness.program}" was not found.`)
+    }
+    return { id: name, harness }
+  }
   const id = rawId === undefined || rawId === '' ? 'claude' : parseEngineId(rawId)
   const enabled = opts.enabledEngines ?? buildEnabledEngines()
   if (!enabled.has(id)) {

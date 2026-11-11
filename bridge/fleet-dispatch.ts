@@ -22,6 +22,7 @@
  *     membership changes later.
  */
 import type { EngineId } from './drivable.ts'
+import { isBuiltinEngine } from './engine-registry.ts'
 import { executeLocalOp, type DispatchResult } from './fleet-op-table.ts'
 import { DeviceOfflineError, InFlightLimitError, BackpressureError, RpcTimeoutError, RpcRejectedError } from './fleet-broker.ts'
 import { OPEN_SESSION_TIMEOUT_MS, type FleetOp } from './fleet-protocol.ts'
@@ -78,6 +79,13 @@ interface OpenCandidate {
  *  set), so a single-device/no-fleet setup keeps resolving to local exactly
  *  as before. */
 export function resolveOpenDevice(runtime: FleetRuntime, explicitDevice: string | undefined, engine: EngineId): string | undefined {
+  // A harness engine is a file on this hub (fleet frames carry built-in ids only): always local.
+  if (!isBuiltinEngine(engine)) {
+    if (explicitDevice !== undefined && explicitDevice !== 'local') {
+      throw new DeviceNotFoundError(`engine "${engine}" is not a built-in engine; it runs only on device "local"`)
+    }
+    return undefined
+  }
   if (explicitDevice !== undefined) {
     if (explicitDevice === 'local') {
       const localEngines = runtime.localDevice?.engines ?? ['claude']

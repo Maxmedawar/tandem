@@ -298,7 +298,8 @@ describe("loadHarnesses: owner folder rules", () => {
     put(builtin, "opencode.toml");
     const res = loadHarnesses({ installDir: builtin, ownerDir: join(tmp, "missing") });
     expect(res.errors).toEqual([]);
-    expect(res.harnesses.get("pi")).toMatchObject({ kind: "agent", programPath: join(homedir(), ".local/bin/pi") });
-    expect(res.harnesses.get("opencode")).toMatchObject({ kind: "agent", programPath: "/opt/homebrew/bin/opencode" });
+    const which = (prog: string) => execFileSync("/bin/sh", ["-c", 'command -v "$1"', "sh", prog], { encoding: "utf8" }).trim();
+    expect(res.harnesses.get("pi")).toMatchObject({ kind: "agent", programPath: which("pi") });
+    expect(res.harnesses.get("opencode")).toMatchObject({ kind: "agent", programPath: which("opencode") });
   });
 });
