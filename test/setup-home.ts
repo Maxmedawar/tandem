@@ -11,6 +11,10 @@ if (process.env.TANDEM_LIVE !== "1") {
   process.env.HOME = mkdtempSync(join(tmpdir(), "tandem-test-home-"));
 }
 
+// Always, live mode included: no inherited CCM_* (the live fabric database, the live hub and its
+// token). A test that needs one sets it itself, after this file.
+for (const k of Object.keys(process.env)) if (k.startsWith("CCM_")) delete process.env[k];
+
 // Canonical spelling of a path that may not exist yet: realpath of its deepest existing ancestor
 // (symlinks, letter case), compared case-insensitively where the file system usually is.
 const real = (p: string): string => {

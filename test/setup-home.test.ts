@@ -30,6 +30,12 @@ describe("test setup isolates HOME and TANDEM_HOME", () => {
     expect(statSync(homedir()).isDirectory()).toBe(true);
   });
 
+  // CCM_* can name the live fabric database and the live hub with its token: none is inherited,
+  // live mode included. Only the names are compared, never a value.
+  it("no inherited CCM_ variable is left", () => {
+    expect(Object.keys(process.env).filter((k) => k.startsWith("CCM_"))).toEqual([]);
+  });
+
   it("TANDEM_HOME is unset or outside the real home", () => {
     const th = process.env.TANDEM_HOME;
     if (th === undefined) return;
