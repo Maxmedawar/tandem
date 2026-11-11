@@ -289,12 +289,14 @@ describe('HubQueue', () => {
     }
   })
 
-  it('33A: all or nothing: a take past TTL_MS whose receipt INSERT throws keeps the old message copy and writes no receipt', () => {
+  it('33A: all or nothing: a take or a put past TTL_MS whose receipt INSERT throws keeps the old message copy and writes no receipt', () => {
     const { q, clock, hooks, rows } = openQueue()
     q.queue.put({ id: 'm1', from: 'S', to: ['A'], body: 'x' })
     clock.now = T0 + TTL_MS + 1
     hooks.failOn = (query, bindings) => query.startsWith('INSERT INTO queue_copies') && bindings.includes('expired')
     expect(() => q.queue.take('A')).toThrow(/injected/)
+    // put runs the same expiry first, inside its own transaction.
+    expect(() => q.queue.put({ id: 'm2', from: 'S', to: ['B'], body: 'x' })).toThrow(/injected/)
     hooks.failOn = undefined
     expect(rows('SELECT to_id, seq, id, kind FROM queue_copies')).toEqual([{ to_id: 'A', seq: 1, id: 'm1', kind: 'message' }])
     // Once the INSERT works, expiry runs in full and the receipt gets S's first number.
