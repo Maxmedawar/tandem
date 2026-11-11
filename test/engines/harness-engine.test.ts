@@ -62,6 +62,7 @@ const { harnessDescriptor } = await import("../../bridge/engines/harness-engine.
 const { loadedHarnesses, resetHarnessCache, resolveEngine } = await import("../../bridge/engine-registry.ts");
 const { applyLimits } = await import("../../bridge/limits.ts");
 const { agentEntry, writeLimits } = await import("../fixtures/limits.ts");
+const { routeForTest } = await import("../../bridge/router.ts");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const tmux = (...args: string[]) =>
@@ -278,10 +279,15 @@ describe("harness engine: a fake CLI through the MCP tools (private tmux socket)
     const ask = await send(name, "ask");
     expect(ask.body.status).toBe("running");
     expect((await send(name)).body).toMatchObject({ agentState: "waiting_for_approval", idle: false });
-    const answer = await send(name, "y");
-    expect(answer.body.status).toBe("done");
-    expect(answer.body.report).toContain("reply: answered y");
+    // U-R1A-18 input gate: no caller types into a session waiting for approval (409, nothing
+    // typed); the person answers in tmux.
+    const waiting = { error: "waiting_for_approval: the session waits for a person to approve or deny; nothing was typed", state: "waiting_for_approval" };
+    expect((await send(name, "y")).body).toEqual(waiting);
+    expect(await routeForTest("POST", `/sessions/${name}/send`, { text: "y" })).toEqual({ status: 409, body: waiting });
+    expect(pane(name).trimEnd().endsWith("(y/n)")).toBe(true);
+    tmux("send-keys", "-t", `=ccm-${name}:`, "y", "Enter");
     await pollUntil(name, "idle");
+    expect(pane(name)).toContain("reply: answered y");
 
     expect((await call("close_session", { name })).body).toMatchObject({ ok: true, engine: "fake-rules" });
     expect(tmuxHas(name)).toBe(false);

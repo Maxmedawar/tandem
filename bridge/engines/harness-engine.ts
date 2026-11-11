@@ -8,7 +8,7 @@
  * model/effort/bypass stay Claude-only and are refused, never ignored.
  */
 import type { EngineDescriptor, ReadOptions, ReadResult } from '../drivable.ts'
-import { createStateReader, readScreen } from '../harness-detect.ts'
+import { createStateReader, readScreen, type ReadState } from '../harness-detect.ts'
 import type { Harness } from '../harness-registry.ts'
 import { spawnArgv, TerminalSession, type SpawnOptions as TerminalSpawnOptions } from '../terminal-session.ts'
 import { TerminalAdapterSession, type TerminalSessionLike } from './terminal-adapter.ts'
@@ -54,12 +54,14 @@ export function harnessDescriptor(h: Harness, opts: { skipPrompts?: boolean } = 
 }
 
 export class HarnessSession extends TerminalAdapterSession {
+  private readonly harness: Harness
   private readonly screenSource: HarnessTerminal
   private readonly reader: ReturnType<typeof createStateReader>
   private readonly interruptKeys: readonly string[] | undefined
 
   constructor(harness: Harness, terminal: HarnessTerminal) {
     super(harness.name, terminal)
+    this.harness = harness
     this.screenSource = terminal
     this.reader = createStateReader(harness)
     const keys = harness.keys?.interrupt
@@ -69,6 +71,16 @@ export class HarnessSession extends TerminalAdapterSession {
   /** The file's `keys.interrupt` when set, else the terminal's default (Escape, then C-c). */
   interrupt(): Promise<void> {
     return this.screenSource.interrupt(this.interruptKeys)
+  }
+
+  /**
+   * The input gate's read (bridge/input-gate.ts): ONE screen capture, its state by the file's
+   * rules with no debounce, and the file's `states.debounce_ms` (0 without `states`). Not the
+   * debounced `reader`: its last value can carry an old idle across a screen it never saw.
+   */
+  async inputState(): Promise<{ state: ReadState; screen: string; debounceMs: number }> {
+    const screen = await this.screenSource.screen()
+    return { state: readScreen(this.harness, screen), screen, debounceMs: this.harness.states?.debounce_ms ?? 0 }
   }
 
   /** The terminal page plus `agentState`, read from the current screen by the file's rules. */
