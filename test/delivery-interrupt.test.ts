@@ -357,3 +357,28 @@ describe('(g) who may interrupt is unchanged; one key per newest message', () =>
     }
   }, 30_000)
 })
+
+describe('(g2) audit: interrupt_from is read again at the key', () => {
+  it('a sender taken out of interrupt_from after the send gets no key; back in: one key', async () => {
+    const name = 'r1a27b-revoked'
+    const st = standIn(name, 'working')
+    try {
+      interrupt(name)
+      writeLimits(TH, { interrupt_from: [] })
+      applyLimits()
+      for (let k = 0; k < 2; k++) await noticePass(box)
+      expect(st.presses.n).toBe(0)
+      expect(box.interruptFor(name)).toBe(false)
+      expect(interruptLines(name)).toHaveLength(0)
+      writeLimits(TH, { interrupt_from: ['owner'] })
+      applyLimits()
+      for (let k = 0; k < 2; k++) await noticePass(box)
+      expect(st.presses.n).toBe(1)
+      expect(st.typed).toEqual([])
+    } finally {
+      writeLimits(TH, { interrupt_from: ['owner'] })
+      applyLimits()
+      unregisterLive(name)
+    }
+  }, 30_000)
+})

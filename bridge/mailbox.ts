@@ -196,7 +196,8 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   const noticedSeq = db.prepare(`SELECT seq FROM mail_notice WHERE to_name = ?`)
   const noticedSet = db.prepare(`INSERT INTO mail_notice (to_name, seq, at_ms) VALUES (?, ?, ?)
     ON CONFLICT (to_name) DO UPDATE SET seq = excluded.seq, at_ms = excluded.at_ms`)
-  const interruptTop = db.prepare(`SELECT max(seq) AS top FROM mail WHERE to_name = ? AND state = 'queued' AND level = 'interrupt'`)
+  const interruptTop = db.prepare(`SELECT max(seq) AS top FROM mail WHERE to_name = ? AND state = 'queued' AND level = 'interrupt'
+    AND from_id IN (SELECT value FROM json_each(?))`)
   const interruptedSeq = db.prepare(`SELECT seq FROM mail_interrupt WHERE to_name = ?`)
   const interruptedSet = db.prepare(`INSERT INTO mail_interrupt (to_name, seq, at_ms) VALUES (?, ?, ?)
     ON CONFLICT (to_name) DO UPDATE SET seq = excluded.seq, at_ms = excluded.at_ms`)
@@ -281,13 +282,14 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
     /**
      * True when this inbox holds a queued Interrupt message newer than the last key pressed for it
      * (recorded here), else false with nothing written: one interrupt key per newest Interrupt
-     * message, across every process. Who may send one was checked at send (interrupt_from).
+     * message, across every process. Only a message whose sender the limits file's interrupt_from
+     * lists now counts: checked at send, and again here, so a sender taken out later presses no key.
      */
     interruptFor(to: string): boolean {
       checkName(to)
       db.exec('BEGIN IMMEDIATE')
       try {
-        const top = (interruptTop.get(to) as { top: number | null }).top
+        const top = (interruptTop.get(to, JSON.stringify(limitsSnapshot().interrupt_from ?? [])) as { top: number | null }).top
         const stored = Number((interruptedSeq.get(to) as { seq: number } | undefined)?.seq ?? 0)
         const out = top !== null && Number(top) > stored
         if (out) interruptedSet.run(to, Number(top), now())

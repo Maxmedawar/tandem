@@ -89,6 +89,14 @@ const deliveryFiles = (name: string) => {
   return existsSync(dir) ? readdirSync(dir).filter((f) => f.startsWith(`${name}.`)) : []
 }
 
+describe('(g0) audit: an open with a bad engine runs no tmux and makes no folder', () => {
+  it('unknown engine: 400, no tmux folder under TANDEM_HOME', async () => {
+    expect(existsSync(join(TH, 'tmux'))).toBe(false)
+    expect(await rq('POST', '/sessions/open', { engine: 'r1a27b-nope', name: 'r1a27b-Early', cwd: WORK })).toMatchObject({ status: 400 })
+    expect(existsSync(join(TH, 'tmux'))).toBe(false)
+  })
+})
+
 describe('(h) open one name, then the same name in another case', () => {
   it('409 naming the open one, one name-case line, no second tmux session, no file; the same name reuses; after close the other opens', async () => {
     const first = await open('r1a27b-Case')
@@ -141,6 +149,27 @@ describe('(j) a Tandem tmux session this process did not register', () => {
       expect(tmuxNames()).not.toContain('ccm-r1a27b-tmx')
     } finally {
       await left.close()
+    }
+  }, 60_000)
+})
+
+describe('(k) audit: two sessions an earlier process left whose names differ only in case', () => {
+  it('each one is adopted under its own name; a third spelling is refused', async () => {
+    const h = loadedHarnesses().get(ENGINE)!
+    const names = ['r1a27b-Mig', 'r1a27b-mig']
+    const left = []
+    for (const name of names) {
+      left.push(await TerminalSession.spawn({ name, cwd: WORK, allowlist: [WORK], descriptor: harnessDescriptor(h) }))
+      unregisterLive(name)
+    }
+    try {
+      for (const name of names) expect(await open(name)).toMatchObject({ status: 200, body: { name, reused: true } })
+      for (const name of names) expect(await open(name)).toMatchObject({ status: 200, body: { name, reused: true } })
+      expect((await open('r1a27b-MIG')).status).toBe(409)
+      expect(tmuxNames()).not.toContain('ccm-r1a27b-MIG')
+    } finally {
+      for (const name of names) unregisterLive(name)
+      for (const s of left) await s.close()
     }
   }, 60_000)
 })
