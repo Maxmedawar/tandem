@@ -36,7 +36,7 @@ const UNREAD: InputRead = { state: 'unknown', screen: '', debounceMs: 0 }
 
 /** One read. A session with no inputState, a read that fails, or one with no answer in 2000 ms
  *  is a screen the session cannot show: unknown. So no read can keep the gate waiting. */
-function readInput(session: object): Promise<InputRead> {
+export function readInput(session: object): Promise<InputRead> {
   const s = session as { inputState?: () => Promise<InputRead> }
   if (typeof s.inputState !== 'function') return Promise.resolve(UNREAD)
   let timer: ReturnType<typeof setTimeout> | undefined
