@@ -100,6 +100,8 @@ A refused file never stops the others. It is reported with a reason and skipped:
 - a file over 64 KiB, a symlink, or anything that is not a regular file;
 - an owner file not owned by you, or writable by group or others;
 - a file name that is not `<valid name>.toml`;
+- a file named `all.toml` or `terminal.toml`, built-in or owner (reserved name: the session list
+  filter uses `all` and `terminal`);
 - an owner file that uses a built-in name (the built-in stays);
 - two owner files that claim one name (both are refused).
 

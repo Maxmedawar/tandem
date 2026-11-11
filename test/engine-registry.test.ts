@@ -1,14 +1,35 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   parseEngineId,
   buildEnabledEngines,
   resolveEngine,
   capabilityReport,
+  resetHarnessCache,
   UnknownEngineError,
   EngineDisabledError,
   EngineUnavailableError,
   KNOWN_ENGINE_IDS,
 } from "../bridge/engine-registry.ts";
+
+// codex runs from its built-in harness file: its presence is the file's programPath, found on PATH.
+const tmp = mkdtempSync(join(tmpdir(), "r1a12-registry-"));
+const CODEX_BIN = join(tmp, "bin");
+mkdirSync(CODEX_BIN);
+writeFileSync(join(CODEX_BIN, "codex"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+/** PATH holds a fake `codex` (never run) or nothing; no owner harness files. */
+function codexOnPath(present: boolean): void {
+  vi.stubEnv("TANDEM_HOME", join(tmp, "empty-home"));
+  vi.stubEnv("PATH", present ? CODEX_BIN : join(tmp, "no-such-bin"));
+  resetHarnessCache();
+}
+afterEach(() => {
+  vi.unstubAllEnvs();
+  resetHarnessCache();
+});
+afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
 describe("parseEngineId — strict known-id parsing", () => {
   it("accepts every known id, case-insensitively", () => {
@@ -76,22 +97,23 @@ describe("resolveEngine — order: parse -> enabled -> executable-available", ()
     ).rejects.toThrow(EngineDisabledError);
   });
 
-  it("throws EngineUnavailableError when enabled but the executable is missing (injected detector)", async () => {
+  it("throws EngineUnavailableError when enabled but no codex is on PATH", async () => {
+    codexOnPath(false);
     await expect(
       resolveEngine("codex", {
         enabledEngines: new Set(["claude", "codex"]),
-        detectExecutable: async () => false,
       }),
     ).rejects.toThrow(EngineUnavailableError);
   });
 
-  it("succeeds when enabled and the executable is present (injected detector)", async () => {
+  it("succeeds when enabled and a codex is on PATH: the built-in codex harness file", async () => {
+    codexOnPath(true);
     const resolution = await resolveEngine("codex", {
       enabledEngines: new Set(["claude", "codex"]),
-      detectExecutable: async () => true,
     });
     expect(resolution.id).toBe("codex");
-    expect(resolution.descriptor?.id).toBe("codex");
+    expect(resolution.harness?.name).toBe("codex");
+    expect(resolution.harness?.programPath).toBe(join(CODEX_BIN, "codex"));
   });
 
   it("shell needs no executable check (no fixed binary) even with a detector that always fails", async () => {
@@ -127,16 +149,19 @@ describe("resolveEngine — order: parse -> enabled -> executable-available", ()
 });
 
 describe("capabilityReport", () => {
-  it("reports every known engine with enabled/available flags", async () => {
+  it("reports every known engine with enabled/available flags (codex: its file's programPath)", async () => {
+    codexOnPath(true);
     const report = await capabilityReport({
       enabledEngines: new Set(["claude", "codex"]),
-      detectExecutable: async (bin) => bin === "codex",
     });
     const byEngine = Object.fromEntries(report.map((r) => [r.engine, r]));
     expect(byEngine.claude).toEqual({ engine: "claude", enabled: true, available: true });
     expect(byEngine.codex).toEqual({ engine: "codex", enabled: true, available: true });
     expect(byEngine.shell).toEqual({ engine: "shell", enabled: false, available: false });
     expect(byEngine.hermes).toEqual({ engine: "hermes", enabled: false, available: false });
+    codexOnPath(false);
+    const missing = await capabilityReport({ enabledEngines: new Set(["claude", "codex"]) });
+    expect(missing.find((r) => r.engine === "codex")).toEqual({ engine: "codex", enabled: true, available: false });
   });
 
   it("shell is available when enabled regardless of the detector", async () => {

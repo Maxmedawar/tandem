@@ -303,3 +303,21 @@ describe("loadHarnesses: owner folder rules", () => {
     expect(res.harnesses.get("opencode")).toMatchObject({ kind: "agent", programPath: which("opencode") });
   });
 });
+
+describe("loadHarnesses: reserved names (the session list filter reads all and terminal)", () => {
+  afterEach(cleanup);
+
+  it.each([
+    ["owner", "all"],
+    ["owner", "terminal"],
+    ["builtin", "terminal"],
+    ["builtin", "all"],
+  ] as const)("a %s %s.toml is refused with reserved name", (folder, name) => {
+    const s = setup();
+    const dir = folder === "owner" ? s.owner : s.builtin;
+    writeFileSync(join(dir, `${name}.toml`), s.text(name), { mode: 0o600 });
+    const res = loadHarnesses({ installDir: s.builtin, ownerDir: s.owner, path: s.bin });
+    expect(res.errors).toEqual([{ file: join(dir, `${name}.toml`), reason: expect.stringMatching(/reserved name/) }]);
+    expect(res.harnesses.size).toBe(0);
+  });
+});

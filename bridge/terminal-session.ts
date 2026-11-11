@@ -73,6 +73,9 @@ const CLAUDE_WORKING_MARKER = 'esc to interrupt'
 const TRUST_PROMPT_MARKER = 'trust this folder'
 
 const POLL_MS = 750
+/** Between the typed text and Enter: codex 0.167.1 takes an Enter that lands right after typed
+ *  text as a newline (its paste detection), so the text is never submitted. Core waits 200 ms. */
+const SUBMIT_PAUSE_MS = 200
 // Soft cap for a single send() wait, configurable via env TANDEM_WAIT_MS (ms).
 // At the cap, send() returns status:'running' so the caller can poll/read again
 // without resending the prompt. The proven idle/done detection below is
@@ -158,8 +161,8 @@ export interface SpawnOptions {
   /** Override the bypass-permissions default for this spawn (else env/default).
    *  Claude only; see `model`. */
   allowBypass?: boolean
-  /** Which engine's tmux lifecycle to run. Defaults to CLAUDE_DESCRIPTOR so
-   *  relay.ts (which never sets this) is completely unaffected by Phase 2. */
+  /** Which engine's tmux lifecycle to run. Defaults to CLAUDE_DESCRIPTOR; relay.ts
+   *  passes the built-in claude harness file's descriptor. */
   descriptor?: EngineDescriptor
   /** Injectable owner-id provider — tests supply one bound to a temp state dir
    *  so the real `~/.tandem/owner-id` is never touched. */
@@ -197,10 +200,16 @@ function paneTarget(name: string): string {
   return `${sessionTarget(name)}:`
 }
 
+/** The bridge's secret settings. A tmux client that starts the server hands it its environment,
+ *  and every session inherits that, so no tmux call gets them; process.env keeps them. */
+const BRIDGE_SECRET_SETTINGS = ['TANDEM_OWNER_PASSWORD', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_FLEET_TOKEN']
+
 /** Run tmux with an argv array (never a shell string). Resolves stdout. */
 function tmux(args: string[]): Promise<string> {
+  const env = { ...process.env }
+  for (const name of BRIDGE_SECRET_SETTINGS) delete env[name]
   return new Promise<string>((resolve, reject) => {
-    execFile('tmux', args, { maxBuffer: 16 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile('tmux', args, { maxBuffer: 16 * 1024 * 1024, env }, (error, stdout, stderr) => {
       if (error) {
         reject(new Error(`tmux ${args[0]} failed: ${stderr || error.message}`))
         return
@@ -423,7 +432,8 @@ export function stepStability(
  *
  * No silent option loss (binding — Phase 2 correction C): a non-Claude engine REJECTS
  * model/effort/bypass rather than quietly ignoring them. Claude's flags follow its argv, whether
- * that is CLAUDE_DESCRIPTOR's executable (the relay) or the claude harness file's argv.
+ * that is CLAUDE_DESCRIPTOR's executable (the default) or the claude harness file's argv (the
+ * harness engine and the relay). No side effect: spawn writes the legacy-variable warning.
  * ponytail: U-R1A-17 moves bypass to the file's skip_prompts_args under `permission_skip`.
  */
 export function spawnArgv(
@@ -452,7 +462,6 @@ export function spawnArgv(
     engineArgv.push(shellBin, '-l')
   }
   if (descriptor.id === 'claude') {
-    warnLegacySkipPermissionsIfSet()
     const skip = opts.allowBypass ?? bypassPermissionsEnabled()
     if (skip) engineArgv.push('--dangerously-skip-permissions')
     if (opts.model !== undefined) engineArgv.push('--model', validateModel(opts.model))
@@ -529,6 +538,8 @@ export class TerminalSession {
     }
     // Flags are refused or validated here, before any cwd, tmux or file access.
     const engineArgv = spawnArgv(descriptor, opts)
+    // Once per spawn (spawnArgv has no side effect; a harness engine calls it twice).
+    if (descriptor.id === 'claude') warnLegacySkipPermissionsIfSet()
     if (!existsSync(requestedCwd) || !statSync(requestedCwd).isDirectory()) {
       throw new Error(`cwd does not exist or is not a directory: ${requestedCwd}`)
     }
@@ -776,10 +787,7 @@ export class TerminalSession {
   }
 
   private async warmupMarkerless(): Promise<void> {
-    if (this.descriptor.warmupPrompt) {
-      await this.injectMultiline(this.descriptor.warmupPrompt)
-      await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
-    }
+    if (this.descriptor.warmupPrompt) await this.typeAndSubmit(this.descriptor.warmupPrompt)
     const deadline = Date.now() + SPAWN_WARMUP_MS
     let state = INITIAL_STABILITY_STATE
     const required = requiredStablePolls(this.descriptor)
@@ -824,6 +832,13 @@ export class TerminalSession {
     }
   }
 
+  /** Every typed-then-submitted text goes through here: type it, pause, then one Enter. */
+  private async typeAndSubmit(text: string): Promise<void> {
+    await this.injectMultiline(text)
+    await sleep(SUBMIT_PAUSE_MS)
+    await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+  }
+
   /**
    * Inject text (injection-safe), submit with Enter, then wait for the turn to
    * complete. Returns status:'done' with the harvested report once idle, or
@@ -845,10 +860,9 @@ export class TerminalSession {
   async send(text: string): Promise<SendResult> {
     const startCursor = this.cursor()
 
-    await this.injectMultiline(text)
     // Separate Enter keypress submits the prompt (the single submit for the whole
     // multi-line body).
-    await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+    await this.typeAndSubmit(text)
 
     const softDeadline = Date.now() + SEND_SOFT_CAP_MS
     const hardDeadline = Date.now() + SEND_HARD_CAP_MS
@@ -915,8 +929,7 @@ export class TerminalSession {
    * autocomplete's exact match resolve and the setting take effect.
    */
   private async submitControl(line: string): Promise<void> {
-    await this.injectMultiline(line)
-    await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+    await this.typeAndSubmit(line)
     await sleep(POLL_MS)
   }
 

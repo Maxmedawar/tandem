@@ -16,9 +16,10 @@
  * access beyond an executable-presence check (injectable, so tests never shell
  * out to a real `which`), no tmux, no network.
  *
- * `claude` keeps its built-in NAME (here, in fleet routing, on by default) but
- * runs from its built-in harness file, harnesses/claude.toml, through the one
- * harness engine (engines/harness-engine.ts).
+ * `claude` and `codex` keep their built-in NAMES (here, in fleet routing; claude on
+ * by default, codex opt-in) but run from their built-in harness files,
+ * harnesses/claude.toml and harnesses/codex.toml, through the one harness engine
+ * (engines/harness-engine.ts).
  *
  * `claude` is exempt from the executable-presence check: Phase 1 never
  * preflighted it (a missing `claude` binary surfaces at spawn/warmup, exactly
@@ -26,12 +27,12 @@
  * `which claude` subprocess call to the hot path of EVERY open_session
  * (including reusing an already-live session) would be both a needless
  * regression risk in production and a source of environment-dependent flake in
- * tests. codex/shell/hermes have no such Phase 1 baseline to preserve.
+ * tests. codex needs its file's `programPath` (a PATH lookup by reading folders,
+ * never a subprocess); shell/hermes have no fixed executable.
  * ponytail: U-R1A-13 drops this exemption.
  */
 import { execFile } from 'node:child_process'
 import {
-  CODEX_DESCRIPTOR,
   SHELL_DESCRIPTOR,
   type BuiltinEngineId,
   type EngineDescriptor,
@@ -47,18 +48,21 @@ export function isBuiltinEngine(id: string): id is BuiltinEngineId {
 
 let harnessCache: Map<string, Harness> | undefined
 
+/** Built-in engines that run from their built-in harness file. */
+const HARNESS_BUILTINS = new Set<string>(['claude', 'codex'])
+
 /**
  * The loaded harness files by name (harnesses/SCHEMA.md), read once per process. Each refused
- * file writes one stderr line. The built-in claude file stays (claude runs from it; an owner
- * claude.toml is refused by the loader). A file named codex, shell or hermes is skipped with a
- * stderr line: those three keep their code engines until U-R1A-12/13/16.
+ * file writes one stderr line. The built-in claude and codex files stay (those engines run from
+ * them; an owner claude.toml or codex.toml is refused by the loader). A file named shell or hermes
+ * is skipped with a stderr line: those two keep their code engines until U-R1A-13/16.
  */
 export function loadedHarnesses(): Map<string, Harness> {
   if (harnessCache) return harnessCache
   const { harnesses, errors } = loadHarnesses()
   for (const e of errors) process.stderr.write(`[bridge] harness file refused: ${e.file}: ${e.reason}\n`)
   for (const [name, h] of harnesses) {
-    if (!isBuiltinEngine(name) || (name === 'claude' && h.source === 'builtin')) continue
+    if (!isBuiltinEngine(name) || (HARNESS_BUILTINS.has(name) && h.source === 'builtin')) continue
     harnesses.delete(name)
     process.stderr.write(`[bridge] harness file skipped: ${h.file}: "${name}" keeps its built-in engine\n`)
   }
@@ -71,10 +75,9 @@ export function resetHarnessCache(): void {
   harnessCache = undefined
 }
 
-/** Code engines' tmux descriptors, keyed by id. `claude` runs from its harness
- *  file instead; `hermes` has none — it is not tmux-hosted (see engines/hermes.ts). */
+/** Code engines' tmux descriptors, keyed by id. `claude` and `codex` run from their harness
+ *  files instead; `hermes` has none — it is not tmux-hosted (see engines/hermes.ts). */
 const TMUX_DESCRIPTORS: Partial<Record<BuiltinEngineId, EngineDescriptor>> = {
-  codex: CODEX_DESCRIPTOR,
   shell: SHELL_DESCRIPTOR,
 }
 
@@ -141,7 +144,7 @@ export interface ResolveEngineOptions {
 
 export interface EngineResolution {
   readonly id: EngineId
-  /** Present for the code tmux engines (codex/shell); absent for hermes and harness engines. */
+  /** Present for the code tmux engine (shell); absent for hermes and harness engines. */
   readonly descriptor?: EngineDescriptor
   /** Present for a harness engine, claude included (bridge/engines/harness-engine.ts builds its descriptor). */
   readonly harness?: Harness
@@ -183,11 +186,14 @@ export async function resolveEngine(
       `engine "${id}" is disabled. Enable it by adding it to TANDEM_ENABLED_ENGINES.`,
     )
   }
-  if (id === 'claude') {
-    // No presence check (see the module doc); a missing claude starts `/usr/bin/env -- claude` and fails at spawn.
-    const claude = loadedHarnesses().get('claude')
-    if (!claude) throw new EngineUnavailableError('engine "claude" is enabled but its built-in harness file harnesses/claude.toml did not load.')
-    return { id, harness: claude }
+  if (HARNESS_BUILTINS.has(id)) {
+    const builtin = loadedHarnesses().get(id)
+    if (!builtin) throw new EngineUnavailableError(`engine "${id}" is enabled but its built-in harness file harnesses/${id}.toml did not load.`)
+    // claude: no presence check (see the module doc); a missing claude starts `/usr/bin/env -- claude` and fails at spawn.
+    if (id !== 'claude' && !builtin.programPath) {
+      throw new EngineUnavailableError(`engine "${id}" is enabled but its program "${builtin.program}" was not found on PATH.`)
+    }
+    return { id, harness: builtin }
   }
   const descriptor = TMUX_DESCRIPTORS[id]
   if (descriptor?.executable) {
@@ -205,8 +211,8 @@ export async function resolveEngine(
 export interface EngineCapability {
   engine: EngineId
   enabled: boolean
-  /** False when disabled. When enabled: false only if a required executable is
-   *  missing (codex); always true when enabled for claude (exempt — see the
+  /** False when disabled. When enabled: false only if codex's harness file has no
+   *  `programPath`; always true when enabled for claude (exempt — see the
    *  module doc comment), shell (no fixed executable), and hermes (availability
    *  is a runtime loopback/config concern handled by its own adapter, not this
    *  registry). */
@@ -225,7 +231,9 @@ export async function capabilityReport(opts: ResolveEngineOptions = {}): Promise
     let available = false
     if (isEnabled) {
       const descriptor = TMUX_DESCRIPTORS[id]
-      available = descriptor?.executable ? await detect(descriptor.executable) : true
+      available = id === 'codex'
+        ? loadedHarnesses().get('codex')?.programPath !== undefined
+        : descriptor?.executable ? await detect(descriptor.executable) : true
     }
     out.push({ engine: id, enabled: isEnabled, available })
   }
