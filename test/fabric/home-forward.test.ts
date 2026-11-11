@@ -5,6 +5,7 @@
  * A fake hub (a node:http server on 127.0.0.1, port 0) records each request and answers what the
  * case sets.
  */
+import { createHash, createPublicKey, generateKeyPairSync, sign as edSign } from 'node:crypto'
 import { once } from 'node:events'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -25,11 +26,36 @@ const CONFLICT = {
   message: 'more than one computer holds a memory store (alpha, gamma); turn the store off on all but one',
 }
 
-interface Seen { method: string; url: string; authorization?: string; contentType?: string; body: string }
+/**
+ * U-R1A-31C-1: the fake hub answers as the memory home would, signing each answer with HOME's key
+ * (ANSWER_TEXT over the request's challenge, path and input and the answer's status and bytes);
+ * `fake.trusted` is this computer's roster, HOME and MEMBER in it.
+ */
+type MemKey = { publicKey: string; sign(data: string): string }
+const memKey = (): MemKey => {
+  const { privateKey } = generateKeyPairSync('ed25519')
+  const publicKey = createPublicKey(privateKey).export({ format: 'jwk' }).x as string
+  return { publicKey, sign: (d) => edSign(null, Buffer.from(d), privateKey).toString('base64url') }
+}
+const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex')
+const HOME = { id: 'r1a31c1-home', key: memKey() }
+const MEMBER = { id: 'r1a31c1-member', key: memKey() }
+const OUTSIDER = { id: 'r1a31c1-outsider', key: memKey() }
+let roster: (() => { id: string; key: string }[] | undefined) = () => [HOME, MEMBER].map((m) => ({ id: m.id, key: m.key.publicKey }))
+type Signed = { id: string; key: string; challenge: string; method: string; path: string; input: unknown; status: number; body: string }
+const answerText = (f: Signed) =>
+  ['tandem-memory-answer-v1', f.id, f.key, f.challenge, f.method, f.path, sha(JSON.stringify(f.input ?? null)), String(f.status), sha(f.body)].join('\n')
+
+interface Seen { method: string; url: string; authorization?: string; contentType?: string; challenge?: string; body: string }
 const seen: Seen[] = []
-let answer: { status: number; type: string; body: string } = { status: 200, type: 'application/json', body: '{}' }
+type Answer = {
+  status: number; type: string; body: string
+  /** Who signs (default HOME); false: no answer header. `over` changes the signed fields. */
+  signer?: { id: string; key: MemKey } | false; signedId?: string; over?: Partial<Signed>
+}
+let answer: Answer = { status: 200, type: 'application/json', body: '{}' }
 let server: Server
-let fake = { url: '', token: TOKEN }
+let fake = { url: '', token: TOKEN, trusted: () => roster() }
 
 beforeAll(async () => {
   server = createServer((request, response) => {
@@ -37,20 +63,34 @@ beforeAll(async () => {
     request.setEncoding('utf8')
     request.on('data', (chunk: string) => { body += chunk })
     request.on('end', () => {
+      const challenge = request.headers['tandem-memory-challenge'] as string | undefined
       seen.push({
         method: request.method ?? '',
         url: request.url ?? '',
         authorization: request.headers.authorization,
         contentType: request.headers['content-type'],
+        challenge,
         body,
       })
-      response.writeHead(answer.status, { 'content-type': answer.type })
+      const headers: Record<string, string> = { 'content-type': answer.type }
+      const signer = answer.signer ?? HOME
+      if (signer) {
+        let input: unknown
+        try { input = (JSON.parse(body) as { input?: unknown }).input } catch { input = undefined }
+        const id = answer.signedId ?? signer.id
+        const text = answerText({
+          id, key: signer.key.publicKey, challenge: challenge ?? '', method: request.method ?? '',
+          path: (request.url ?? '').replace(/^\/__tunnel\/fabric-rpc/, ''), input, status: answer.status, body: answer.body, ...answer.over,
+        })
+        headers['tandem-memory-answer'] = `v1 ${id} ${signer.key.publicKey} ${signer.key.sign(text)}`
+      }
+      response.writeHead(answer.status, headers)
       response.end(answer.body)
     })
   })
   server.listen(0, '127.0.0.1')
   await once(server, 'listening')
-  fake = { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, token: TOKEN }
+  fake = { url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, token: TOKEN, trusted: () => roster() }
 })
 
 afterAll(async () => {
@@ -60,6 +100,7 @@ afterAll(async () => {
 beforeEach(() => {
   seen.length = 0
   answer = { status: 200, type: 'application/json', body: '{}' }
+  roster = () => [HOME, MEMBER].map((m) => ({ id: m.id, key: m.key.publicKey }))
 })
 
 describe('fabricForward', () => {
@@ -131,5 +172,92 @@ describe('buildMcpServer with a forwarder', () => {
       await client.close()
       await mcp.close()
     }
+  })
+})
+
+describe('(31C-1) answers must come from my roster', () => {
+  const UNVERIFIED = { error: 'memory_home_unverified', message: 'memory home unverified: the answer was not signed by a computer in this roster' }
+  const NOT_IN_ROSTER = {
+    error: 'memory_home_not_in_roster',
+    message: 'memory home not in roster: the computer that holds memory is not in the roster the hub holds; trust it from a computer in the roster',
+  }
+  const OFFLINE = { error: 'memory_home_offline', message: 'memory home offline: the computer that holds memory is not connected to the hub' }
+  const body = { input: { query: 'r1a31c1 signed' } }
+  const RECORDS = { records: [{ id: 'm1' }] }
+  const ask = () => fabricForward(fake).forward('/fabric/memory/search', body)
+
+  it('the request carries a 22-character tandem-memory-challenge, a new one each call, and no token, key or challenge in the URL', async () => {
+    await ask()
+    await ask()
+    expect(seen).toHaveLength(2)
+    for (const request of seen) {
+      expect(request.challenge).toMatch(/^[A-Za-z0-9_-]{22}$/)
+      expect(request.url).toBe('/__tunnel/fabric-rpc/fabric/memory/search')
+      expect(request.url).not.toContain(TOKEN)
+      expect(request.url).not.toContain(request.challenge!)
+      for (const m of [HOME, MEMBER]) expect(request.url).not.toContain(m.key.publicKey)
+    }
+    expect(seen[0].challenge).not.toBe(seen[1].challenge)
+  })
+
+  it('a signed 200 from a member: the body', async () => {
+    answer = { status: 200, type: 'application/json', body: JSON.stringify(RECORDS) }
+    expect(await ask()).toEqual(RECORDS)
+    answer = { status: 200, type: 'application/json', body: JSON.stringify(RECORDS), signer: MEMBER }
+    expect(await ask()).toEqual(RECORDS)
+  })
+
+  it.each([
+    ['signed by a key not in trusted()', { signer: OUTSIDER }],
+    ["a member's key under another id", { signedId: MEMBER.id }],
+    ["a member's key under an id not in the roster", { signedId: OUTSIDER.id }],
+    ['signed over another challenge (a replay)', { over: { challenge: 'r1a31c1-challenge_0123' } }],
+    ['signed over another path', { over: { path: '/fabric/memory/get' } }],
+    ['signed over another input', { over: { input: { query: 'r1a31c1 other' } } }],
+    ['signed over another status', { over: { status: 201 } }],
+    ['signed over other bytes', { over: { body: JSON.stringify({ records: [] }) } }],
+    ['signed over another method', { over: { method: 'GET' } }],
+    ['unsigned', { signer: false as const }],
+  ] as const)('a 200 %s: unverified', async (_label, change) => {
+    answer = { status: 200, type: 'application/json', body: JSON.stringify(RECORDS), ...change }
+    expect(await ask()).toEqual(UNVERIFIED)
+  })
+
+  it('no roster (trusted returns undefined), an empty roster or a roster read that throws: unverified', async () => {
+    answer = { status: 200, type: 'application/json', body: JSON.stringify(RECORDS) }
+    roster = () => undefined
+    expect(await ask()).toEqual(UNVERIFIED)
+    roster = () => []
+    expect(await ask()).toEqual(UNVERIFIED)
+    roster = () => { throw new Error('r1a31c1 tampered roster') }
+    expect(await ask()).toEqual(UNVERIFIED)
+  })
+
+  it.each([
+    ['memory_home_offline', 503, OFFLINE],
+    ['memory_home_not_in_roster', 503, NOT_IN_ROSTER],
+    ['memory_home_conflict', 409, CONFLICT],
+    ['gateway_timeout', 504, { error: 'gateway_timeout' }],
+    ['payload_too_large', 413, { error: 'payload_too_large' }],
+    ['fabric_request_invalid', 400, { error: 'fabric_request_invalid' }],
+  ] as const)('the hub body %s, unsigned with its status: returned as it is; with status 200 or one extra key: unverified', async (_label, status, hubBody) => {
+    answer = { status, type: 'application/json', body: JSON.stringify(hubBody), signer: false }
+    expect(await ask()).toEqual(hubBody)
+    answer = { status: 200, type: 'application/json', body: JSON.stringify(hubBody), signer: false }
+    expect(await ask()).toEqual(UNVERIFIED)
+    answer = { status, type: 'application/json', body: JSON.stringify({ ...hubBody, records: [] }), signer: false }
+    expect(await ask()).toEqual(UNVERIFIED)
+  })
+
+  it('a conflict body whose machines are not all strings, or whose message is not a string: unverified', async () => {
+    for (const bad of [{ ...CONFLICT, machines: ['alpha', 1] }, { ...CONFLICT, machines: 'alpha' }, { ...CONFLICT, message: 1 }]) {
+      answer = { status: 409, type: 'application/json', body: JSON.stringify(bad), signer: false }
+      expect(await ask()).toEqual(UNVERIFIED)
+    }
+  })
+
+  it('a member signing an error body (403): returned (it is signed)', async () => {
+    answer = { status: 403, type: 'application/json', body: JSON.stringify({ error: 'fabric_operation_denied' }) }
+    expect(await ask()).toEqual({ error: 'fabric_operation_denied' })
   })
 })

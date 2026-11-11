@@ -16,6 +16,7 @@ import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { openDeviceKey } from '../bridge/device-keys.ts'
 import { hubProofHeader, startHubLink } from '../bridge/hub-link.ts'
 import { fabricForward } from '../bridge/hub-rpc.ts'
+import { initRoster } from '../bridge/roster.ts'
 import { EMPTY_SHA256, PROOF_HEADER, parseProof, verifyProof } from '../hub/src/devices.ts'
 
 const TOKEN = `hub-proof-${'t'.repeat(24)}`
@@ -81,7 +82,7 @@ describe('the hub link dial', () => {
       expect(request.headers.authorization).toBe(`Bearer ${TOKEN}`)
       const parsed = parseProof(proofs[i])
       expect(parsed).toMatchObject({ id: 'probe-one', key: key.publicKey })
-      expect(await verifyProof(parsed!, { host: host(hub.url), method: 'GET', path: '/__tunnel/connect', bodySha256: EMPTY_SHA256 })).toBe(true)
+      expect(await verifyProof(parsed!, { host: host(hub.url), method: 'GET', path: '/__tunnel/connect?bridge_id=probe-one', bodySha256: EMPTY_SHA256 })).toBe(true)
       expect(request.url).not.toContain(TOKEN)
       expect(proofs[i]).not.toContain(TOKEN)
     }
@@ -108,7 +109,12 @@ describe('fabricForward', () => {
       request.on('data', (chunk: Buffer) => chunks.push(chunk))
       request.on('end', () => {
         seen.push({ url: request.url ?? '', proof: String(request.headers[PROOF_HEADER]), bytes: Buffer.concat(chunks), authorization: request.headers.authorization })
-        response.writeHead(200, { 'content-type': 'application/json' })
+        // U-R1A-31C-1: the fake answers as the memory home probe-one would, signed with its key.
+        const sha = (data: string | Buffer) => createHash('sha256').update(data).digest('hex')
+        const input = (JSON.parse(Buffer.concat(chunks).toString('utf8')) as { input?: unknown }).input
+        const text = ['tandem-memory-answer-v1', 'probe-one', key.publicKey, String(request.headers['tandem-memory-challenge']), 'POST',
+          (request.url ?? '').replace('/__tunnel/fabric-rpc', ''), sha(JSON.stringify(input ?? null)), '200', sha('{}')].join('\n')
+        response.writeHead(200, { 'content-type': 'application/json', 'tandem-memory-answer': `v1 probe-one ${key.publicKey} ${key.sign(text)}` })
         response.end('{}')
       })
     })
@@ -117,7 +123,13 @@ describe('fabricForward', () => {
     await once(server, 'listening')
     const url = `ws://127.0.0.1:${(server.address() as AddressInfo).port}`
     const body = { input: { query: 'r1a31b ünïcode' } }
+    // U-R1A-31C-1: this computer's roster holds probe-one (the answer must be signed by a member).
+    const savedHome = process.env.TANDEM_HOME
+    process.env.TANDEM_HOME = mkdtempSync(join(dir, 'roster-home-'))
+    initRoster(key, 'probe-one')
     expect(await fabricForward({ url, token: TOKEN, bridgeId: 'probe-one', key }).forward('/fabric/memory/search', body)).toEqual({})
+    if (savedHome === undefined) delete process.env.TANDEM_HOME
+    else process.env.TANDEM_HOME = savedHome
 
     expect(seen).toHaveLength(1)
     expect(seen[0].authorization).toBe(`Bearer ${TOKEN}`)

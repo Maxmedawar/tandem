@@ -29,7 +29,7 @@ function tunnelProof(base: string, id: string): string {
   const key = device.publicKey.export({ format: 'jwk' }).x as string
   const ts = Date.now()
   const nonce = randomBytes(16).toString('base64url')
-  const text = proofText({ host: new URL(base).host, method: 'GET', path: '/__tunnel/connect', id, key, ts, nonce, bodySha256: EMPTY_SHA256 })
+  const text = proofText({ host: new URL(base).host, method: 'GET', path: `/__tunnel/connect?bridge_id=${encodeURIComponent(id)}`, id, key, ts, nonce, bodySha256: EMPTY_SHA256 })
   return `v1 ${id} ${key} ${ts} ${nonce} ${sign(null, Buffer.from(text, 'utf8'), device.privateKey).toString('base64url')}`
 }
 

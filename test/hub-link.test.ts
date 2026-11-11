@@ -582,3 +582,29 @@ describe('frame cap', () => {
     expect(MAX_FRAME_BYTES).toBe(1_048_576)
   })
 })
+
+describe('(31C-1) the connect proof covers the query', () => {
+  it.each([
+    ['without memoryHome', false, '/__tunnel/connect?bridge_id=probe-one'],
+    ['with memoryHome', true, '/__tunnel/connect?bridge_id=probe-one&memory_home=1'],
+  ] as const)("%s: the dial's proof verifies only over the path plus its query, never over /__tunnel/connect alone", async (_label, memoryHome, signed) => {
+    const { createPublicKey, generateKeyPairSync, sign } = await import('node:crypto')
+    const { EMPTY_SHA256, PROOF_HEADER, parseProof, verifyProof } = await import('../hub/src/devices.ts')
+    const { privateKey } = generateKeyPairSync('ed25519')
+    const publicKey = createPublicKey(privateKey).export({ format: 'jwk' }).x as string
+    const key = { publicKey, fingerprint: '', sign: (d: string | Uint8Array) => sign(null, Buffer.from(d), privateKey).toString('base64url') }
+    const hub = await startHub()
+    links.push(startHubLink({ url: hub.url, token: TOKEN, bridgeId: 'probe-one', memoryHome, key }, { log: () => {}, timing: TIMING }))
+    await vi.waitFor(() => expect(hub.conns.length).toBeGreaterThanOrEqual(1), WAIT)
+    const request = hub.conns[0].request
+    const url = new URL(request.url ?? '', 'ws://127.0.0.1')
+    expect(url.pathname + url.search).toBe(signed)
+    const parsed = parseProof(String(request.headers[PROOF_HEADER]))
+    expect(parsed).toMatchObject({ id: 'probe-one', key: publicKey })
+    const ctx = (path: string) => ({ host: new URL(hub.url).host, method: 'GET', path, bodySha256: EMPTY_SHA256 })
+    expect(await verifyProof(parsed!, ctx(signed))).toBe(true)
+    expect(await verifyProof(parsed!, ctx('/__tunnel/connect'))).toBe(false)
+    const other = memoryHome ? '/__tunnel/connect?bridge_id=probe-one' : '/__tunnel/connect?bridge_id=probe-one&memory_home=1'
+    expect(await verifyProof(parsed!, ctx(other))).toBe(false)
+  })
+})

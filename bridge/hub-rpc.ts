@@ -21,12 +21,21 @@
  * fabricForward is the other direction, for a computer with no store: its local MCP
  * servers pass each fabric call over HTTPS to the hub's link route, and the hub sends it
  * to the memory home. HTTPS, not a frame: the stdio server has no link socket.
+ *
+ * Signed memory answers (U-R1A-31C-1; the hub never vouches): each forwarded call carries a fresh
+ * `tandem-memory-challenge`; the home signs its answer with its device key over ANSWER_TEXT
+ * (memoryAnswerText: the challenge, the call's method, path and input, the answer's status and
+ * exact body bytes) in `tandem-memory-answer: v1 <id> <key> <sig>`; the caller takes the answer
+ * only when that id and key are one entry of its OWN verified roster. Unsigned, it takes only the
+ * hub's own error bodies, which carry no memory data.
  */
+import { createHash, randomBytes } from 'node:crypto'
 import { hostname } from 'node:os'
-import { openDeviceKey, type DeviceKey } from './device-keys.ts'
+import { openDeviceKey, verifySignature, type DeviceKey } from './device-keys.ts'
 import { routeFabricRpc } from './fabric/rpc-router.ts'
 import type { LocalFabricHost } from './fabric/local-fabric-host.ts'
 import { deriveBridgeId, hubProofHeader, MAX_FRAME_BYTES } from './hub-link.ts'
+import { readRoster } from './roster.ts'
 import { route } from './router.ts'
 import type { TranscriptSearch } from './transcripts/search.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
@@ -41,20 +50,36 @@ function parseBody(base64: string | undefined): unknown {
   }
 }
 
-function response(requestId: string, status: number, body: unknown): CcmHttpResponseFrame {
+/** `sign` gives the extra headers for the exact status and body bytes sent (a signed memory answer). */
+function response(requestId: string, status: number, body: unknown, sign?: (status: number, bytes: Buffer) => Record<string, string[]>): CcmHttpResponseFrame {
+  const bytes = Buffer.from(JSON.stringify(body ?? null), 'utf8')
   const frame: CcmHttpResponseFrame = {
     type: CCM_FRAME_TYPES.httpResponse,
     request_id: requestId,
     status_code: status,
-    headers: { 'content-type': ['application/json'] },
-    body_base64: Buffer.from(JSON.stringify(body ?? null), 'utf8').toString('base64'),
+    headers: { 'content-type': ['application/json'], ...sign?.(status, bytes) },
+    body_base64: bytes.toString('base64'),
   }
   // The link cap holds in this direction too: a frame over it can cost the bridge its socket.
   if (status !== 413 && Buffer.byteLength(JSON.stringify(frame), 'utf8') > MAX_FRAME_BYTES) {
-    return response(requestId, 413, { error: 'payload_too_large' })
+    return response(requestId, 413, { error: 'payload_too_large' }, sign)
   }
   return frame
 }
+
+export const MEMORY_CHALLENGE_HEADER = 'tandem-memory-challenge'
+export const MEMORY_ANSWER_HEADER = 'tandem-memory-answer'
+const CHALLENGE = /^[A-Za-z0-9_-]{22}$/
+const ANSWER = /^v1 ([a-z0-9._-]{1,64}) ([A-Za-z0-9_-]{43}) ([A-Za-z0-9_-]{86})$/
+const sha256Hex = (data: string | Uint8Array) => createHash('sha256').update(data).digest('hex')
+
+/** The text a memory home signs for one answer. Its first line is used by no proof, roster, offer or envelope. */
+export function memoryAnswerText(a: { id: string; key: string; challenge: string; method: string; path: string; input: unknown; status: number; body: Uint8Array }): string {
+  return ['tandem-memory-answer-v1', a.id, a.key, a.challenge, a.method, a.path, sha256Hex(JSON.stringify(a.input ?? null)), String(a.status), sha256Hex(a.body)].join('\n')
+}
+
+/** `body.input` when `body` is an object, else undefined. */
+const inputOf = (body: unknown): unknown => (typeof body === 'object' && body !== null ? (body as { input?: unknown }).input : undefined)
 
 /** A link URL's origin as HTTP: `wss://` becomes `https://`, `ws://` becomes `http://`; nothing else changes. */
 export function hubHttpOrigin(wsOrigin: string): string {
@@ -70,44 +95,133 @@ const HUB_UNREACHABLE = Object.freeze({
   message: 'memory home offline: this computer cannot reach the hub',
 })
 
+const UNVERIFIED = Object.freeze({
+  error: 'memory_home_unverified',
+  message: 'memory home unverified: the answer was not signed by a computer in this roster',
+})
+
+/** The hub's own answers (no memory data in them): the only ones taken unsigned, and never with status 200. */
+const HUB_BODIES: readonly Record<string, string>[] = [
+  { error: 'memory_home_offline', message: 'memory home offline: the computer that holds memory is not connected to the hub' },
+  {
+    error: 'memory_home_not_in_roster',
+    message: 'memory home not in roster: the computer that holds memory is not in the roster the hub holds; trust it from a computer in the roster',
+  },
+  { error: 'gateway_timeout' },
+  { error: 'payload_too_large' },
+  { error: 'fabric_request_invalid' },
+]
+
+const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+function isHubBody(body: unknown): boolean {
+  if (!isPlain(body)) return false
+  const keys = Object.keys(body).sort().join()
+  if (keys === 'error,machines,message') {
+    return body.error === 'memory_home_conflict' && Array.isArray(body.machines) && body.machines.every((m) => typeof m === 'string') && typeof body.message === 'string'
+  }
+  return HUB_BODIES.some((hubBody) => Object.keys(hubBody).sort().join() === keys && Object.keys(hubBody).every((k) => body[k] === hubBody[k]))
+}
+
+/** This computer's own verified roster as { id, key }, read at each call; undefined when there is none or it is refused. */
+function rosterMembers(): { id: string; key: string }[] | undefined {
+  return readRoster()?.map((e) => ({ id: e.id, key: e.key }))
+}
+
 /**
- * POSTs `body` to `<hub>/__tunnel/fabric-rpc<path>` with the link token as bearer and a
+ * POSTs `body` to `<hub>/__tunnel/fabric-rpc<path>` with the link token as bearer, a
  * `tandem-proof` over the exact bytes sent (id `bridgeId`, else this computer's link id; key
- * `key`, else this computer's device key), and returns the hub's JSON whatever the status. A
- * non-JSON answer is `fabric_unavailable`; no answer (network error, 120 s) or no usable device
- * key is memory_home_offline. The token is only ever in the header.
+ * `key`, else this computer's device key) and a fresh `tandem-memory-challenge`. An answer signed
+ * over that challenge by a computer in `trusted()` (default: this computer's verified roster,
+ * read at each call; a throw counts as none) is taken: its JSON whatever the status, a non-JSON
+ * one `fabric_unavailable`. Unsigned, only one of the hub's own error bodies with its non-200
+ * status is taken; anything else is memory_home_unverified. No answer (network error, 120 s) or
+ * no usable device key is memory_home_offline. The token is only ever in the header.
  */
-export function fabricForward(config: { url: string; token: string; bridgeId?: string; key?: DeviceKey }): FabricForward {
+export function fabricForward(config: {
+  url: string
+  token: string
+  bridgeId?: string
+  key?: DeviceKey
+  trusted?: () => { id: string; key: string }[] | undefined
+}): FabricForward {
   const base = `${hubHttpOrigin(config.url)}/__tunnel/fabric-rpc`
+  const trusted = config.trusted ?? rosterMembers
   return {
     async forward(path, body) {
-      let text: string
+      const challenge = randomBytes(16).toString('base64url')
+      let status: number
+      let answerHeader: string | null
+      let bytes: Buffer
       try {
         const target = `${base}${path}`
-        const bytes = JSON.stringify(body)
+        const sent = JSON.stringify(body)
         const proof = hubProofHeader(config.key ?? openDeviceKey(), {
           url: config.url,
           method: 'POST',
           path: new URL(target).pathname,
           id: config.bridgeId ?? deriveBridgeId(process.env.TANDEM_HUB_LINK_ID, hostname()),
-          body: bytes,
+          body: sent,
         })
         const answer = await fetch(target, {
           method: 'POST',
-          headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json', [PROOF_HEADER]: proof },
-          body: bytes,
+          headers: {
+            authorization: `Bearer ${config.token}`, 'content-type': 'application/json', [PROOF_HEADER]: proof, [MEMORY_CHALLENGE_HEADER]: challenge,
+          },
+          body: sent,
           signal: AbortSignal.timeout(120_000),
         })
-        text = await answer.text()
+        status = answer.status
+        answerHeader = answer.headers.get(MEMORY_ANSWER_HEADER)
+        bytes = Buffer.from(await answer.arrayBuffer())
       } catch {
         return { ...HUB_UNREACHABLE }
       }
+      let parsed: unknown
+      let json = true
       try {
-        return JSON.parse(text) as unknown
+        parsed = JSON.parse(bytes.toString('utf8'))
       } catch {
-        return { error: 'fabric_unavailable' }
+        json = false
       }
+      const signed = ANSWER.exec(answerHeader ?? '')
+      if (signed) {
+        const [, id, key, sig] = signed
+        let members: { id: string; key: string }[] | undefined
+        try {
+          members = trusted()
+        } catch {
+          members = undefined
+        }
+        const text = memoryAnswerText({ id, key, challenge, method: 'POST', path, input: inputOf(body), status, body: bytes })
+        if (members?.some((m) => m.id === id && m.key === key) && verifySignature(key, text, sig)) {
+          return json ? parsed : { error: 'fabric_unavailable' }
+        }
+      }
+      return status !== 200 && json && isHubBody(parsed) ? parsed : { ...UNVERIFIED }
     },
+  }
+}
+
+/** Who signs this computer's memory answers: its link id and its device key. */
+export interface MemoryHomeSigner {
+  id: string
+  key: Pick<DeviceKey, 'publicKey' | 'sign'>
+}
+
+/** The `tandem-memory-answer` header for one answer, or none (no usable key: the caller refuses it). */
+function signAnswer(frame: CcmHttpRequestFrame, challenge: string, input: unknown, home: MemoryHomeSigner | undefined) {
+  return (status: number, bytes: Buffer): Record<string, string[]> => {
+    let signer: MemoryHomeSigner
+    try {
+      signer = home ?? { id: deriveBridgeId(process.env.TANDEM_HUB_LINK_ID, hostname()), key: openDeviceKey() }
+    } catch {
+      return {}
+    }
+    const text = memoryAnswerText({
+      id: signer.id, key: signer.key.publicKey, challenge, method: frame.method.toUpperCase(), path: frame.path, input, status, body: bytes,
+    })
+    return { [MEMORY_ANSWER_HEADER]: [`v1 ${signer.id} ${signer.key.publicKey} ${signer.key.sign(text)}`] }
   }
 }
 
@@ -136,20 +250,29 @@ async function transcriptRequest(frame: CcmHttpRequestFrame): Promise<CcmHttpRes
   }
 }
 
-export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: LocalFabricHost): Promise<CcmHttpResponseFrame> {
+/**
+ * `home`: who signs a `/fabric/` answer whose request carries a challenge (tests); default this
+ * computer's link id and device key, opened at signing time.
+ */
+export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: LocalFabricHost, home?: MemoryHomeSigner): Promise<CcmHttpResponseFrame> {
   if (frame.path.startsWith('/transcripts/')) return transcriptRequest(frame)
   if (frame.path.startsWith('/fabric/')) {
+    const body = parseBody(frame.body_base64)
+    const challenges = frame.headers?.[MEMORY_CHALLENGE_HEADER]
+    const challenge = challenges?.length === 1 && CHALLENGE.test(challenges[0]) ? challenges[0] : undefined
+    // A copy taken before the router runs: the signed input is the one the caller sent.
+    const sign = challenge === undefined ? undefined : signAnswer(frame, challenge, structuredClone(inputOf(body)), home)
     try {
       const result = await routeFabricRpc({
         trust: frame.trusted_surface,
         client: fabric?.client,
         method: frame.method.toUpperCase(),
         path: frame.path,
-        body: parseBody(frame.body_base64),
+        body,
       })
-      return response(frame.request_id, result.status, result.body)
+      return response(frame.request_id, result.status, result.body, sign)
     } catch {
-      return response(frame.request_id, 503, { error: 'fabric_unavailable' })
+      return response(frame.request_id, 503, { error: 'fabric_unavailable' }, sign)
     }
   }
   try {

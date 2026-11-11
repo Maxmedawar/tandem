@@ -46,7 +46,7 @@ const keyB = newKey()
 const keyC = newKey()
 
 const connectProof = (key: ReturnType<typeof newKey>, id: string, now?: number) =>
-  hubProofHeader(key, { url: hub, method: 'GET', path: '/__tunnel/connect', id, now })
+  hubProofHeader(key, { url: hub, method: 'GET', path: `/__tunnel/connect?bridge_id=${id}`, id, now })
 
 /** Every socket a dial opened, left open; afterAll ends them. */
 const open: WebSocket[] = []

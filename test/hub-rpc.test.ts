@@ -232,3 +232,104 @@ describe('fabric paths', () => {
     }
   })
 })
+
+describe('(31C-1) the home signs memory answers', () => {
+  const c = process.getBuiltinModule('node:crypto') as typeof import('node:crypto')
+  const memKey = () => {
+    const { privateKey } = c.generateKeyPairSync('ed25519')
+    const publicKey = c.createPublicKey(privateKey).export({ format: 'jwk' }).x as string
+    return { publicKey, fingerprint: '', sign: (d: string | Uint8Array) => c.sign(null, Buffer.from(d), privateKey).toString('base64url') }
+  }
+  const sha = (data: string | Buffer) => c.createHash('sha256').update(data).digest('hex')
+  const home = { id: 'r1a31c1-home', key: memKey() }
+  const CHALLENGE = 'r1a31c1-challenge_0123'
+  const caller = { ownerId: `owner-${'a'.repeat(64)}`, deviceId: `mcp-device-${'b'.repeat(64)}`, agentId: `mcp-owner-${'c'.repeat(64)}` }
+  const input = {}
+  type Fields = { id: string; key: string; challenge: string; method: string; path: string; input: unknown; status: number; body: Buffer }
+  const answerText = (f: Fields) =>
+    ['tandem-memory-answer-v1', f.id, f.key, f.challenge, f.method, f.path, sha(JSON.stringify(f.input ?? null)), String(f.status), sha(f.body)].join('\n')
+  const listFrame = (challenge?: string | string[]): CcmHttpRequestFrame => ({
+    ...frame('POST', '/fabric/project/list', { body: { caller, input } }),
+    trusted_surface: FABRIC_MCP_TRUST,
+    headers: challenge === undefined ? {} : { 'tandem-memory-challenge': Array.isArray(challenge) ? challenge : [challenge] },
+  })
+  const answerOf = (response: CcmHttpResponseFrame) => response.headers?.['tandem-memory-answer']
+  const fieldsOf = (response: CcmHttpResponseFrame): Fields => ({
+    id: home.id, key: home.key.publicKey, challenge: CHALLENGE, method: 'POST', path: '/fabric/project/list', input,
+    status: response.status_code, body: Buffer.from(response.body_base64 ?? '', 'base64'),
+  })
+  const hostWith = (result: unknown) => ({ client: { listProjects: async () => result }, close() {} }) as unknown as Parameters<typeof handleHubRequest>[1]
+
+  it('with a challenge and a fabric host: the header verifies with the home key over ANSWER_TEXT of the body bytes in the frame', async () => {
+    const { verifySignature } = await import('../bridge/device-keys.ts')
+    const folder = mkdtempSync('/tmp/r1a31c1-hubrpc-')
+    const host = await createLocalFabricHost({ CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: join(folder, 'fabric.sqlite3') })
+    try {
+      expect(CHALLENGE).toMatch(/^[A-Za-z0-9_-]{22}$/)
+      const response = await handleHubRequest(listFrame(CHALLENGE), host, home)
+      expect(response.status_code).toBe(200)
+      expect(bodyOf(response)).toEqual([])
+      const header = answerOf(response)
+      expect(header).toHaveLength(1)
+      const [v, id, key, sig, ...rest] = header![0].split(' ')
+      expect([v, id, key, rest]).toEqual(['v1', home.id, home.key.publicKey, []])
+      expect(verifySignature(home.key.publicKey, answerText(fieldsOf(response)), sig)).toBe(true)
+    } finally {
+      host?.close()
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
+
+  it.each([
+    ['no challenge', undefined],
+    ['21 characters', CHALLENGE.slice(1)],
+    ['23 characters', `${CHALLENGE}A`],
+    ['a character outside base64url', `${CHALLENGE.slice(1)}+`],
+    ['two values', [CHALLENGE, CHALLENGE]],
+  ] as const)('%s: no answer header', async (_label, challenge) => {
+    const response = await handleHubRequest(listFrame(challenge as string | string[] | undefined), hostWith([]), home)
+    expect(response.status_code).toBe(200)
+    expect(answerOf(response)).toBeUndefined()
+  })
+
+  it('a 413-substituted answer is signed over the 413 body', async () => {
+    const { verifySignature } = await import('../bridge/device-keys.ts')
+    const response = await handleHubRequest(listFrame(CHALLENGE), hostWith(['x'.repeat(1_100_000)]), home)
+    expect(response.status_code).toBe(413)
+    expect(bodyOf(response)).toEqual({ error: 'payload_too_large' })
+    const sig = answerOf(response)![0].split(' ')[3]
+    expect(verifySignature(home.key.publicKey, answerText(fieldsOf(response)), sig)).toBe(true)
+  })
+
+  it('changing any one of id, key, challenge, method, path, input, status or body makes verifySignature false', async () => {
+    const { verifySignature } = await import('../bridge/device-keys.ts')
+    const response = await handleHubRequest(listFrame(CHALLENGE), hostWith([]), home)
+    const sig = answerOf(response)![0].split(' ')[3]
+    const good = fieldsOf(response)
+    expect(verifySignature(home.key.publicKey, answerText(good), sig)).toBe(true)
+    const changed: Partial<Fields>[] = [
+      { id: 'r1a31c1-other' }, { key: memKey().publicKey }, { challenge: `B${CHALLENGE.slice(1)}` }, { method: 'GET' },
+      { path: '/fabric/project/get' }, { input: { projectId: 'p1' } }, { status: 201 }, { body: Buffer.from('[] ') },
+    ]
+    for (const change of changed) expect(verifySignature(home.key.publicKey, answerText({ ...good, ...change }), sig), Object.keys(change)[0]).toBe(false)
+  })
+
+  it('a signature by the same key over a proof, roster entry, roster offer or envelope text with the same values is never an answer', async () => {
+    const { verifySignature } = await import('../bridge/device-keys.ts')
+    const { proofText } = await import('../hub/src/devices.ts')
+    const response = await handleHubRequest(listFrame(CHALLENGE), hostWith([]), home)
+    const f = fieldsOf(response)
+    const bodySha = sha(f.body)
+    const others = [
+      proofText({ host: home.id, method: f.method, path: f.path, id: home.id, key: f.key, ts: f.status, nonce: f.challenge, bodySha256: bodySha }),
+      `tandem-roster-v1\n${f.status}\n${bodySha}\n${home.id}\n${f.key}\n${f.key}\n${f.status}`,
+      `tandem-roster-offer-v1\n${home.id}\n${f.key}\n${f.status}`,
+      `tandem-envelope-v1\n${home.id}\n${home.id}\n${f.challenge}\n${f.status}\n${bodySha}`,
+      answerText(f).replace(/^tandem-memory-answer-v1/, 'tandem-hub-proof-v1'),
+    ]
+    for (const text of others) {
+      expect(text.split('\n')[0]).not.toBe('tandem-memory-answer-v1')
+      expect(verifySignature(f.key, answerText(f), home.key.sign(text))).toBe(false)
+    }
+  })
+})
