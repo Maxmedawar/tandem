@@ -112,6 +112,10 @@ describe('the installed product', () => {
     const repoVersion = (JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8')) as { version: string }).version
     expect(tandem.run(['version']).trim()).toBe(repoVersion)
     expect(tandem.run(['version']).trim()).toMatch(/^\d+\.\d+\.\d+$/)
+    // And through the link on PATH, which is how a person runs it.
+    expect(execFileSync(join(tandem.home, '.local', 'bin', 'tandem'), ['version'], {
+      encoding: 'utf8', env: tandem.env, stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()).toBe(repoVersion)
     if (bundlesNode(tandem.state)) {
       expect(existsSync(join(tandem.state, 'current', 'libexec', 'node'))).toBe(true)
     }

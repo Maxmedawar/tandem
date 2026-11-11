@@ -6,7 +6,17 @@
 # the runtime, and say which version is installed.
 set -eu
 
-here=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+# Run through the link the installer puts on PATH, $0 is the link, and the tree
+# is beside the launcher it points at.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in
+    /*) self=$link ;;
+    *) self="$(dirname -- "$self")/$link" ;;
+  esac
+done
+here=$(CDPATH='' cd -- "$(dirname -- "$self")/.." && pwd)
 runtime="$here/runtime"
 state="${TANDEM_HOME:-$HOME/.tandem}"
 label="com.tandem.runtime"
@@ -73,8 +83,8 @@ case "${1:-}" in
     echo "tandem: runtime stopped"
     ;;
   restart)
-    "$0" stop >/dev/null 2>&1 || true
-    "$0" start
+    "$self" stop >/dev/null 2>&1 || true
+    "$self" start
     ;;
   version)
     "$node" -e "process.stdout.write(require(process.argv[1]).version + '\n')" "$runtime/package.json"
