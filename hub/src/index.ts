@@ -13,6 +13,9 @@
  *   - GET /__tunnel/connect is a RAW websocket route guarded by a shared secret
  *     (TANDEM_HUB_LINK_TOKEN); it forwards to the singleton TunnelDO. It is NOT behind
  *     OAuth — it is the Mac bridge's own outbound channel.
+ *   - POST /__tunnel/fabric-rpc/fabric/<op> (same secret): a computer with no memory
+ *     store passes a fabric call here; the TunnelDO sends it to the memory home. The hub
+ *     sets the caller itself (its one owner); a caller in the body is never used.
  *   - GET / is an unauthenticated health check.
  *
  * The provider routes: anything starting with the API routes (/mcp, /sse) and
@@ -24,7 +27,9 @@ import OAuthProvider, { type OAuthHelpers } from '@cloudflare/workers-oauth-prov
 import { TandemMcp } from './mcp'
 import { iconBytes, ICON_MIME } from './icon'
 import { TUNNEL_SINGLETON_NAME, type Env } from './types'
-import { handleAuthorize, timingSafeEqual, createRegistrationGuardedFetch } from './auth-gate'
+import { handleAuthorize, timingSafeEqual, createRegistrationGuardedFetch, SINGLE_USER_ID } from './auth-gate'
+import { WS_MAX_FRAME_BYTES } from './frame-size'
+import { fabricCallerFor } from '../../src/fabric/mcp-tools.ts'
 
 /** Env as seen by the default handler: the provider injects OAUTH_PROVIDER. */
 type HandlerEnv = Env & { OAUTH_PROVIDER: OAuthHelpers }
@@ -59,6 +64,10 @@ const defaultHandler: ExportedHandler<HandlerEnv> = {
       return handleTunnelConnect(request, env)
     }
 
+    if (url.pathname.startsWith(FABRIC_LINK_PREFIX + '/fabric/')) {
+      return handleFabricLink(request, env, url)
+    }
+
     if (url.pathname === '/authorize') {
       return handleAuthorize(request, env)
     }
@@ -90,6 +99,44 @@ function handleTunnelConnect(request: Request, env: HandlerEnv): Response | Prom
   const id = env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME)
   const stub = env.TUNNEL.get(id)
   return stub.fetch(request)
+}
+
+const FABRIC_LINK_PREFIX = '/__tunnel/fabric-rpc'
+
+/**
+ * The link route for fabric calls. Order: a `token` query 401, not POST 405, a missing or
+ * wrong bearer 401, a body over WS_MAX_FRAME_BYTES 413, a body that is not an object with
+ * an object `input` 400; then the TunnelDO's answer as it is. Only `input` is kept: the
+ * caller is the hub's own owner, derived here as TandemMcp derives it.
+ */
+async function handleFabricLink(request: Request, env: HandlerEnv, url: URL): Promise<Response> {
+  if (url.searchParams.has('token')) return new Response('unauthorized', { status: 401 })
+  if (request.method !== 'POST') return new Response('method not allowed', { status: 405 })
+  const presented = bearerToken(request)
+  if (!env.TANDEM_HUB_LINK_TOKEN || !presented || !timingSafeEqual(presented, env.TANDEM_HUB_LINK_TOKEN)) {
+    return new Response('unauthorized', { status: 401 })
+  }
+  const bytes = await request.arrayBuffer()
+  if (bytes.byteLength > WS_MAX_FRAME_BYTES) return jsonResponse({ error: 'payload_too_large' }, 413)
+  let input: unknown
+  try {
+    input = (JSON.parse(new TextDecoder().decode(bytes)) as { input?: unknown }).input
+  } catch {
+    input = undefined
+  }
+  if (typeof input !== 'object' || input === null || Array.isArray(input)) {
+    return jsonResponse({ error: 'fabric_request_invalid' }, 400)
+  }
+  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME))
+  return stub.fetch(`https://do/__fabric-rpc${url.pathname.slice(FABRIC_LINK_PREFIX.length)}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ caller: await fabricCallerFor(SINGLE_USER_ID), input }),
+  })
+}
+
+function jsonResponse(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 }
 
 /** The dynamic client registration endpoint. SINGLE source of truth: used BOTH in

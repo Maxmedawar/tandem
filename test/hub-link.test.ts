@@ -260,6 +260,20 @@ describe('the hub link dial', () => {
     expectNoToken(lines)
   })
 
+  it('a2) with memoryHome: true the dial URL carries bridge_id then memory_home=1', async () => {
+    const hub = await startHub()
+    links.push(startHubLink(
+      { url: hub.url, token: TOKEN, bridgeId: 'probe-one', memoryHome: true },
+      { log: () => {}, timing: TIMING },
+    ))
+    await vi.waitFor(() => expect(hub.conns.length).toBeGreaterThanOrEqual(1), WAIT)
+    const url = new URL(hub.conns[0].request.url ?? '', 'ws://127.0.0.1')
+    expect(url.pathname).toBe('/__tunnel/connect')
+    expect([...url.searchParams.keys()]).toEqual(['bridge_id', 'memory_home'])
+    expect(url.searchParams.get('bridge_id')).toBe('probe-one')
+    expect(url.searchParams.get('memory_home')).toBe('1')
+  })
+
   it('an echoed heartbeat keeps the link up', async () => {
     const hub = await startHub({ onConnection: echoHeartbeats })
     const link = start(hub.url)

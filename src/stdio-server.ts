@@ -21,6 +21,7 @@
 // .env is fine, but an explicit allowlist is still required before sessions open.
 import { fileURLToPath } from "node:url";
 import { loadProtectedRuntimeConfigFromEnv } from "./runtime-config.ts";
+import type { FabricForward } from "../bridge/hub-rpc.ts";
 try {
   const loadedProtectedConfig = await loadProtectedRuntimeConfigFromEnv();
   if (!loadedProtectedConfig) process.loadEnvFile(fileURLToPath(new URL("../.env", import.meta.url)));
@@ -45,6 +46,27 @@ const { createFleetRuntime, buildDefaultDeviceIdFromEnv } = await import("../bri
 const { capabilityReport } = await import("../bridge/engine-registry.ts");
 const { startFabric } = await import("../bridge/fabric/local-fabric-host.ts");
 
+// This process's own fabric store (only with CCM_FABRIC_ENABLED=1). The bridge process may
+// open the same SQLite file: SQLite's file locks serialise the writes. Its diagnostics and
+// audit lines go to stderr, since stdout is the wire.
+const fabric = await startFabric({ stdout: (value) => process.stderr.write(value) });
+
+// No store here and a hub link set: the 11 fabric tools pass each call to the hub, which sends
+// it to the memory home. Nothing is stored on this computer.
+let hubForward: FabricForward | undefined;
+if (!fabric && process.env.TANDEM_HUB_LINK_URL) {
+  try {
+    const { hubLinkConfigFromEnv } = await import("../bridge/hub-link.ts");
+    const { fabricForward } = await import("../bridge/hub-rpc.ts");
+    const hubLinkConfig = hubLinkConfigFromEnv(process.env);
+    if (hubLinkConfig) hubForward = fabricForward(hubLinkConfig);
+  } catch {
+    console.error("tandem stdio: hub link configuration is invalid; memory tools are off");
+  }
+}
+// Out of the environment in every case, so no session this process starts inherits the secret.
+delete process.env.TANDEM_HUB_LINK_TOKEN;
+
 const allowlist = getAllowlist();
 if (allowlist.length === 0) {
   console.error(
@@ -61,11 +83,7 @@ const fleet = createFleetRuntime({
   defaultDeviceId: buildDefaultDeviceIdFromEnv(),
   localEngines: localCapabilities.filter((entry) => entry.enabled && entry.available).map((entry) => entry.engine),
 });
-// This process's own fabric store (only with CCM_FABRIC_ENABLED=1). The bridge process may
-// open the same SQLite file: SQLite's file locks serialise the writes. Its diagnostics and
-// audit lines go to stderr, since stdout is the wire.
-const fabric = await startFabric({ stdout: (value) => process.stderr.write(value) });
-const server = await buildMcpServer(fleet, fabric);
+const server = await buildMcpServer(fleet, fabric ?? hubForward);
 await server.connect(new StdioServerTransport());
 
 console.error("tandem MCP bridge ready on stdio (local, no token)");

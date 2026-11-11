@@ -247,11 +247,12 @@ describe.skipIf(Boolean(missing))(title, () => {
     }
   }, WAIT)
 
-  it('alpha restarted without the fabric store: a new session lists no fabric tool, the session tools stay', async () => {
+  it('alpha restarted without the fabric store: a new session still lists the 11 fabric tools and project_list answers memory_home_offline; the session tools stay', async () => {
     alpha = await startBridge('alpha')
     client = await connect()
     const listed = await names(client)
-    expect(listed.filter((name) => FABRIC_TOOLS.includes(name))).toEqual([])
+    for (const name of FABRIC_TOOLS) expect(listed).toContain(name)
+    expect((await call(client, 'project_list')).error).toBe('memory_home_offline')
     for (const name of ['list_sessions', 'open_session', 'send_to_session', 'list_machines']) expect(listed).toContain(name)
   }, WAIT)
 })

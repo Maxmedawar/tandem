@@ -63,12 +63,13 @@ describe('default-off authenticated Fabric MCP registration', () => {
   it('registers exactly the Phase 1 tools and derives an opaque stable OWNER caller server-side', async () => {
     const first = new FakeToolServer()
     const second = new FakeToolServer()
-    const calls: Array<{ path: string; body: unknown; machine?: string }> = []
+    const calls: Array<{ path: string; body: unknown; argCount: number }> = []
     const options = {
       enabled: '1',
       oauthSubject: 'authenticated-owner',
-      rpc: async (path: string, body: unknown, machine?: string) => {
-        calls.push({ path, body, machine })
+      rpc: async (...args: unknown[]) => {
+        const [path, body] = args as [string, unknown]
+        calls.push({ path, body, argCount: args.length })
         return healthyBridge(path)
       },
     }
@@ -95,10 +96,12 @@ describe('default-off authenticated Fabric MCP registration', () => {
     await second.tools.get('project_create')!.handler({ displayName: 'Trusted project' })
 
     expect(calls.filter(call => call.path === '/fabric/_ready')).toHaveLength(2)
-    expect(calls[2]).toMatchObject({ path: '/fabric/project/create', machine: 'mini' })
+    // Memory has one home: rpc gets the path and the body only, and `input` holds no `machine`.
+    expect(calls[2]).toMatchObject({ path: '/fabric/project/create', argCount: 2 })
     const firstBody = calls[2].body as { caller: Record<string, string>; input: Record<string, unknown> }
     const secondBody = calls[3].body as { caller: Record<string, string>; input: Record<string, unknown> }
     expect(firstBody.input).toEqual({ displayName: 'Trusted project' })
+    expect(firstBody.input).not.toHaveProperty('machine')
     expect(firstBody.caller).toEqual(secondBody.caller)
     expect(firstBody.caller).toEqual({
       ownerId: expect.stringMatching(/^owner-[a-f0-9]{64}$/),
@@ -107,6 +110,19 @@ describe('default-off authenticated Fabric MCP registration', () => {
     })
     expect(JSON.stringify(firstBody)).not.toContain('authenticated-owner')
     expect(JSON.stringify(firstBody)).not.toContain('attacker')
+  })
+
+  it('readiness: false registers the 11 tools with no /fabric/_ready call', async () => {
+    const server = new FakeToolServer()
+    const calls: string[] = []
+    expect(await configureFabricTools(server, {
+      enabled: '1',
+      oauthSubject: 'owner',
+      readiness: false,
+      rpc: async path => { calls.push(path); return { error: 'memory_home_offline' } },
+    })).toBe(true)
+    expect([...server.tools.keys()].sort()).toEqual(expectedTools)
+    expect(calls).toEqual([])
   })
 
   it('derives ownerId, deviceId, and agentId independently so none is obtainable from another by prefix substitution', async () => {

@@ -20,6 +20,8 @@
  * full capability set remains reachable. With a fabric store (the entry point's
  * own, opened when CCM_FABRIC_ENABLED=1) the 11 room, memory and project tools are
  * added; they reach the same fabric router the hub's calls reach, as the hub's owner.
+ * With a hub forwarder instead (no store here, a hub link set) the same 11 tools pass
+ * each call to the hub, which sends it to the memory home.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -33,6 +35,7 @@ import {
 import { createFleetRuntime, type FleetRuntime } from "../bridge/fleet-runtime.ts";
 import { routeFabricRpc } from "../bridge/fabric/rpc-router.ts";
 import type { LocalFabricHost } from "../bridge/fabric/local-fabric-host.ts";
+import type { FabricForward } from "../bridge/hub-rpc.ts";
 import { configureFabricTools, type FabricToolServer } from "./fabric/mcp-tools.ts";
 import { FABRIC_MCP_TRUST } from "./fabric/rpc-contract.ts";
 import { isBuiltinEngine, KNOWN_ENGINE_IDS, loadedHarnesses } from "../bridge/engine-registry.ts";
@@ -81,7 +84,7 @@ function wrap(result: { status: number; body: unknown }) {
  * resolution rules). The stdio transport uses a local-only runtime, so callers
  * get the same device-aware schema without opening a network listener.
  */
-export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricHost): Promise<McpServer> {
+export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricHost | FabricForward): Promise<McpServer> {
   const runtime = fleet ?? createFleetRuntime({});
   // `icons` rides in the server's implementation info (a self-contained data:
   // URI, so no public URL is needed). A spec-aware client renders the Tandem
@@ -216,11 +219,19 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
     },
   );
 
-  /* ---- rooms, memory and projects (only with a fabric store) ---- */
+  /* ---- rooms, memory and projects (with a fabric store, or a hub forwarder) ---- */
 
-  if (fabric) {
-    // 'owner' is the hub's single user, so the derived owner (and every project and
-    // memory) is the same whether a call comes through the hub or this server.
+  // 'owner' is the hub's single user, so the derived owner (and every project and
+  // memory) is the same whether a call comes through the hub or this server.
+  if (fabric && "forward" in fabric) {
+    // No readiness probe: the tools stay listed while the home is offline and each call says so.
+    await configureFabricTools(server as unknown as FabricToolServer, {
+      enabled: "1",
+      oauthSubject: "owner",
+      readiness: false,
+      rpc: (path, body) => fabric.forward(path, body),
+    });
+  } else if (fabric) {
     await configureFabricTools(server as unknown as FabricToolServer, {
       enabled: "1",
       oauthSubject: "owner",

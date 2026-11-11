@@ -38,11 +38,14 @@ export interface ConfigureFabricToolsOptions {
   readonly enabled: unknown
   readonly oauthSubject?: unknown
   readonly configuredOwnerId?: unknown
-  readonly rpc: (path: string, body: FabricRpcBody, machine?: string) => Promise<unknown>
+  /** Memory has one home computer, so a call names no computer: the path and the body only. */
+  readonly rpc: (path: string, body: FabricRpcBody) => Promise<unknown>
+  /** Default true: list the tools only when /fabric/_ready answers. False lists them at once
+   *  (a call reaching no home then answers why). */
+  readonly readiness?: boolean
 }
 
 const identifier = z.string().min(1).max(MAX_IDENTIFIER_BYTES)
-const machine = z.string().min(1).max(MAX_IDENTIFIER_BYTES).optional()
 const roomEventType = z.enum(['message', 'question', 'answer', 'decision', 'discovery', 'task', 'claim', 'progress', 'blocked', 'handoff', 'artifact', 'system'])
 const memoryScope = z.enum(['user', 'project', 'agent'])
 const memoryKind = z.enum(['preference', 'fact', 'decision', 'constraint', 'discovery', 'procedure', 'handoff', 'summary'])
@@ -62,23 +65,22 @@ const definitions = {
         roomEventTtlHops: z.number().int().positive().max(MAX_TTL_HOPS).optional(),
         roomRetentionDays: z.number().int().positive().max(MAX_RETENTION_DAYS).optional(),
       }).strict().optional(),
-      machine,
     },
   },
   project_list: {
     title: 'List projects',
     description: 'List projects visible to the authenticated owner.',
-    inputSchema: { machine },
+    inputSchema: {},
   },
   project_get: {
     title: 'Get project',
     description: 'Get one owned project.',
-    inputSchema: { projectId: identifier, machine },
+    inputSchema: { projectId: identifier },
   },
   project_archive: {
     title: 'Archive project',
     description: 'Archive one owned project.',
-    inputSchema: { projectId: identifier, machine },
+    inputSchema: { projectId: identifier },
   },
   room_post: {
     title: 'Post room event',
@@ -94,7 +96,6 @@ const definitions = {
       correlationId: identifier.optional(),
       artifactRefs: z.array(z.string().min(1).max(MAX_REFERENCE_BYTES)).max(MAX_ARTIFACT_REFS).optional(),
       ttlHops: z.number().int().positive().max(MAX_TTL_HOPS).optional(),
-      machine,
     },
   },
   room_read: {
@@ -105,7 +106,6 @@ const definitions = {
       room: identifier,
       cursor: identifier.optional(),
       limit: z.number().int().positive().max(MAX_ROOM_READ_LIMIT).optional(),
-      machine,
     },
   },
   memory_remember: {
@@ -119,7 +119,6 @@ const definitions = {
       importance,
       confidence,
       supersedes: identifier.optional(),
-      machine,
     },
   },
   memory_search: {
@@ -130,18 +129,17 @@ const definitions = {
       scope: memoryScope.optional(),
       query: z.string().max(MAX_QUERY_BYTES),
       limit: z.number().int().positive().max(MAX_MEMORY_SEARCH_LIMIT).optional(),
-      machine,
     },
   },
   memory_get: {
     title: 'Get memory',
     description: 'Get one memory visible to the authenticated owner.',
-    inputSchema: { projectId: identifier.optional(), id: identifier, machine },
+    inputSchema: { projectId: identifier.optional(), id: identifier },
   },
   memory_forget: {
     title: 'Forget memory',
     description: 'Tombstone one memory visible to the authenticated owner.',
-    inputSchema: { projectId: identifier.optional(), id: identifier, machine },
+    inputSchema: { projectId: identifier.optional(), id: identifier },
   },
   memory_promote: {
     title: 'Promote room event',
@@ -153,7 +151,6 @@ const definitions = {
       importance,
       confidence,
       idempotencyKey: identifier,
-      machine,
     },
   },
 } as const satisfies Record<string, FabricToolDefinition>
@@ -197,26 +194,23 @@ export async function configureFabricTools(
   if (!isFabricFlagEnabled(options.enabled)) return false
   const caller = await deriveTrustedOwner(options.oauthSubject, options.configuredOwnerId)
   if (!caller) return false
-  try {
-    const readiness = await options.rpc(FABRIC_BRIDGE_READY_PATH, Object.freeze({
-      caller,
-      input: Object.freeze({}),
-    }))
-    if (!isHealthyBridgeReadiness(readiness)) return false
-  } catch {
-    return false
+  if (options.readiness !== false) {
+    try {
+      const readiness = await options.rpc(FABRIC_BRIDGE_READY_PATH, Object.freeze({
+        caller,
+        input: Object.freeze({}),
+      }))
+      if (!isHealthyBridgeReadiness(readiness)) return false
+    } catch {
+      return false
+    }
   }
 
   for (const name of Object.keys(definitions) as Array<keyof typeof definitions>) {
     server.registerTool(name, definitions[name], async args => {
       try {
         const input = pickDefined(args, inputKeys[name])
-        const machineValue = typeof args.machine === 'string' ? args.machine : undefined
-        const result = await options.rpc(
-          paths[name],
-          Object.freeze({ caller, input: Object.freeze(input) }),
-          machineValue,
-        )
+        const result = await options.rpc(paths[name], Object.freeze({ caller, input: Object.freeze(input) }))
         return { content: [{ type: 'text', text: JSON.stringify(result) }] }
       } catch {
         return { content: [{ type: 'text', text: JSON.stringify({ error: 'fabric_unavailable' }) }] }
@@ -247,6 +241,15 @@ async function deriveTrustedOwner(
   const fallback = oauthSubjectAbsent ? usableIdentity(configuredOwnerId) : undefined
   const source = oauthSubject !== undefined ? `oauth:${oauthSubject}` : fallback === undefined ? undefined : `configured:${fallback}`
   if (source === undefined) return undefined
+  return callerFromSource(source)
+}
+
+/** The caller the tools derive for OAuth subject `subject` (the hub's link route sets it for its one user). */
+export function fabricCallerFor(subject: string): Promise<TrustedFabricCallerEnvelope> {
+  return callerFromSource(`oauth:${subject}`)
+}
+
+async function callerFromSource(source: string): Promise<TrustedFabricCallerEnvelope> {
   const [ownerId, deviceId, agentId] = await Promise.all([
     domainSeparatedIdentity('owner', source, 'owner-'),
     domainSeparatedIdentity('device', source, 'mcp-device-'),

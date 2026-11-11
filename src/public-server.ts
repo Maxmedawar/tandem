@@ -7,6 +7,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { getAllowlist } from "../bridge/router.ts";
 import type { FleetRuntime } from "../bridge/fleet-runtime.ts";
 import type { LocalFabricHost } from "../bridge/fabric/local-fabric-host.ts";
+import type { FabricForward } from "../bridge/hub-rpc.ts";
 import { buildMcpServer } from "./mcp-server.ts";
 import { ICON_MIME, ICON_PNG } from "./icon.ts";
 import type { OAuthConfig } from "./auth-config.ts";
@@ -22,8 +23,8 @@ export interface PublicOAuthServerOptions {
   port: number;
   config: OAuthConfig;
   fleet?: FleetRuntime;
-  /** The process's fabric store (src/server.ts opens it); with it the fabric tools are listed. */
-  fabric?: LocalFabricHost;
+  /** The process's fabric store (src/server.ts opens it), or its hub forwarder; with either the fabric tools are listed. */
+  fabric?: LocalFabricHost | FabricForward;
   state?: OAuthStateStore;
 }
 
