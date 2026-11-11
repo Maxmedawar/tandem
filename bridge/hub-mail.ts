@@ -13,7 +13,8 @@
  * handled before. Each copy is checked: the sender in this computer's verified roster, the
  * envelope signed by that sender's key and addressed here, never seen before, the body exactly a
  * mail body; only then is it stored (mailbox.receive), from `machine:<computer>/<sender>` built
- * from the hub-named AND signature-checked computer and the signed body's local sender. Message
+ * from the hub-named AND signature-checked computer and the signed body's local sender (or a room's
+ * wake, `room:<label>`, which the mailbox takes at fyi only, U-R1A-34). Message
  * text is never read for identity. Repeats are dropped by envelope nonce and by message id, so a
  * copy the hub hands twice is stored once. A copy's nonce is recorded only after the mailbox stored
  * or refused it: a store that fails (SQLite busy) or a stop in between leaves the copy unacked and
@@ -47,6 +48,8 @@ const TAKE = '/__tunnel/mail/take'
 const BODY_KEYS = ['from', 'id', 'kind', 'level', 'sentAt', 'text', 'to', 'v'].join()
 const ASK_KEYS = ['from', 'id', 'kind', 'level', 'replyBy', 'sentAt', 'text', 'to', 'v'].join()
 const LEVELS = ['fyi', 'ask', 'interrupt']
+/** A room's wake (bridge/mailbox.ts wake): the mailbox stores it fyi only and refuses ask or interrupt (403). */
+const ROOM_SENDER = /^room:[A-Za-z0-9._:-]{1,128}$/
 
 /** The hub's http(s) origin for its ws(s) link URL (bridge/hub-rpc.ts hubHttpOrigin, copied: that file loads the router). */
 const httpOrigin = (wsOrigin: string) => wsOrigin.replace(/^ws(s?):\/\//, 'http$1://')
@@ -72,7 +75,7 @@ function mailBody(text: string): Body | undefined {
   }
   if (typeof b !== 'object' || b === null || Array.isArray(b)) return undefined
   const keys = Object.keys(b).sort().join()
-  const ok = b.v === 1 && b.kind === 'mail' && typeof b.id === 'string' && isMailSender(b.from) && typeof b.to === 'string' &&
+  const ok = b.v === 1 && b.kind === 'mail' && typeof b.id === 'string' && (isMailSender(b.from) || (typeof b.from === 'string' && ROOM_SENDER.test(b.from))) && typeof b.to === 'string' &&
     LEVELS.includes(b.level as string) && typeof b.text === 'string' && isTime(b.sentAt) &&
     (b.level === 'ask' ? keys === ASK_KEYS && isTime(b.replyBy) : keys === BODY_KEYS)
   if (!ok) return undefined

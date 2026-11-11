@@ -21,6 +21,11 @@
  * bytes. Mail from another computer enters only through receive(), which the carrier calls with a
  * sender `machine:<computer>/<owner or session:name>` it built from a checked signature; send()
  * never stores such a sender.
+ *
+ * A room post that names a session (U-R1A-34) leaves it one fyi through wake(): from `room:<label>`,
+ * a fixed line holding only the room label and the event id, never the post's text. No caller of
+ * send can spell `room:`; from another computer it arrives as `machine:<computer>/room:<label>`,
+ * fyi only.
  */
 import { randomUUID } from 'node:crypto'
 import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs'
@@ -107,6 +112,10 @@ const LEVELS: readonly string[] = ['fyi', 'ask', 'interrupt']
 const NAME = /^[A-Za-z0-9._-]{1,256}$/
 /** A computer id (bridge/envelope.ts ID). */
 const COMPUTER = /^[a-z0-9._-]{1,64}$/
+/** A room label or event id the wake line may hold; anything else becomes `unnamed` / `unknown`. */
+const WAKE_PART = /^[A-Za-z0-9._:-]{1,128}$/
+/** A room's wake from another computer (fyi only). */
+const REMOTE_ROOM = /^machine:[a-z0-9._-]{1,64}\/room:[A-Za-z0-9._:-]{1,128}$/
 const MAIL_ID = /^mail-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /** The last ms a Date can show: a later sentAt would throw where a label prints it. */
 const MAX_DATE_MS = 8_640_000_000_000_000
@@ -197,11 +206,13 @@ function checkSend({ from, to, level, text, replyByMinutes }: SendInput): number
 /** The checks of a message from another computer, in the order send makes them; the 429 check runs inside the write. */
 function checkReceive({ id, from, to, level, text, sentAt, replyBy }: ReceiveInput): void {
   if (typeof id !== 'string' || !MAIL_ID.test(id)) throw new MailError(400, 'id: mail-<uuid>; nothing was saved')
-  if (!isRemoteSender(from)) throw new MailError(400, 'from: machine:<id>/owner or machine:<id>/session:<name>; nothing was saved')
+  const room = typeof from === 'string' && REMOTE_ROOM.test(from)
+  if (!room && !isRemoteSender(from)) throw new MailError(400, 'from: machine:<id>/owner or machine:<id>/session:<name>; nothing was saved')
   checkName(to)
   checkBody(level, text)
   if (!Number.isSafeInteger(sentAt) || sentAt < 0 || sentAt > MAX_DATE_MS) throw new MailError(400, 'sentAt: ms since the epoch; nothing was saved')
   if (replyBy !== undefined && level !== 'ask') throw new MailError(400, 'replyByMinutes is for ask only; nothing was saved')
+  if (room && level !== 'fyi') throw new MailError(403, 'level: room mail is fyi only; nothing was saved')
   // Remote Ask arrives with control_from (U-R1A-36B), which may then list the computer; nothing does yet.
   if (level === 'ask') throw new MailError(403, `control_from: ${from.slice('machine:'.length, from.indexOf('/'))} may not send Ask here (limits file); nothing was saved`)
   if (level === 'interrupt' && !(limitsSnapshot().interrupt_from ?? []).includes(from)) {
@@ -301,28 +312,46 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   const note = (input: SendInput, outcome: Record<string, unknown>) =>
     audit({ event: 'mail.send', from: String(input.from).slice(0, 300), to: String(input.to).slice(0, 300), level: String(input.level).slice(0, 20), text: input.text, ...outcome })
 
-  return {
-    send(input: SendInput): Sent {
+  /** Checks with `check`, then one queued row in one transaction; one audit line either way. */
+  const store = (input: SendInput, check: () => number | undefined): Sent => {
+    try {
+      const minutes = check()
+      const sentAt = now()
+      const sent: Sent = { id: `mail-${randomUUID()}`, to: input.to, level: input.level, state: 'queued', sentAt }
+      if (minutes !== undefined) sent.replyBy = sentAt + minutes * 60_000
+      db.exec('BEGIN IMMEDIATE')
       try {
-        const minutes = checkSend(input)
-        const sentAt = now()
-        const sent: Sent = { id: `mail-${randomUUID()}`, to: input.to, level: input.level, state: 'queued', sentAt }
-        if (minutes !== undefined) sent.replyBy = sentAt + minutes * 60_000
-        db.exec('BEGIN IMMEDIATE')
-        try {
-          if (Number((queuedCount.get(input.to) as { n: number }).n) >= MAX_INBOX) throw new MailError(429, 'inbox full')
-          insert.run(sent.id, input.from, input.to, input.level, input.text, sentAt, sent.replyBy ?? null, sentAt)
-          db.exec('COMMIT')
-        } catch (e) {
-          db.exec('ROLLBACK')
-          throw e
-        }
-        note(input, { id: sent.id, state: 'queued' })
-        return sent
+        if (Number((queuedCount.get(input.to) as { n: number }).n) >= MAX_INBOX) throw new MailError(429, 'inbox full')
+        insert.run(sent.id, input.from, input.to, input.level, input.text, sentAt, sent.replyBy ?? null, sentAt)
+        db.exec('COMMIT')
       } catch (e) {
-        if (e instanceof MailError) note(input, { state: 'denied', status: e.status })
+        db.exec('ROLLBACK')
         throw e
       }
+      note(input, { id: sent.id, state: 'queued' })
+      return sent
+    } catch (e) {
+      if (e instanceof MailError) note(input, { state: 'denied', status: e.status })
+      throw e
+    }
+  }
+
+  return {
+    send(input: SendInput): Sent {
+      return store(input, () => checkSend(input))
+    },
+    /**
+     * A room post named `to` (a session here, or `<computer>:<session>` as send takes it): one fyi
+     * from `room:<label>` holding only the room label and the event id. Refusals throw like send.
+     */
+    wake(to: string, room: string, eventId: string): Sent {
+      const label = typeof room === 'string' && WAKE_PART.test(room) ? room : 'unnamed'
+      const id = typeof eventId === 'string' && WAKE_PART.test(eventId) ? eventId : 'unknown'
+      const input: SendInput = { from: `room:${label}`, to, level: 'fyi', text: `You were mentioned in room ${label} (event ${id}). Read it with room_read.` }
+      return store(input, () => {
+        checkTo(to)
+        return undefined
+      })
     },
     /** A send the caller refuses before it reaches the store (the tool refusing an unknown key): the same one audit line, then the 400. */
     refuse(input: SendInput, message: string): never {
