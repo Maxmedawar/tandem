@@ -226,7 +226,7 @@ describe('installing Tandem on a machine that has nothing', { timeout: 300_000 }
       })
       const nodeless = join(built, readdirSync(built).find(name => name.endsWith('.tar.gz'))!)
       // A PATH that holds the tools the installer uses and no node.
-      for (const tool of ['sh', 'uname', 'mkdir', 'chmod', 'mktemp', 'rm', 'mv', 'cp', 'cut', 'shasum', 'tar', 'find', 'wc', 'tr', 'sed', 'head', 'grep', 'sort', 'comm', 'cat', 'dirname', 'ln', 'id', 'openssl']) {
+      for (const tool of ['sh', 'uname', 'mkdir', 'chmod', 'mktemp', 'rm', 'mv', 'cp', 'cut', 'shasum', 'tar', 'find', 'wc', 'tr', 'sed', 'head', 'grep', 'sort', 'comm', 'cat', 'dirname', 'ln', 'id', 'openssl', 'gzip', 'perl', 'env']) {
         const found = execFileSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim()
         execFileSync('ln', ['-s', found, join(bare, tool)])
       }
