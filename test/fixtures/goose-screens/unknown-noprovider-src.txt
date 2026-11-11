@@ -1,0 +1,2 @@
+No provider configured. Run 'goose configure' first.
+$ 

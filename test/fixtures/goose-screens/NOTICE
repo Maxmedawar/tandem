@@ -1,0 +1,32 @@
+Goose CLI screens in this folder are plain-text (no colour) for harnesses/goose.toml.
+
+Every *-src.txt file here is CONSTRUCTED, not a capture. Each is built from short UI strings in
+goose v1.59.0 (release goose-aarch64-apple-darwin.tar.bz2, its binary `goose` and the source tag
+v1.59.0 of github.com/aaif-goose/goose, Apache-2.0) and the prompt library it uses, cliclack 0.5.6
+(crates.io, MIT), read as text only, never run: chiefly crates/goose-cli/src/session/paste.rs,
+completion.rs, output.rs and mod.rs, crates/goose-cli/src/commands/configure.rs and cliclack's
+src/theme.rs. Only short UI strings are transcribed; no code is copied.
+
+idle-src.txt: a greeting (the `__( O)>` logo line with provider and model, a session id and the
+work folder), then rustyline's empty prompt `> ` with the default hint
+`Enter to send · Ctrl+J newline`.
+idle-interrupted-src.txt: the greeting, a typed line, a stopped spinner (`◇`), then the prompt with
+the hint `Interrupted, what should goose work on instead?`.
+idle-maybeexit-src.txt: the greeting, then the prompt with the hint drawn after one Ctrl+C on an
+empty prompt, `Press Ctrl+C again to exit, or type new instructions to continue`.
+idle-after-approval-src.txt: a tool box, an ANSWERED tool approval (`◇` and the chosen `Allow`),
+the tool output, a reply, then the default prompt hint again.
+working-src.txt: the greeting, a typed line and the thinking spinner (`◒`, a goose phrase,
+`(Ctrl+C to interrupt)`).
+waiting_for_approval-src.txt: a tool box and the ACTIVE select
+`◆  Goose would like to call the above tool, do you allow?` with its four items and `└`.
+waiting_for_approval-prompt-src.txt: the same with `◆  Do you allow this tool call?` (a tool that
+supplies its own prompt) and its three items.
+unknown-telemetry-src.txt: the first-run usage-data question (`Help improve goose`,
+`Share anonymous usage data to help improve goose?`, a cliclack confirm).
+unknown-noprovider-src.txt: `No provider configured. Run 'goose configure' first.` and a shell
+prompt (goose has exited).
+unknown-summarize-src.txt: a cliclack confirm that is not a tool approval (its wording is
+constructed, not a goose string).
+
+None of these is a real screen. A real screen added here by a live run is named *-real.txt.
