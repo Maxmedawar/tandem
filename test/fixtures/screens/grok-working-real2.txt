@@ -1,0 +1,49 @@
+
+  /p/t/r/r1a14-box-T1kPju/work                                                                                                                                               2.9K / 256K │ [Dashboard]
+
+
+     ❯ Reply with exactly TANDEM-OK-094293 and nothing else. Do not run any command.                                                                                                         2:29 AM
+
+
+  ┃  ◆ Thinking…
+  ┃
+  ┃  The user wants the exact
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   ⠸ Thinking… 0.0s                                                                                                                                                                 5.1s ⇣2.90k [stop]
+
+   Run /doctor for details and fixes.
+
+  ╭──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+  │ ❯                                                                                                                                                                                                │
+  ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── Grok 4.7 (high) · always-approve ─╯
+
+  Shift+Tab:mode  │  Ctrl+c:cancel  │  Ctrl+x:shortcuts

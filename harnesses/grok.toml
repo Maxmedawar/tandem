@@ -1,7 +1,8 @@
 # Grok CLI. Screen rules adapted from kbwo/ccmanager src/services/stateDetector/grok.ts (MIT,
 # see test/fixtures/screens/NOTICE); the same patterns as test/fixtures/screens/harnesses/grok.toml.
-# idle is a positive match of the `>` prompt on the last line. Not yet checked on a signed-in
-# grok. skip_prompts_args is data only until U-R1A-17.
+# idle and the footer working pattern come from grok 1.0.77's own screens, recorded on mini by
+# test/conformance/grok.live.test.ts (test/fixtures/screens/grok-*-real*.txt).
+# skip_prompts_args is data only until U-R1A-17.
 name = "grok"
 program = "grok"
 has_prompts = true
@@ -19,8 +20,12 @@ waiting_for_approval = [
   '◆ (?:Waiting on answers for|Waiting on plan approval|No plan written)',
   'Do you trust the contents of this directory',
 ]
-working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ']
-idle = ['^>(?: [^\n]*)?\z']
+# grok 1.0.77 mid-turn (grok-working-real*.txt): a spinner line and `Ctrl+c:cancel` in the footer.
+working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ', 'Ctrl\+c:cancel']
+# grok 1.0.77's composer: a one-row ❯ box with at most 3 footer lines below it, at the bottom of the
+# screen; empty when ready (grok-idle-real.txt), or holding the prompt grok puts back after Ctrl+C
+# cancels a turn (grok-idle-real2.txt). A ❯ box higher up, or with more rows, is not the composer.
+idle = ['^[ \t]*╭─[^\n]*╮[ \t]*\n[ \t]*│ ❯[^\n]*│[ \t]*\n[ \t]*╰─[^\n]*╯[ \t]*(?:\n[^\n]*){0,3}\z']
 
 [keys]
 interrupt = ["Escape", "C-c"]

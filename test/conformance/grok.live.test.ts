@@ -11,20 +11,29 @@
  * Drives HarnessSession directly, never route(), so Tandem writes nothing under the real HOME:
  * the owner id is injected and the transcript folder is fixed under a temporary HOME while the
  * bridge modules load (Grok's own files under ~/.grok are expected). No sign-in, no bypass, no
- * account or settings change; nothing here answers a Grok prompt: every send waits for an idle
+ * account or settings change. Only warmup answers, and only grok.toml's `[[dialogs]]` rows the start
+ * allows (dialogAnswers "safe": folder trust for the temp folder); every send waits for an idle
  * screen (a sign-in, trust or update menu never reads idle), so a menu fails the step instead of
  * taking the typed text and Enter. With no `<GROK_HOME or ~/.grok>/auth.json` (checked for
  * existence only, never read) it throws before anything spawns.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir, userInfo } from "node:os";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { randomBytes, randomInt } from "node:crypto";
 import { readScreen } from "../../bridge/harness-detect.ts";
 import type { Harness } from "../../bridge/harness-registry.ts";
 
 const LIVE = process.env.TANDEM_LIVE === "1";
+// Before the first tmux call: the private tmux server takes this process's environment. Once warmup
+// trusts the temp folder, these keep the user's own Claude and Cursor hooks from running in the
+// test grok (grok docs 26-config-reference.md, compat.claude.hooks / compat.cursor.hooks).
+if (LIVE) {
+  process.env.GROK_CLAUDE_HOOKS_ENABLED = "0";
+  process.env.GROK_CURSOR_HOOKS_ENABLED = "0";
+}
 // Under TMUX_TMPDIR (the run folder), so the run cleanup removes it too.
 const BOX = LIVE ? mkdtempSync(join(process.env.TMUX_TMPDIR || tmpdir(), "r1a14-box-")) : "";
 const WORK = LIVE ? join(BOX, "work") : "";
@@ -55,6 +64,50 @@ if (LIVE) {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Screen recorder: from just before the spawn until close, every 500 ms one capture of the pane on
+ * the private socket; each distinct screen (trailing whitespace trimmed, redacted) is written to
+ * <TMUX_TMPDIR>/screens/<nn>-<state the file reads>.txt. Errors before the session exists are ignored.
+ */
+const ACCOUNT_NAMES = (() => {
+  const names = [userInfo().username];
+  try {
+    const full = execFileSync("id", ["-F"], { encoding: "utf8" }).trim();
+    if (full) names.push(full, ...full.split(/\s+/).filter((w) => w.length >= 4));
+  } catch {}
+  return names.filter(Boolean).sort((a, b) => b.length - a.length);
+})();
+const redactScreen = (s: string) =>
+  ACCOUNT_NAMES.reduce(
+    (t, n) => t.replace(new RegExp(n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), "<USER>"),
+    s.split(REAL_HOME).join("<HOME>").replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "<EMAIL>"),
+  );
+function startRecorder(harness: Harness): () => void {
+  const dir = join(process.env.TMUX_TMPDIR!, "screens");
+  mkdirSync(dir, { recursive: true });
+  const sock = join(process.env.TMUX_TMPDIR!, `tmux-${process.getuid!()}`, "default");
+  const seen = new Set<string>();
+  const capture = () => {
+    let raw: string;
+    try {
+      raw = execFileSync("tmux", ["-S", sock, "capture-pane", "-p", "-t", `=ccm-${NAME}:`], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    } catch {
+      return;
+    }
+    const screen = raw.split("\n").map((l) => l.trimEnd()).join("\n").trimEnd();
+    if (seen.has(screen)) return;
+    seen.add(screen);
+    const nn = String(seen.size).padStart(2, "0");
+    writeFileSync(join(dir, `${nn}-${readScreen(harness, screen)}.txt`), redactScreen(screen) + "\n");
+  };
+  const timer = setInterval(capture, 500);
+  return () => {
+    clearInterval(timer);
+    capture();
+  };
+}
+let stopRecorder: (() => void) | undefined;
 const redact = (s: string) =>
   s.split(REAL_HOME).join("<redacted>").replace(/[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g, "<redacted>");
 
@@ -104,6 +157,7 @@ describe.skipIf(!LIVE)("grok live: the built-in harness file through HarnessSess
 
   afterAll(async () => {
     if (session && (await session.isAlive())) await session.close();
+    stopRecorder?.();
     rmSync(BOX, { recursive: true, force: true });
   });
 
@@ -116,9 +170,10 @@ describe.skipIf(!LIVE)("grok live: the built-in harness file through HarnessSess
       grok = mods.loadHarnesses().harnesses.get("grok")!;
       expect(grok?.source).toBe("builtin");
       expect(grok?.programPath).toBeDefined();
+      stopRecorder = startRecorder(grok);
       session = await mods.HarnessSession.spawn(
         grok,
-        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)] },
+        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)], dialogAnswers: "safe" },
         async (o) => (terminal = await mods.TerminalSession.spawn({ ...o, ownerIdProvider: async () => "r1a14-live-owner" })),
       );
       expect(session.engine).toBe("grok");

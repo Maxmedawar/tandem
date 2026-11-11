@@ -9,7 +9,7 @@
  * Its afterAll kills that server through its own -S socket, then removes the folder.
  */
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,16 +52,16 @@ const BUILTIN = fileURLToPath(new URL("../../harnesses/", import.meta.url));
 const SCREENS = fileURLToPath(new URL("../fixtures/screens/", import.meta.url));
 const NO_OWNER = join(tmp, "no-owner");
 /**
- * A PATH folder holding an executable fake `grok`: it prints `> `; each line it reads shows a
- * spinner line for about 1 s, then redraws that line (carriage return, erase line) as the reply
- * and a new `> `, as grok's TUI does.
+ * A PATH folder holding an executable fake `grok`: it prints grok 1.0.77's empty composer box
+ * (grok-idle-real.txt); each line it reads shows a spinner line for about 1 s, then redraws that
+ * line (carriage return, erase line) as the reply and a new composer box.
  */
 const BIN = join(tmp, "bin");
 mkdirSync(BIN);
 const FAKE_GROK = join(BIN, "grok");
 writeFileSync(
   FAKE_GROK,
-  "#!/bin/sh\nprintf '> '\nwhile IFS= read -r line; do\n  printf '\\342\\240\\213 Thinking\\342\\200\\246 0.1s'\n  sleep 1\n  printf '\\r\\033[K\\342\\227\\206 Done. %s\\n> ' \"$line\"\ndone\n",
+  "#!/bin/sh\nBOX='╭──────╮\n│ ❯    │\n╰──────╯\n'\nprintf \"$BOX\"\nwhile IFS= read -r line; do\n  printf '\\342\\240\\213 Thinking\\342\\200\\246 0.1s'\n  sleep 1\n  printf '\\r\\033[K\\342\\227\\206 Done. %s\\n' \"$line\"\n  printf \"$BOX\"\ndone\n",
   { mode: 0o755 },
 );
 
@@ -132,9 +132,10 @@ describe("grok: the built-in harness file", () => {
   });
 
   it.each([
-    ["grok-idle-1.txt", "idle"],
-    ["grok-idle-2.txt", "idle"],
-    ["grok-idle-3.txt", "idle"],
+    // ccmanager's `>` samples: grok 1.0.77's ready screen is its composer box, so these read unknown.
+    ["grok-unknown-1.txt", "unknown"],
+    ["grok-unknown-2.txt", "unknown"],
+    ["grok-unknown-3.txt", "unknown"],
     ["grok-working-1.txt", "working"],
     ["grok-working-2.txt", "working"],
     ["grok-working-3.txt", "working"],
@@ -142,8 +143,38 @@ describe("grok: the built-in harness file", () => {
     ["grok-waiting_for_approval-2.txt", "waiting_for_approval"],
     ["grok-waiting_for_approval-3.txt", "waiting_for_approval"],
     ["grok-unknown-signin.txt", "unknown"],
+    // Real grok 1.0.77 screens recorded on mini by test/conformance/grok.live.test.ts.
+    // The folder-trust menu (U-R1A-18B keeps it in test/fixtures/dialogs/, where warmup answers it).
+    ["../dialogs/grok-trust-real.txt", "waiting_for_approval"],
+    ["grok-idle-real.txt", "idle"],
+    // After interrupt(): grok cancels the turn and puts the prompt back in the composer.
+    ["grok-idle-real2.txt", "idle"],
+    ["grok-working-real.txt", "working"],
+    ["grok-working-real2.txt", "working"],
   ])("%s reads %s through the built-in file", (file, state) => {
     expect(readScreen(builtinGrok(), readFileSync(join(SCREENS, file), "utf8"))).toBe(state);
+  });
+
+  it("never idle: every screen fixture but grok's own idle ones, of every agent, and every dialog fixture", () => {
+    const files = readdirSync(SCREENS).filter((f) => f.endsWith(".txt") && !f.startsWith("grok-idle-"));
+    const dialogs = join(SCREENS, "../dialogs");
+    files.push(...readdirSync(dialogs).filter((f) => f.endsWith(".txt")).map((f) => join("../dialogs", f)));
+    expect(files.length).toBeGreaterThan(40);
+    for (const f of files) expect(readScreen(builtinGrok(), readFileSync(join(SCREENS, f), "utf8")), f).not.toBe("idle");
+  });
+
+  it("never idle: a box with a ❯ row that is not grok's composer at the bottom of the screen", () => {
+    const real = readFileSync(join(SCREENS, "grok-idle-real2.txt"), "utf8").split("\n");
+    const output = ["  ╭──────────────────╮", "  │ ❯ ls -la         │", "  ╰──────────────────╯"];
+    // The agent's own output holds a one-row ❯ box; an unrecognised menu has replaced the composer.
+    const outputThenMenu = [...real.slice(0, 30), ...output, "", "  Keep this change?", "    Yes", "  ❯ No"].join("\n");
+    // An approval drawn inside a box at the bottom, its selected option the box's last row.
+    const boxedApproval = [...real.slice(0, 30), "  ╭──────────────────╮", "  │ Allow ls -la?    │", "  │   Yes            │", "  │ ❯ No             │", "  ╰──────────────────╯", "", "  Enter:confirm"].join("\n");
+    // Grok's ready composer with the same one-row ❯ box in its output further up still reads idle.
+    const outputThenComposer = [...real.slice(0, 30), ...output, ...real.slice(30)].join("\n");
+    expect(readScreen(builtinGrok(), outputThenMenu)).not.toBe("idle");
+    expect(readScreen(builtinGrok(), boxedApproval)).not.toBe("idle");
+    expect(readScreen(builtinGrok(), outputThenComposer)).toBe("idle");
   });
 
   it("an owner grok.toml is refused and the built-in stays", () => {
