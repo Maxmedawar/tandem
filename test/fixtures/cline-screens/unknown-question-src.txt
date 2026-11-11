@@ -1,0 +1,11 @@
+❯ hello
+
+* Hello! How can I help?
+
+ Cline is asking a question
+
+ Should I run the tests?
+ 1. Yes
+ 2. No
+ Type a response...
+
