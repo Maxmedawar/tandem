@@ -210,6 +210,10 @@ describe("harness engine: refusals", () => {
 
   it("an owner claude.toml is refused: claude stays on its built-in harness file, once in the enum", async () => {
     expect((await engineEnum()).filter((e) => e === "claude")).toEqual(["claude"]);
+    // The tool text names claude once, as a built-in, not again as a loaded harness file.
+    const { tools } = await client.listTools();
+    const described = (tools.find((t) => t.name === "open_session")!.inputSchema.properties?.["engine"] as { description: string }).description;
+    expect(/loaded harness name \(([^)]*)\)/.exec(described)?.[1]?.split(", ")).not.toContain("claude");
     expect(loadedHarnesses().get("claude")?.source).toBe("builtin");
     const resolution = await resolveEngine("claude");
     expect(resolution.harness).toBe(loadedHarnesses().get("claude"));
