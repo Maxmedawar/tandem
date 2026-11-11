@@ -16,13 +16,19 @@ import { admitInput, readInput } from './input-gate.ts'
 import { MailError, type Mailbox } from './mailbox.ts'
 import { getLive, liveSessionNames } from './sessions.ts'
 
+/** Mail presses one session's interrupt key at most once per this window (the 27B audit's G2). */
+export const INTERRUPT_GAP_MS = 10_000
+
 /** The only text the notice ever types. */
 export function noticeLine(n: number): string {
   return `Tandem: ${n} messages waiting. Call mail_read.`
 }
 
-/** One pass over the live sessions; the line is started, never awaited, so a long turn holds no pass. */
-export async function noticePass(box: Mailbox): Promise<{ typed: string[]; held: string[] }> {
+/**
+ * One pass over the live sessions; the line is started, never awaited, so a long turn holds no pass.
+ * `interruptGapMs`: no interrupt key for a session within that long of its last one (mailbox interruptFor).
+ */
+export async function noticePass(box: Mailbox, interruptGapMs = 0): Promise<{ typed: string[]; held: string[] }> {
   const typed: string[] = []
   const held: string[] = []
   for (const name of liveSessionNames()) {
@@ -38,7 +44,7 @@ export async function noticePass(box: Mailbox): Promise<{ typed: string[]; held:
       // Interrupt mail: the session's own interrupt key, once per newest Interrupt message, only on
       // a working screen (an approval or unknown screen gets no key: it could answer a prompt). The
       // line follows in a later pass, once the gate reads idle.
-      if (p.interrupt > 0 && (await readInput(session)).state === 'working' && box.interruptFor(name)) {
+      if (p.interrupt > 0 && (await readInput(session)).state === 'working' && box.interruptFor(name, interruptGapMs)) {
         audit({ event: 'mail.interrupt', name, engine: session.engine })
         await session.interrupt()
         continue
@@ -60,13 +66,13 @@ export async function noticePass(box: Mailbox): Promise<{ typed: string[]; held:
   return { typed, held }
 }
 
-/** A pass every `everyMs` (unref'd); a pass still running when the timer fires is skipped. Returns stop. */
+/** A pass every `everyMs` (unref'd), interrupt keys at most once per INTERRUPT_GAP_MS a session; a pass still running when the timer fires is skipped. Returns stop. */
 export function startNotices(box: Mailbox, everyMs = 5000): () => void {
   let running = false
   const timer = setInterval(() => {
     if (running) return
     running = true
-    noticePass(box)
+    noticePass(box, INTERRUPT_GAP_MS)
       .catch(() => console.error('tandem mail notice: pass failed'))
       .finally(() => {
         running = false
