@@ -9,15 +9,18 @@
  * Limits per receiving computer: MAX_COPIES copies or MAX_BYTES of body (UTF-8);
  * a copy over either is refused, an older one is never dropped. A copy queued more
  * than TTL_MS ago is removed and the sender's computer gets one `expired` receipt.
- * A body over MAX_BODY_BYTES (the tunnel's frame cap) can never be handed over in
- * one frame, and a Durable Object row cannot hold one over 2 MB: `put` throws for
- * it before anything is written, as it does for an empty `to`.
+ * Every copy must fit one link frame: `put` throws, before anything is written, when
+ * its copy as `take` returns it (JSON, UTF-8, both numbers at their widest) is over
+ * MAX_COPY_BYTES, when a name or the body is not well-formed text (a lone
+ * surrogate), or when `to` is empty. `take` pages by bytes: a page's copies sum to
+ * at most `maxBytes`, except that the first waiting copy always comes back.
  *
  * The logic is a plain class over injected SQL storage (the shape of a Durable
- * Object's ctx.storage.sql) and a clock, so it tests on a local SQLite file. Every method
- * is synchronous: inside the Durable Object one call never interleaves with
- * another. This file deliberately does not import 'cloudflare:workers'.
- * `body` is opaque: the queue never parses it.
+ * Object's ctx.storage.sql), a clock and a transaction runner, so it tests on a
+ * local SQLite file. `put` and `take` each run their writes in one transaction:
+ * all or nothing. Every method is synchronous: inside the Durable Object one call
+ * never interleaves with another. This file deliberately does not import
+ * 'cloudflare:workers'. `body` is opaque: the queue never parses it.
  */
 
 import { WS_MAX_FRAME_BYTES } from './frame-size'
@@ -25,7 +28,8 @@ import { WS_MAX_FRAME_BYTES } from './frame-size'
 export const MAX_COPIES = 1000
 export const MAX_BYTES = 10 * 1024 * 1024
 export const TTL_MS = 7 * 86_400_000
-export const MAX_BODY_BYTES = WS_MAX_FRAME_BYTES
+/** Largest copy, as JSON in UTF-8; the rest of a frame is left for its own fields. */
+export const MAX_COPY_BYTES = WS_MAX_FRAME_BYTES - 65_536
 
 /** The part of ctx.storage.sql the queue uses. */
 export interface QueueSql {
@@ -54,18 +58,26 @@ export interface QueuedCopy {
   body: string
 }
 
+/** UTF-8 bytes of a copy as JSON, keys in QueuedCopy order. */
+function copyBytes(c: QueuedCopy): number {
+  const { id, from, room, room_seq, seq, kind, body } = c
+  return new TextEncoder().encode(JSON.stringify({ id, from, room, room_seq, seq, kind, body })).byteLength
+}
+
 export class HubQueue {
   private readonly sql: QueueSql
   private readonly now: () => number
+  private readonly transaction: <T>(fn: () => T) => T
 
-  constructor(sql: QueueSql, now: () => number) {
+  constructor(sql: QueueSql, now: () => number, transaction: <T>(fn: () => T) => T = (fn) => fn()) {
     this.sql = sql
     this.now = now
+    this.transaction = transaction
     sql.exec(`CREATE TABLE IF NOT EXISTS queue_copies (
       to_id TEXT NOT NULL, seq INTEGER NOT NULL, id TEXT NOT NULL, from_id TEXT NOT NULL,
       room TEXT, room_seq INTEGER, kind TEXT NOT NULL, body TEXT NOT NULL,
       bytes INTEGER NOT NULL, queued_at INTEGER NOT NULL, PRIMARY KEY (to_id, seq))`)
-    sql.exec('CREATE INDEX IF NOT EXISTS queue_copies_queued_at ON queue_copies (queued_at)')
+    sql.exec('CREATE INDEX IF NOT EXISTS queue_copies_kind_queued_at ON queue_copies (kind, queued_at)')
     // Last number handed out, per 'c:<computer>' and per 'r:<room>'.
     sql.exec('CREATE TABLE IF NOT EXISTS queue_counters (key TEXT PRIMARY KEY, last INTEGER NOT NULL)')
   }
@@ -74,45 +86,65 @@ export class HubQueue {
   put(msg: QueueMessage): PutResult[] {
     const to = [...new Set(msg.to)]
     if (to.length === 0) throw new Error('queue put: `to` is empty')
-    const bytes = new TextEncoder().encode(msg.body).byteLength
-    if (bytes > MAX_BODY_BYTES) throw new Error(`queue put: body is ${bytes} bytes, over ${MAX_BODY_BYTES}`)
-    this.expire()
-    const now = this.now()
+    for (const text of [msg.id, msg.from, ...to, msg.room ?? '', msg.body]) {
+      if (!text.isWellFormed()) throw new Error('queue put: a name or the body holds a lone surrogate')
+    }
     const room = msg.room ?? null
-    const roomSeq = room === null ? null : this.next(`r:${room}`)
-    return to.map((computer): PutResult => {
-      const used = this.sql
-        .exec(
-          "SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM queue_copies WHERE to_id = ? AND kind = 'message'",
-          computer,
-        )
-        .toArray()[0]
-      if (Number(used.n) >= MAX_COPIES || Number(used.b) + bytes > MAX_BYTES) return { to: computer, error: 'queue_full' }
-      const seq = this.insert(computer, msg.id, msg.from, room, roomSeq, 'message', msg.body, bytes, now)
-      return { to: computer, seq }
+    const widest = 2 ** 53 - 1
+    const size = copyBytes({ id: msg.id, from: msg.from, room, room_seq: widest, seq: widest, kind: 'message', body: msg.body })
+    if (size > MAX_COPY_BYTES) throw new Error(`queue put: copy is ${size} bytes, over ${MAX_COPY_BYTES}`)
+    const bytes = new TextEncoder().encode(msg.body).byteLength
+    return this.transaction(() => {
+      this.expire()
+      const now = this.now()
+      const roomSeq = room === null ? null : this.next(`r:${room}`)
+      return to.map((computer): PutResult => {
+        const used = this.sql
+          .exec(
+            "SELECT COUNT(*) AS n, COALESCE(SUM(bytes), 0) AS b FROM queue_copies WHERE to_id = ? AND kind = 'message'",
+            computer,
+          )
+          .toArray()[0]
+        if (Number(used.n) >= MAX_COPIES || Number(used.b) + bytes > MAX_BYTES) return { to: computer, error: 'queue_full' }
+        const seq = this.insert(computer, msg.id, msg.from, room, roomSeq, 'message', msg.body, bytes, now)
+        return { to: computer, seq }
+      })
     })
   }
 
-  /** That computer's copies after `afterSeq`, in `seq` order. */
-  take(to: string, afterSeq = 0, limit = 100): QueuedCopy[] {
-    this.expire()
-    return this.sql
-      .exec(
-        'SELECT id, from_id, room, room_seq, seq, kind, body FROM queue_copies WHERE to_id = ? AND seq > ? ORDER BY seq LIMIT ?',
-        to,
-        afterSeq,
-        limit,
-      )
-      .toArray()
-      .map((r) => ({
-        id: String(r.id),
-        from: String(r.from_id),
-        room: r.room === null ? null : String(r.room),
-        room_seq: r.room_seq === null ? null : Number(r.room_seq),
-        seq: Number(r.seq),
-        kind: r.kind === 'expired' ? 'expired' : 'message',
-        body: String(r.body),
-      }))
+  /**
+   * That computer's copies after `afterSeq`, in `seq` order: at most `limit`, and
+   * stopping before the copy that would take the page over `maxBytes` (copyBytes).
+   * The first waiting copy always comes back.
+   */
+  take(to: string, afterSeq = 0, limit = 100, maxBytes = MAX_COPY_BYTES): QueuedCopy[] {
+    return this.transaction(() => {
+      this.expire()
+      const page: QueuedCopy[] = []
+      let total = 0
+      for (const r of this.sql
+        .exec(
+          'SELECT id, from_id, room, room_seq, seq, kind, body FROM queue_copies WHERE to_id = ? AND seq > ? ORDER BY seq LIMIT ?',
+          to,
+          afterSeq,
+          limit,
+        )
+        .toArray()) {
+        const copy: QueuedCopy = {
+          id: String(r.id),
+          from: String(r.from_id),
+          room: r.room === null ? null : String(r.room),
+          room_seq: r.room_seq === null ? null : Number(r.room_seq),
+          seq: Number(r.seq),
+          kind: r.kind === 'expired' ? 'expired' : 'message',
+          body: String(r.body),
+        }
+        total += copyBytes(copy)
+        if (page.length > 0 && total > maxBytes) break
+        page.push(copy)
+      }
+      return page
+    })
   }
 
   /** Delete that computer's copies up to and including `uptoSeq`. */
