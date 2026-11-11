@@ -76,9 +76,10 @@ const thisId = (): string => deriveBridgeId(process.env.TANDEM_HUB_LINK_ID, host
 
 /** JSON text within `max` bytes, parsed; RosterError 'shape' otherwise. */
 function parseJson(raw: unknown, max: number): unknown {
-  const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
-  if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > max) throw new RosterError('shape')
   try {
+    // JSON.stringify throws on a BigInt or a cycle: that is a bad shape too, never a TypeError.
+    const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
+    if (typeof text !== 'string' || Buffer.byteLength(text, 'utf8') > max) throw new RosterError('shape')
     return JSON.parse(text)
   } catch {
     throw new RosterError('shape')
@@ -188,10 +189,19 @@ function readChecked(path: string, max: number): string | undefined {
   }
 }
 
-/** `text` written whole to `path`: a 0600 tmp file, fsynced, renamed over the target. */
+/**
+ * `text` written whole to `path`: a 0600 tmp file, fsynced, renamed over the target. A target that
+ * a read would refuse (a symlink, not a regular file, not ours, not 0600) is never replaced.
+ */
 function writeAtomic(path: string, text: string): void {
   const st = lstatSync(path, { throwIfNoEntry: false })
-  if (st?.isSymbolicLink()) throw new RosterError('the file is a symlink', path)
+  if (st) {
+    if (st.isSymbolicLink()) throw new RosterError('the file is a symlink', path)
+    if (!st.isFile()) throw new RosterError('not a regular file', path)
+    checkOwner(st, path)
+    const mode = st.mode & 0o777
+    if (mode !== 0o600) throw new RosterError(`the file has mode 0${mode.toString(8)}, not 0600`, path)
+  }
   const tmp = `${path}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`
   let fd = openSync(tmp, 'wx', 0o600)
   try {
@@ -230,10 +240,11 @@ function withLock<T>(fn: (dir: string) => T): T {
     if (st && Date.now() - st.mtimeMs > LOCK_STALE_MS) {
       try {
         unlinkSync(lock)
+        continue
       } catch {
-        // another process removed it first
+        // Gone already, or it cannot be removed (a folder at the lock path): wait below, so the
+        // loop still ends in 'busy' instead of spinning for ever.
       }
-      continue
     }
     if (Date.now() - start >= LOCK_WAIT_MS) throw new RosterError('busy', lock)
     Atomics.wait(sleeper, 0, 0, LOCK_POLL_MS)
@@ -334,9 +345,10 @@ export function listOffers(): { id: string; fingerprint: string }[] {
   return readdirSync(offers)
     .filter((f) => /^[0-9a-f]{16}\.json$/.test(f))
     .sort()
-    .map((f) => {
-      const offer = offerAt(offers, f.slice(0, 16)) as Offer
-      return { id: offer.id, fingerprint: fingerprintOf(offer.key) }
+    .flatMap((f) => {
+      // No lock here: an offer trusted since the listing is simply gone.
+      const offer = offerAt(offers, f.slice(0, 16))
+      return offer ? [{ id: offer.id, fingerprint: fingerprintOf(offer.key) }] : []
     })
 }
 

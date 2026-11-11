@@ -9,7 +9,7 @@
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { createPrivateKey, createPublicKey, generateKeyPairSync, hash, randomBytes, sign as edSign } from 'node:crypto'
-import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, lstatSync, lutimesSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir, userInfo } from 'node:os'
 import { join, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -620,4 +620,260 @@ describe('(i) CLI through the launcher', () => {
     for (const line of ['tandem fingerprint', 'tandem roster ', 'tandem roster init', 'tandem trust <fingerprint>', 'tandem version', 'tandem run']) expect(help.out).toContain(line)
     for (const out of [tandem(x, 'roster').out, tandem(x, 'fingerprint').out]) expect(out).not.toMatch(/PRIVATE|-----BEGIN/)
   }, 120_000)
+})
+
+describe('(j) audit rows (U-R1A-31 audit)', () => {
+  const a = computer('a')
+  const b = computer('b')
+  const c = computer('c')
+  const h = memKey()
+  const entries = pair(a, [b, c])
+  const [ea, eb, ec] = entries
+  // A small-order point with the sign bit set: refused as a key by our own list.
+  const weak = Buffer.from('01' + '00'.repeat(30) + '80', 'hex').toString('base64url')
+  // The same signature bytes with the four spare base64url bits set: not the canonical text.
+  const spare = (sig: string) => sig.slice(0, 85) + 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'['ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'.indexOf(sig[85]) | 1]
+
+  it('attack table: each row refused with its reason, roster.json unchanged, no key text in the message', () => {
+    on(a)
+    const before = bytes(rosterFile(a))
+    const cyclic: Record<string, unknown> = { v: 1 }
+    cyclic.entries = cyclic
+    const rawEntries = (text: string) => `{"v":1,"entries":[${text}]}`
+    const rows: [string, () => unknown, string][] = [
+      ['id with a newline (would shift signed fields)', () => verifyRoster(doc([ea, eb, { ...ec, id: 'c\nx' }])), 'shape'],
+      ['seq as a string', () => verifyRoster(doc([ea, eb, { ...ec, seq: '2' as unknown as number }])), 'shape'],
+      ['ts as a string', () => verifyRoster(doc([ea, eb, { ...ec, ts: String(ec.ts) as unknown as number }])), 'shape'],
+      ['ts past the safe integers', () => verifyRoster(rawEntries(JSON.stringify(ea).replace(`"ts":${ea.ts}`, '"ts":9007199254740993'))), 'shape'],
+      ['ts overflowing to Infinity', () => verifyRoster(rawEntries(JSON.stringify(ea).replace(`"ts":${ea.ts}`, '"ts":1e400'))), 'shape'],
+      ['an entry with a __proto__ field', () => verifyRoster(rawEntries(JSON.stringify(ea).replace('{', '{"__proto__":{"key":"x"},'))), 'shape'],
+      ['a small-order key as an entry key', () => verifyRoster(doc([ea, eb, { ...ec, key: weak }])), 'shape'],
+      ['a small-order key as a signer', () => verifyRoster(doc([ea, eb, { ...ec, signer: weak }])), 'shape'],
+      ['deep nesting', () => verifyRoster('['.repeat(60_000) + ']'.repeat(60_000)), 'shape'],
+      ['a value JSON cannot hold (BigInt)', () => verifyRoster({ v: 1, entries: [{ ...ea, ts: 1n }] }), 'shape'],
+      ['a value JSON cannot hold (cycle)', () => verifyRoster(cyclic), 'shape'],
+      ['an offer JSON cannot hold', () => receiveOffer({ v: 1n }, T), 'shape'],
+      ['a root signed by another key', () => verifyRoster(doc([{ ...ea, sig: h.sign(entryText(ea)) }])), 'signature'],
+      ['a root naming another signer', () => verifyRoster(doc([forge(h, undefined, 'a', a.key.publicKey)])), 'root'],
+      ['the right bytes in a non-canonical signature text', () => verifyRoster(doc([ea, eb, { ...ec, sig: spare(ec.sig) }])), 'signature'],
+      ['an entry text signed under the offer tag', () => verifyRoster(doc([ea, eb, { ...ec, sig: a.key.sign(entryText(ec).replace('tandem-roster-v1', 'tandem-roster-offer-v1')) }])), 'signature'],
+      ['an offer signed under the entry tag', () => receiveOffer(JSON.stringify({ v: 1, id: 'x', key: h.publicKey, ts: T, sig: h.sign(offerText({ id: 'x', key: h.publicKey, ts: T }).replace('tandem-roster-offer-v1', 'tandem-roster-v1')) }), T), 'signature'],
+      ['an offer for a small-order key', () => receiveOffer(JSON.stringify({ v: 1, id: 'x', key: weak, ts: T, sig: h.sign('x') }), T), 'shape'],
+      ['an offer whose id has a path in it', () => receiveOffer(JSON.stringify({ ...makeOffer(h, 'x', T), id: '../x' }), T), 'shape'],
+      ['trust: a path as the fingerprint', () => trustOffer(a.key, '../../../../x'), 'bad fingerprint'],
+      ['trust: a trailing newline', () => trustOffer(a.key, b.key.fingerprint + '\n'), 'bad fingerprint'],
+      ['trust: not a string', () => trustOffer(a.key, ['0123456789abcdef'] as unknown as string), 'bad fingerprint'],
+      ['join: a trailing newline', () => joinRoster(a.key, b.key.fingerprint + '\n'), 'bad fingerprint'],
+      ['join: a roster is already here', () => joinRoster(a.key, b.key.fingerprint), 'roster exists'],
+      ['trust by a key that is not in the roster', () => trustOffer(h, b.key.fingerprint, T), 'not trusted'],
+    ]
+    const messages: string[] = []
+    for (const [name, fn, reason] of rows) {
+      let got = 'accepted'
+      try {
+        fn()
+      } catch (e) {
+        got = e instanceof RosterError ? e.reason : `threw ${(e as Error).name}`
+        messages.push(String((e as Error).message))
+      }
+      expect([name, got]).toEqual([name, reason])
+      expect([name, bytes(rosterFile(a))]).toEqual([name, before])
+    }
+    for (const text of [a.key.publicKey, b.key.publicKey, h.publicKey, weak, ea.sig, ec.sig]) expect(messages.join('\n')).not.toContain(text)
+    expect(readdirSync(join(a.home, 'roster')).filter((f) => f !== 'roster.json' && f !== 'offers')).toEqual([])
+    expect(trustedKey('__proto__')).toBeUndefined()
+    expect(trustedKey('constructor')).toBeUndefined()
+    expect(a.key.fingerprint).toMatch(/^[0-9a-f]{16}$/)
+    expect(a.key.fingerprint).toBe(hash('sha256', Buffer.from(a.key.publicKey, 'base64url'), 'hex').slice(0, 16))
+  })
+
+  it('replayed offers and a taken id: never a second entry, never a key swapped under an id', () => {
+    on(a)
+    const before = bytes(rosterFile(a))
+    // B's own offer again after B is trusted: it waits, but trusting it changes nothing.
+    receiveOffer(JSON.stringify(makeOffer(b.key, 'b', T)), T)
+    expect(reasonOf(() => trustOffer(a.key, b.key.fingerprint, T))).toBe('duplicate')
+    // The hub's key under A's id, and B's key under a new id.
+    receiveOffer(JSON.stringify(makeOffer(h, 'a', T)), T)
+    expect(reasonOf(() => trustOffer(a.key, h.fingerprint, T))).toBe('duplicate')
+    receiveOffer(JSON.stringify(makeOffer(b.key, 'b2', T)), T)
+    expect(reasonOf(() => trustOffer(a.key, b.key.fingerprint, T))).toBe('duplicate')
+    expect(bytes(rosterFile(a))).toEqual(before)
+    expect(trustedKey('a')).toBe(a.key.publicKey)
+    expect(trustedKey('b2')).toBeUndefined()
+    // An offer may not be re-dated by anyone but its key.
+    const old = makeOffer(h, 'x', T - DAY - 1)
+    expect(reasonOf(() => receiveOffer(JSON.stringify({ ...old, ts: T }), T))).toBe('signature')
+  })
+
+  it('join binds the key the owner compared, not an id and not another trusted key', () => {
+    // D was signed in by C. The owner must type C's fingerprint: A's (the root's) and B's are refused.
+    const d = computer('d')
+    on(c)
+    receiveOffer(JSON.stringify(makeOffer(d.key, 'd', T)), T)
+    trustOffer(c.key, d.key.fingerprint, T)
+    const text = readFileSync(rosterFile(c), 'utf8')
+    on(d)
+    expect(receiveRoster(text)).toBe('pending')
+    for (const fp of [a.key.fingerprint, b.key.fingerprint, d.key.fingerprint, h.fingerprint]) {
+      expect(reasonOf(() => joinRoster(d.key, fp))).toBe('signer')
+      expect(existsSync(rosterFile(d))).toBe(false)
+    }
+    // A hub roster whose root calls itself 'a' and signs D replaces the pending one, and is refused under A's fingerprint.
+    const root = forge(h, undefined, 'a', h.publicKey)
+    expect(receiveRoster(doc([root, forge(h, root, 'd', d.key.publicKey)]))).toBe('pending')
+    expect(reasonOf(() => joinRoster(d.key, a.key.fingerprint))).toBe('signer')
+    expect(reasonOf(() => joinRoster(d.key, c.key.fingerprint))).toBe('signer')
+    expect(readRoster()).toBeUndefined()
+    // D's key under another id is not D.
+    expect(reasonOf(() => receiveRoster(doc([root, forge(h, root, 'dd', d.key.publicKey)])))).toBe('not for this computer')
+    expect(receiveRoster(text)).toBe('pending')
+    expect(joinRoster(d.key, c.key.fingerprint)).toHaveLength(4)
+    expect(trustedKey('a')).toBe(a.key.publicKey)
+  })
+
+  it('a file or folder owned by another user: refused with its path, left as is', () => {
+    if (!process.getuid) return
+    const real = process.getuid()
+    /** This user for the first `n` owner checks, another user after. */
+    const otherAfter = (n: number, fn: () => unknown): { reason: string; path: string | undefined } => {
+      let calls = 0
+      const spy = vi.spyOn(process, 'getuid').mockImplementation(() => (calls++ < n ? real : real + 1))
+      try {
+        fn()
+        return { reason: 'accepted', path: undefined }
+      } catch (e) {
+        if (!(e instanceof RosterError)) throw e
+        return { reason: e.reason, path: e.path }
+      } finally {
+        spy.mockRestore()
+      }
+    }
+    const x = computer('x')
+    const y = computer('y')
+    on(x)
+    initRoster(x.key, 'x', T)
+    receiveOffer(JSON.stringify(makeOffer(h, 'h', T)), T)
+    const dir = join(x.home, 'roster')
+    const offer = join(dir, 'offers', `${h.fingerprint}.json`)
+    const keep = [bytes(rosterFile(x)), bytes(offer)]
+    const NOT_OWNED = 'not owned by this user'
+    expect(otherAfter(0, () => readRoster())).toEqual({ reason: NOT_OWNED, path: dir })
+    expect(otherAfter(1, () => readRoster())).toEqual({ reason: NOT_OWNED, path: rosterFile(x) })
+    expect(otherAfter(1, () => trustedKey('x'))).toEqual({ reason: NOT_OWNED, path: rosterFile(x) })
+    expect(otherAfter(1, () => listOffers())).toEqual({ reason: NOT_OWNED, path: join(dir, 'offers') })
+    expect(otherAfter(2, () => listOffers())).toEqual({ reason: NOT_OWNED, path: offer })
+    expect(otherAfter(0, () => trustOffer(x.key, h.fingerprint, T))).toEqual({ reason: NOT_OWNED, path: dir })
+    expect(otherAfter(1, () => trustOffer(x.key, h.fingerprint, T))).toEqual({ reason: NOT_OWNED, path: rosterFile(x) })
+    expect(otherAfter(3, () => trustOffer(x.key, h.fingerprint, T))).toEqual({ reason: NOT_OWNED, path: offer })
+    expect(otherAfter(2, () => receiveOffer(JSON.stringify(makeOffer(h, 'h', T + 1)), T))).toEqual({ reason: NOT_OWNED, path: offer })
+    expect(otherAfter(1, () => initRoster(x.key, 'x', T))).toEqual({ reason: NOT_OWNED, path: rosterFile(x) })
+    expect([bytes(rosterFile(x)), bytes(offer)]).toEqual(keep)
+    expect(readdirSync(dir).sort()).toEqual(['offers', 'roster.json'])
+    expect(readRoster()).toHaveLength(1)
+    // pending.json on a computer that has not joined.
+    const text = (trustOffer(x.key, h.fingerprint, T), receiveOffer(JSON.stringify(makeOffer(y.key, 'y', T)), T), trustOffer(x.key, y.key.fingerprint, T), readFileSync(rosterFile(x), 'utf8'))
+    on(y)
+    receiveRoster(text)
+    const pending = join(y.home, 'roster', 'pending.json')
+    const was = bytes(pending)
+    expect(otherAfter(1, () => joinRoster(y.key, x.key.fingerprint))).toEqual({ reason: NOT_OWNED, path: pending })
+    expect(otherAfter(1, () => initRoster(y.key, 'y', T))).toEqual({ reason: NOT_OWNED, path: pending })
+    expect(bytes(pending)).toEqual(was)
+    expect(existsSync(rosterFile(y))).toBe(false)
+  })
+
+  it('wrong modes on pending.json, offers/ and an offer: refused, never replaced', () => {
+    const x = computer('x')
+    const y = computer('y')
+    const text = readFileSync(rosterFile((pair(x, [y]), x)), 'utf8')
+    const z = computer('z')
+    on(x)
+    receiveOffer(JSON.stringify(makeOffer(z.key, 'z', T)), T)
+    trustOffer(x.key, z.key.fingerprint, T)
+    const longer = readFileSync(rosterFile(x), 'utf8')
+    on(z)
+    receiveRoster(longer)
+    const pending = join(z.home, 'roster', 'pending.json')
+    const was = bytes(pending)
+    chmodSync(pending, 0o644)
+    expect(reasonOf(() => joinRoster(z.key, x.key.fingerprint))).toMatch(/mode 0644/)
+    expect(reasonOf(() => receiveRoster(longer))).toMatch(/mode 0644/)
+    expect(reasonOf(() => initRoster(z.key, 'z', T))).toMatch(/mode 0644/)
+    expect([mode(pending), bytes(pending)]).toEqual([0o644, was])
+    expect(existsSync(rosterFile(z))).toBe(false)
+    chmodSync(pending, 0o600)
+    expect(text).not.toBe(longer)
+
+    on(x)
+    const offers = join(x.home, 'roster', 'offers')
+    const first = makeOffer(h, 'h', T)
+    receiveOffer(JSON.stringify(first), T)
+    const path = join(offers, `${h.fingerprint}.json`)
+    const kept = bytes(path)
+    chmodSync(path, 0o644)
+    expect(reasonOf(() => receiveOffer(JSON.stringify(makeOffer(h, 'h', T + 1)), T))).toMatch(/mode 0644/)
+    expect(reasonOf(() => trustOffer(x.key, h.fingerprint, T))).toMatch(/mode 0644/)
+    expect(() => listOffers()).toThrow(RosterError)
+    expect([mode(path), bytes(path)]).toEqual([0o644, kept])
+    chmodSync(path, 0o600)
+    // The offer path a symlink: a new offer for that key does not replace or follow it.
+    const elsewhere = join(box(), 'o.json')
+    writeFileSync(elsewhere, 'untouched', { mode: 0o600 })
+    rmSync(path)
+    symlinkSync(elsewhere, path)
+    expect(reasonOf(() => receiveOffer(JSON.stringify(first), T))).toMatch(/symlink/)
+    expect(lstatSync(path).isSymbolicLink()).toBe(true)
+    expect(readFileSync(elsewhere, 'utf8')).toBe('untouched')
+    rmSync(path)
+    receiveOffer(JSON.stringify(first), T)
+    chmodSync(offers, 0o755)
+    expect(reasonOf(() => receiveOffer(JSON.stringify(makeOffer(memKey(), 'k', T)), T))).toMatch(/mode 0755/)
+    expect(() => listOffers()).toThrow(RosterError)
+    expect(reasonOf(() => trustOffer(x.key, h.fingerprint, T))).toMatch(/mode 0755/)
+    expect(mode(offers)).toBe(0o755)
+    expect(readRoster()).toHaveLength(3)
+    // offers/ itself a symlink.
+    chmodSync(offers, 0o700)
+    const moved = join(box(), 'offers')
+    mkdirSync(moved, { mode: 0o700 })
+    rmSync(offers, { recursive: true })
+    symlinkSync(moved, offers)
+    expect(reasonOf(() => receiveOffer(JSON.stringify(first), T))).toMatch(/symlink/)
+    expect(readdirSync(moved)).toEqual([])
+  })
+
+  it('a bad lock path: an old symlink is removed and never followed; a folder ends in busy, not a hang', () => {
+    const x = computer('x')
+    const dir = join(x.home, 'roster')
+    const lock = join(dir, '.lock')
+    mkdirSync(dir, { mode: 0o700 })
+    const old = (Date.now() - 31_000) / 1000
+    // An old lock that is a symlink to a file elsewhere, then one to a path that does not exist.
+    const outside = box()
+    writeFileSync(join(outside, 'target'), 'untouched', { mode: 0o600 })
+    for (const target of [join(outside, 'target'), join(outside, 'made-by-lock')]) {
+      symlinkSync(target, lock)
+      lutimesSync(lock, old - 60, old - 60)
+      expect(lstatSync(lock).mtimeMs).toBeLessThan(old * 1000)
+      rmSync(rosterFile(x), { force: true })
+      expect(reasonOf(() => initRoster(x.key, 'x', T))).toBe('accepted')
+      expect(existsSync(lock)).toBe(false)
+      expect(readdirSync(outside)).toEqual(['target'])
+      expect(readFileSync(join(outside, 'target'), 'utf8')).toBe('untouched')
+    }
+    // A folder at the lock path cannot be removed: the wait ends after 5 s with 'busy'. Run in a
+    // child with a timeout, so a loop that never ends fails this row instead of hanging the run.
+    const before = bytes(rosterFile(x))
+    mkdirSync(lock, { mode: 0o700 })
+    utimesSync(lock, old, old)
+    const r = spawnSync(process.execPath, ['--experimental-strip-types', '--no-warnings', join(repo, 'bridge', 'roster.ts'), 'trust', '0123456789abcdef'], {
+      env: { ...process.env, TANDEM_HOME: x.home, TANDEM_HUB_LINK_ID: 'x' },
+      encoding: 'utf8',
+      timeout: 20_000,
+    })
+    expect({ code: r.status, signal: r.signal, err: r.stderr }).toEqual({ code: 1, signal: null, err: `tandem: busy (${lock})\n` })
+    expect(lstatSync(lock).isDirectory()).toBe(true)
+    expect(bytes(rosterFile(x))).toEqual(before)
+  }, 40_000)
 })
