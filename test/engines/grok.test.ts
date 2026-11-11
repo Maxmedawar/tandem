@@ -142,6 +142,8 @@ describe("grok: the built-in harness file", () => {
     ["grok-waiting_for_approval-2.txt", "waiting_for_approval"],
     ["grok-waiting_for_approval-3.txt", "waiting_for_approval"],
     ["grok-unknown-signin.txt", "unknown"],
+    // Real grok 1.0.77 screens recorded on mini by test/conformance/grok.live.test.ts.
+    ["grok-waiting_for_approval-real.txt", "waiting_for_approval"],
   ])("%s reads %s through the built-in file", (file, state) => {
     expect(readScreen(builtinGrok(), readFileSync(join(SCREENS, file), "utf8"))).toBe(state);
   });
