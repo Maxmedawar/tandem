@@ -19,7 +19,8 @@
  *
  * First screens, read before anything is typed: with no provider Cline shows its onboarding
  * (`Welcome to Cline`, `Connect a model provider to get started.`); a hub that must update shows
- * `Cline Hub update required` or `Cline Hub was updated`. Either way the start step closes the
+ * `Cline Hub update required` or `Cline Hub was updated`; a startup notice (`Try ClinePass`,
+ * `Introducing Cline Desktop`) is a modal too. Each way the start step closes the
  * session, sends no key and throws; the other steps fail fast with the same message. Nothing
  * under ~/.cline is read by this file. An interactive `cline` connects to a shared local hub
  * daemon that may outlive the session; this file never signals it.
@@ -40,6 +41,8 @@ const NAME = `r1bcln-live-${randomBytes(3).toString("hex")}`;
 const STOPS: [RegExp, string][] = [
   [/Welcome to Cline|Connect a model provider to get started\./, "cline is not signed in on this computer: NEEDS MAX"],
   [/Cline Hub update required|Cline Hub was updated/, "cline shows its hub update menu: NEEDS MAX"],
+  // Startup notices (kanban-migration/notice-dialog.tsx): a modal over the home view, where Enter opens a browser.
+  [/Try ClinePass|Introducing Cline Desktop|Press Enter to open, any other key to close/, "cline shows a startup notice: NEEDS MAX"],
 ];
 // How long the start step watches the first screens for an onboarding or hub update menu.
 const FIRST_SCREENS_MS = 5_000;

@@ -130,8 +130,12 @@ describe("cline: the built-in harness file", () => {
     expect(h.fork).toEqual([]);
     expect(h.skip_prompts_args).toEqual(["--auto-approve", "true"]);
     expect(h.keys).toEqual({ interrupt: ["Escape"], approve: "y", deny: "n" });
-    expect(h.states?.waiting_for_approval).toEqual(["Cline needs permission", "\\[y\\] [Aa]pprove", "Approve tool call\\?"]);
-    expect(h.states?.working).toEqual(["Thinking\\.\\.\\. \\(esc to cancel\\)", "(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] "]);
+    expect(h.states?.waiting_for_approval).toEqual([
+      "Cline needs permission[^❯]*\\z",
+      "Approve tool call\\?[^❯]*\\z",
+      "\\[y\\] [Aa]pprove +\\[n\\] [Dd]eny[^❯]*\\z",
+    ]);
+    expect(h.states?.working).toEqual(["(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\\.\\.\\. \\(esc to cancel\\)", "(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] "]);
     expect(h.states?.idle).toEqual(["❯ +(?:What can I do for you\\?|Ask anything\\.\\.\\.|Plan something\\.\\.\\.)"]);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.hook).toBeUndefined();
@@ -208,6 +212,27 @@ describe("cline: the built-in harness file", () => {
     const text = screen(IDLE_CHAT_SRC).replace("* Hello! How can I help?", "* Hello! How can I help?\n\n* done");
     expect(text).toContain("* done");
     expect(readScreen(builtinCline(), text)).toBe("idle");
+  });
+
+  // Audit (Copilot and Goose classes): the approval box replaces the input bar, so approval text with
+  // the `❯` input bar below it is reply or tool text in the transcript, never a pending approval.
+  const INPUT = "─".repeat(80) + "\n❯ Ask anything...\n" + "─".repeat(80) + "\n ███░░░░ (1,024) $0.01   ○ Plan ● Act (Tab)\n";
+  const BOX = " Cline needs permission\n\n Approve tool call?\n\n run_commands\n\n   $ npm test\n\n  [y] Approve   [n] Deny\n\n";
+  it.each([
+    ["a reply that quotes the approval phrases inline", "* When a tool runs, Cline needs permission: it shows \"Approve tool call?\" with [y] Approve and [n] Deny.\n\n"],
+    ["a reply that quotes the whole box, line by line", `* Here is the box:\n\n${BOX}`],
+    ["an answered approval (the settled tool entry, then the reply)", "* run_commands(npm test)\n  3 passed\n\n* Done.\n\n"],
+    ["a reply that quotes the thinking line", "* The TUI shows Thinking... (esc to cancel) while it works.\n\n"],
+  ])("%s, with the input bar below it, reads idle", (_label, transcript) => {
+    expect(readScreen(builtinCline(), `❯ hello\n\n${transcript}${INPUT}`)).toBe("idle");
+  });
+
+  it.each([
+    ["the box as drawn (padding rows, 3 spaces between buttons, a 2-row status bar)", `❯ hello\n\n⠼ run_commands(npm test)\n\n\n${BOX}\n ███░░░░ (1,024) $0.01   ○ Plan ● Act (Tab)\n Auto-approve all disabled (Shift+Tab)\n`],
+    ["the box below a reply that quotes its title", `* Cline needs permission is what you will see\n\n${BOX} ○ Plan ● Act (Tab)\n`],
+    ["a box cut short with its buttons hidden", "* x\n\n Cline needs permission\n\n Approve tool call?\n\n mcp__srv__tool\n\n   {\n     \"a\": 1,\n ○ Plan ● Act (Tab)\n"],
+  ])("%s reads waiting_for_approval", (_label, text) => {
+    expect(readScreen(builtinCline(), text)).toBe("waiting_for_approval");
   });
 
   it("never idle: every approval and unknown screen and every other agent's idle screen in the screens folder", () => {

@@ -5,10 +5,13 @@
 # `❯` input bar with one of its four placeholders (home `What can I do for you?` / chat
 # `Ask anything...`, `Plan something...` in plan mode on both), unanchored because the home view is
 # centred; no rule reads the status bar.
-# Unproven on a real screen until the live row runs. working is `Thinking... (esc to cancel)` or a
+# Unproven on a real screen until the live row runs. working is `Thinking... (esc to cancel)` after
+# its spinner frame (so a reply that quotes it is not working) or a
 # `dots` spinner frame in the transcript gutter, because the thinking line goes as soon as content
 # streams while the placeholder still shows. waiting_for_approval is the inline
-# `Cline needs permission` box, one form for every tool and the plan-to-act switch; approve is `y`,
+# `Cline needs permission` box, one form for every tool and the plan-to-act switch; the box
+# replaces the input bar, so each approval pattern also requires no `❯` after it (`[^❯]*\z`): reply
+# text that quotes these phrases sits above the input bar and stays idle; approve is `y`,
 # deny is `n`. interrupt is one Escape; two Escapes restore a checkpoint. account_env is
 # CLINE_DIR. No dialog row: Cline has no trust menu, and its onboarding and hub update menus are
 # not dialogs Tandem may answer. delivery is `notice`: Cline's hooks live in its own folders,
@@ -24,8 +27,8 @@ history = "~/.cline/data/sessions"
 delivery = "notice"
 
 [states]
-waiting_for_approval = ['Cline needs permission', '\[y\] [Aa]pprove', 'Approve tool call\?']
-working = ['Thinking\.\.\. \(esc to cancel\)', '(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ']
+waiting_for_approval = ['Cline needs permission[^❯]*\z', 'Approve tool call\?[^❯]*\z', '\[y\] [Aa]pprove +\[n\] [Dd]eny[^❯]*\z']
+working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to cancel\)', '(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ']
 idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)']
 
 [keys]
