@@ -5,8 +5,8 @@
  * Derived (simplified, single-user) from a mobile-bridge relay/tunnel-do.ts.
  * Responsibilities: accept the bridge WS via the Hibernation API; on each
  * forwarded RPC request assign a request_id, frame it as tunnel_http_request,
- * await the matching tunnel_http_response (timeout), return it. On bridge
- * disconnect, fail all in-flight requests.
+ * await the matching tunnel_http_response (timeout), return it. A bridge socket
+ * closing fails only the in-flight requests sent on that socket.
  *
  * Routes (Worker forwards here via a stub):
  *   /__tunnel/connect   -> bridge WebSocket upgrade (token and device proof already checked by
@@ -18,6 +18,8 @@
  *                          ./roster-verify; any other path under it is 404, nothing sent).
  *                          Callers: TandemMcp's fabric tools and the hub link route for fabric
  *                          calls (index.ts).
+ * Mail and presence between the computers of the roster the hub holds (mailPut, mailTake,
+ * presenceExchange) are Durable Object RPC methods the link routes in index.ts call.
  */
 
 import { DurableObject } from 'cloudflare:workers'
@@ -47,6 +49,7 @@ import {
 import { HubQueue, type PutResult, type QueuedCopy, type QueueMessage } from './queue'
 import { HubDevices, PROOF_HEADER, PROOF_WINDOW_MS, parseProof, verifyProof, type ProofContext } from './devices'
 import { RosterStore, type OfferAnswer, type PutAnswer } from './roster-store'
+import { PresenceStore, type PresenceItem } from './presence-store'
 import type { Env } from './types'
 import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
@@ -124,8 +127,7 @@ export class TunnelDO extends DurableObject<Env> {
   }
 
   /* ---- Durable queue per receiving computer (./queue) ---- */
-  // ponytail: no caller until U-R1A-33 (mail across computers). Durable Object RPC
-  // only: no route, frame type or MCP tool reaches these.
+  // Durable Object RPC: the mail routes reach the queue through mailPut and mailTake below.
 
   private queue?: HubQueue
 
@@ -143,6 +145,44 @@ export class TunnelDO extends DurableObject<Env> {
 
   queueAck(to: string, uptoSeq: number): void {
     this.hubQueue().ack(to, uptoSeq)
+  }
+
+  /* ---- Mail and presence between roster computers (routes in index.ts) ---- */
+
+  private presences?: PresenceStore
+
+  private presenceStore(): PresenceStore {
+    return (this.presences ??= new PresenceStore(this.ctx.storage.sql, Date.now, (fn) => this.ctx.storage.transactionSync(fn)))
+  }
+
+  /** Whether the proof's id and key are one entry of the stored roster and every `to` is a member id. */
+  private async inRoster(id: string, key: string, to: string[]): Promise<boolean> {
+    const members = await this.rosterMembers()
+    return members.some((m) => m.id === id && m.key === key) && to.every((t) => members.some((m) => m.id === t))
+  }
+
+  /** Queue `msg` from the proof's computer (the only sender there is) to roster members. A put that throws queues nothing: 400. */
+  async mailPut(id: string, key: string, msg: { id: string; to: string[]; body: string }): Promise<{ status: number; body: unknown }> {
+    if (!(await this.inRoster(id, key, msg.to))) return { status: 403, body: { error: 'not_in_roster' } }
+    try {
+      return { status: 200, body: { results: this.hubQueue().put({ id: msg.id, from: id, to: msg.to, body: msg.body }) } }
+    } catch {
+      return { status: 400, body: { error: 'mail_invalid' } }
+    }
+  }
+
+  /** Delete the caller's copies up to `ack`, then hand it the next page after `ack`. */
+  async mailTake(id: string, key: string, ack: number): Promise<{ status: number; body: unknown }> {
+    if (!(await this.inRoster(id, key, []))) return { status: 403, body: { error: 'not_in_roster' } }
+    this.hubQueue().ack(id, ack)
+    return { status: 200, body: { copies: this.hubQueue().take(id, ack) } }
+  }
+
+  /** Keep the caller's envelopes for roster members; answer the ones addressed to it and the connected ids. */
+  async presenceExchange(id: string, key: string, items: PresenceItem[]): Promise<{ status: number; body: unknown }> {
+    if (!(await this.inRoster(id, key, items.map((item) => item.to)))) return { status: 403, body: { error: 'not_in_roster' } }
+    this.presenceStore().put(id, items)
+    return { status: 200, body: { presence: this.presenceStore().for(id), connected: this.listConnectedBridgeIds() } }
   }
 
   /* ---- Per-computer hub credentials (./devices) ---- */
@@ -483,10 +523,13 @@ export class TunnelDO extends DurableObject<Env> {
     p.resolve(failure(p, status, code))
   }
 
-  /** `closed` went away: every /__rpc call fails as before (U-R1A-33 owns that), a fabric call only if `closed` was its home. */
+  /**
+   * `closed` went away: exactly the calls sent on it fail (a fabric call's socket is its home).
+   * Every other call waits for its own socket's answer or its own timeout.
+   */
   private failAllPending(status: number, code: string, closed: WebSocket): void {
     for (const [id, p] of this.pending) {
-      if (p.settled || (p.home && p.home !== closed)) continue
+      if (p.settled || p.socket !== closed) continue
       p.settled = true
       clearTimeout(p.timeoutTimer)
       p.resolve(failure(p, status, code))

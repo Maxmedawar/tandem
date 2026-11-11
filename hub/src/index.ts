@@ -23,6 +23,10 @@
  *     owner's roster, POST of this computer's pairing offer, GET of the offers waiting. The hub
  *     keeps them (./roster-store): a roster only when its whole chain checks out; every
  *     computer checks both itself.
+ *   - The mail and presence routes (U-R1A-33B-1; same secret and proof, POST only, from an id
+ *     already bound): POST /__tunnel/mail/put, /__tunnel/mail/take and /__tunnel/presence. Each
+ *     answers only a computer of the roster the hub holds, and the sender is always the computer
+ *     the proof names. The hub never parses or vouches for mail or presence text.
  *   - GET / is an unauthenticated health check.
  *
  * The provider routes: anything starting with the API routes (/mcp, /sse) and
@@ -80,6 +84,9 @@ const defaultHandler: ExportedHandler<HandlerEnv> = {
     if (url.pathname === '/__tunnel/roster') return handleRoster(request, env, url, 'roster', (stub, ctx) => stub.checkDevice(request.headers.get(PROOF_HEADER), ctx))
     if (url.pathname === '/__tunnel/roster/offer') return handleRoster(request, env, url, 'offer', (stub, ctx) => stub.checkDevice(request.headers.get(PROOF_HEADER), ctx))
     if (url.pathname === '/__tunnel/roster/offers') return handleRoster(request, env, url, 'offers', (stub, ctx) => stub.checkDevice(request.headers.get(PROOF_HEADER), ctx))
+
+    const mail = MAIL_ROUTES.get(url.pathname)
+    if (mail) return handleMail(request, env, url, mail)
 
     if (url.pathname === '/authorize') {
       return handleAuthorize(request, env)
@@ -194,18 +201,24 @@ const ROSTER_METHODS: Record<RosterRoute, Record<string, number>> = {
   offers: { GET: 0 },
 }
 
+type FieldType = 'number' | 'string' | 'object'
+
 /** `{ <names> }` exactly, each of the given type, else undefined. */
-function bodyOf(bytes: Uint8Array, types: Record<string, 'number' | 'string'>): Record<string, unknown> | undefined {
+function bodyOf(bytes: Uint8Array, types: Record<string, FieldType>): Record<string, unknown> | undefined {
   try {
-    const value: unknown = JSON.parse(new TextDecoder().decode(bytes))
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
-    const o = value as Record<string, unknown>
-    const names = Object.keys(types).sort()
-    if (Object.keys(o).sort().join() !== names.join() || !names.every((n) => typeof o[n] === types[n])) return undefined
-    return o
+    return exactly(JSON.parse(new TextDecoder().decode(bytes)), types)
   } catch {
     return undefined
   }
+}
+
+/** `value` when it is an object with exactly the named keys, each of the given type, else undefined. */
+function exactly(value: unknown, types: Record<string, FieldType>): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const o = value as Record<string, unknown>
+  const names = Object.keys(types).sort()
+  if (Object.keys(o).sort().join() !== names.join() || !names.every((n) => typeof o[n] === types[n])) return undefined
+  return o
 }
 
 /**
@@ -259,6 +272,81 @@ async function handleRoster(request: Request, env: HandlerEnv, url: URL, route: 
     case 'not_in_roster': return jsonResponse({ error: 'not_in_roster' }, 403)
     default: return jsonResponse({ error: 'roster_invalid' }, 400)
   }
+}
+
+type MailRoute = { kind: 'put' | 'take' | 'presence'; cap: number; invalid: string }
+
+/** The mail and presence routes (POST only): the body cap of each (bytes) and its 400 word. */
+const MAIL_ROUTES = new Map<string, MailRoute>([
+  ['/__tunnel/mail/put', { kind: 'put', cap: WS_MAX_FRAME_BYTES, invalid: 'mail_invalid' }],
+  ['/__tunnel/mail/take', { kind: 'take', cap: 1024, invalid: 'mail_invalid' }],
+  ['/__tunnel/presence', { kind: 'presence', cap: WS_MAX_FRAME_BYTES, invalid: 'presence_invalid' }],
+])
+/** A computer id (bridge/envelope.ts ID). */
+const COMPUTER_ID = /^[a-z0-9._-]{1,64}$/
+const MESSAGE_ID = /^[A-Za-z0-9._:-]{1,128}$/
+const MAX_TO = 100
+const MAX_ENVELOPE_BYTES = 16_384
+
+/** `to` is `min` to MAX_TO computer ids, no repeats, none equal to `sender`. */
+function computerIds(to: unknown, sender: string, min: number): to is string[] {
+  return (
+    Array.isArray(to) && to.length >= min && to.length <= MAX_TO &&
+    to.every((t) => typeof t === 'string' && COMPUTER_ID.test(t) && t !== sender) && new Set(to).size === to.length
+  )
+}
+
+/**
+ * The mail and presence routes. Order, as the roster routes: a `token` query 401, not POST 405,
+ * a missing or wrong bearer 401, a body over the route's cap 413, then the device proof over these
+ * exact bytes from an id already bound (a refusal as checkDevice says), then a body that is not
+ * exactly the route's keys and types 400 with the route's word; then the TunnelDO's answer for the
+ * computer the proof names: 403 not_in_roster unless it and every `to` are in the roster.
+ */
+async function handleMail(request: Request, env: HandlerEnv, url: URL, route: MailRoute): Promise<Response> {
+  if (url.searchParams.has('token')) return new Response('unauthorized', { status: 401 })
+  if (request.method !== 'POST') return new Response('method not allowed', { status: 405 })
+  const presented = bearerToken(request)
+  if (!env.TANDEM_HUB_LINK_TOKEN || !presented || !timingSafeEqual(presented, env.TANDEM_HUB_LINK_TOKEN)) {
+    return new Response('unauthorized', { status: 401 })
+  }
+  const bytes = await readCapped(request, route.cap)
+  if (!bytes) return jsonResponse({ error: 'payload_too_large' }, 413)
+  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME))
+  const device = await stub.checkDevice(request.headers.get(PROOF_HEADER), {
+    host: url.host,
+    method: 'POST',
+    path: url.pathname,
+    bodySha256: await sha256Hex(bytes),
+    mayBind: false,
+  })
+  if (device.status !== 200) return deviceRefusal(device.status)
+  const { id, key } = device
+  const invalid = jsonResponse({ error: route.invalid }, 400)
+  let answer: { status: number; body: unknown }
+  if (route.kind === 'put') {
+    const body = bodyOf(bytes, { id: 'string', to: 'object', body: 'string' })
+    if (!body || !MESSAGE_ID.test(body.id as string) || !computerIds(body.to, id, 1)) return invalid
+    const text = body.body as string
+    if (text.length === 0 || !text.isWellFormed()) return invalid
+    answer = await stub.mailPut(id, key, { id: body.id as string, to: body.to, body: text })
+  } else if (route.kind === 'take') {
+    const body = bodyOf(bytes, { ack: 'number' })
+    const ack = body?.ack as number
+    if (!body || !Number.isSafeInteger(ack) || ack < 0) return invalid
+    answer = await stub.mailTake(id, key, ack)
+  } else {
+    const body = bodyOf(bytes, { presence: 'object' })
+    const raw = body?.presence
+    if (!Array.isArray(raw)) return invalid
+    const items = raw.map((item) => exactly(item, { to: 'string', envelope: 'string' }))
+    if (!items.every((item) => item !== undefined)) return invalid
+    const envelopes = items.map((item) => item.envelope as string)
+    const fit = (e: string) => e.isWellFormed() && e.length > 0 && new TextEncoder().encode(e).byteLength <= MAX_ENVELOPE_BYTES
+    if (!computerIds(items.map((item) => item.to), id, 0) || !envelopes.every(fit)) return invalid
+    answer = await stub.presenceExchange(id, key, items.map((item) => ({ to: item.to as string, envelope: item.envelope as string })))
+  }
+  return jsonResponse(answer.body, answer.status)
 }
 
 /**
