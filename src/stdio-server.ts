@@ -90,6 +90,16 @@ try {
 } catch {
   console.error("mail: store unavailable; mail tools are off");
 }
+// A message a dead deliverer left delivering (only those over 60 s: a hook run ends in 10 s) shows
+// as maybe_delivered; then the notice line for agents with mail (bridge/delivery-notice.ts).
+if (mail) {
+  try {
+    mail.recover(60_000);
+  } catch {
+    console.error("mail: recover failed at start; a message left delivering stays so until the next start");
+  }
+  (await import("../bridge/delivery-notice.ts")).startNotices(mail);
+}
 // Who is up on this computer (bridge/presence.ts): read on a call, never on a timer.
 const presence = (await import("../bridge/presence.ts")).createPresence();
 // Past sessions' messages, masked and project-scoped (bridge/transcripts/search.ts); its file opens on first use.
