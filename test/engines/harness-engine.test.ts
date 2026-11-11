@@ -60,6 +60,8 @@ const { dispatchOpenSession } = await import("../../bridge/fleet-dispatch.ts");
 const { createFleetRuntime } = await import("../../bridge/fleet-runtime.ts");
 const { harnessDescriptor } = await import("../../bridge/engines/harness-engine.ts");
 const { loadedHarnesses, resetHarnessCache, resolveEngine } = await import("../../bridge/engine-registry.ts");
+const { applyLimits } = await import("../../bridge/limits.ts");
+const { agentEntry, writeLimits } = await import("../fixtures/limits.ts");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const tmux = (...args: string[]) =>
@@ -85,6 +87,10 @@ beforeAll(async () => {
   loadedHarnesses();
   stderrLines = spy.mock.calls.map((c) => String(c[0]));
   spy.mockRestore();
+  // U-R1A-17: the limits file allows only the four fake agents the tmux cases open, in WORK.
+  const agents = Object.fromEntries(["fake-rules", "fake-plain", "fake-chevron", "fake-trust"].map((n) => [n, agentEntry(loadedHarnesses().get(n)!)]));
+  writeLimits(TANDEM_HOME, { folders: [WORK], agents });
+  applyLimits();
   server = await buildMcpServer();
   client = new Client({ name: "r1a10", version: "0.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();

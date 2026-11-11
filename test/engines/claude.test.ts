@@ -179,12 +179,12 @@ describe("claude: spawn flags (injected spawn function)", () => {
     expect(await spawned({})).toEqual(["/usr/bin/env", "--", program]);
   });
 
-  it("with bypass: --dangerously-skip-permissions, from allowBypass or TANDEM_ALLOW_BYPASS=1", async () => {
+  it("with bypass: --dangerously-skip-permissions from allowBypass: true only; TANDEM_ALLOW_BYPASS=1 alone adds nothing (U-R1A-17)", async () => {
     const program = builtinClaude().programPath ?? "claude";
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "");
     expect(await spawned({ allowBypass: true })).toEqual(["/usr/bin/env", "--", program, "--dangerously-skip-permissions"]);
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "1");
-    expect(await spawned({})).toEqual(["/usr/bin/env", "--", program, "--dangerously-skip-permissions"]);
+    expect(await spawned({})).toEqual(["/usr/bin/env", "--", program]);
     expect(await spawned({ allowBypass: false })).toEqual(["/usr/bin/env", "--", program]);
   });
 

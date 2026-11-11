@@ -46,11 +46,14 @@ writeFileSync(
 );
 
 // A failed import ends this file before any hook runs, so the folder goes here, then the failure.
-const [{ readLogPage }, { routeForTest }, { handleHubRequest }, { CCM_FRAME_TYPES }] = await Promise.all([
+const [{ readLogPage }, { routeForTest }, { handleHubRequest }, { CCM_FRAME_TYPES }, { applyLimits }, { loadedHarnesses }, { agentEntry, writeLimits }] = await Promise.all([
   import("../../bridge/terminal-session.ts"),
   import("../../bridge/router.ts"),
   import("../../bridge/hub-rpc.ts"),
   import("../../hub/src/protocol.ts"),
+  import("../../bridge/limits.ts"),
+  import("../../bridge/engine-registry.ts"),
+  import("../fixtures/limits.ts"),
 ]).catch((e: unknown) => {
   rmSync(BOX, { recursive: true, force: true });
   throw e;
@@ -124,6 +127,9 @@ describe("readLogPage", () => {
 describe("a session read through the hub", () => {
   it("a 300 KiB pane log read through handleHubRequest answers 200 within the frame cap with more: true and idle: false", async () => {
     process.env.TANDEM_ENABLED_ENGINES = "fake-pg";
+    // U-R1A-17: the limits file allows only fake-pg in WORK.
+    writeLimits(TANDEM_HOME, { folders: [WORK], agents: { "fake-pg": agentEntry(loadedHarnesses().get("fake-pg")!) } });
+    applyLimits();
     const name = `r1a37-pg-${randomBytes(3).toString("hex")}`;
     try {
       const open = await routeForTest("POST", "/sessions/open", { engine: "fake-pg", name, cwd: realpathSync(WORK) });

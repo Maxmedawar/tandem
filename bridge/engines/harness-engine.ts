@@ -24,6 +24,9 @@ export interface HarnessSpawnOptions {
   model?: string
   effort?: string
   allowBypass?: boolean
+  /** Append the file's `skip_prompts_args`: the router sets it only when the real cwd is in a
+   *  limits-file `permission_skip` folder (bridge/limits.ts). */
+  skipPrompts?: boolean
 }
 
 /**
@@ -32,10 +35,11 @@ export interface HarnessSpawnOptions {
  * (the registry answers 503 before this runs). With an `idle` rule the screen rules say ready
  * and working; without one the agent is markerless, so its turns end `quiet` once the screen
  * holds still for `states.debounce_ms` (5000 ms when the file has no `states` table).
+ * With `skipPrompts` the file's `skip_prompts_args` follow its args.
  */
-export function harnessDescriptor(h: Harness): EngineDescriptor {
+export function harnessDescriptor(h: Harness, opts: { skipPrompts?: boolean } = {}): EngineDescriptor {
   if (!h.programPath) throw new Error(`harness "${h.name}": program "${h.program}" was not found`)
-  const argv = ['/usr/bin/env', '--', h.programPath, ...h.args]
+  const argv = ['/usr/bin/env', '--', h.programPath, ...h.args, ...(opts.skipPrompts ? h.skip_prompts_args : [])]
   const minStableMs = h.states?.debounce_ms ?? 5000
   if (h.states?.idle?.length) {
     return {
@@ -78,7 +82,7 @@ export class HarnessSession extends TerminalAdapterSession {
     opts: HarnessSpawnOptions,
     spawnFn: (opts: TerminalSpawnOptions) => Promise<HarnessTerminal> = TerminalSession.spawn,
   ): Promise<HarnessSession> {
-    const descriptor = harnessDescriptor(harness)
+    const descriptor = harnessDescriptor(harness, opts)
     spawnArgv(descriptor, opts) // a refused or bad flag throws before anything starts
     return new HarnessSession(harness, await spawnFn({ ...opts, descriptor }))
   }
