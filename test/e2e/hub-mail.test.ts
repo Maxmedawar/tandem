@@ -221,6 +221,34 @@ describe.skipIf(Boolean(missing))(title, () => {
     fakeBeta.delayMs = 0
   }, WAIT)
 
+  it('(33B-1) (audit) the same computer dialling again: the call on its old socket fails, calls on its new socket and on beta answer', async () => {
+    const S = () => session!
+    fakeAlpha.delayMs = 3_000
+    fakeBeta.delayMs = 3_000
+    const seenAlpha = fakeAlpha.requests.length
+    const seenBeta = fakeBeta.requests.length
+    const onOld = call(S(), 'list_sessions', { machine: 'alpha' })
+    const onBeta = call(S(), 'list_sessions', { machine: 'beta' })
+    await vi.waitFor(() => {
+      expect(fakeAlpha.requests.length).toBe(seenAlpha + 1)
+      expect(fakeBeta.requests.length).toBe(seenBeta + 1)
+    }, { timeout: 10_000, interval: 50 })
+    const old = fakeAlpha
+    const started = Date.now()
+    fakeAlpha = await dial(alpha) // the hub closes alpha's old socket
+    fakeAlpha.delayMs = 1_500
+    const onNew = call(S(), 'list_sessions', { machine: 'alpha' }) // waits on the new socket while the old one's close lands
+    const lost = await onOld
+    expect(lost.error).toBe('bridge_offline')
+    expect(Date.now() - started).toBeLessThan(10_000)
+    expect(await onNew).toEqual({ from: 'alpha' })
+    expect(await onBeta).toEqual({ from: 'beta' })
+    expect(fakeAlpha.requests.length).toBe(1)
+    await old.closed
+    fakeAlpha.delayMs = 0
+    fakeBeta.delayMs = 0
+  }, WAIT)
+
   it('(33B-1) (e2) round trip: alpha puts, beta takes, acks; acked copies are gone; alpha sees none of them', async () => {
     expect(await put(alpha, { id: 'm1', to: ['beta'], body: 'x1' })).toEqual({ status: 200, text: '{"results":[{"to":"beta","seq":1}]}' })
     expect(await take(beta, 0)).toEqual({
@@ -320,6 +348,37 @@ describe.skipIf(Boolean(missing))(title, () => {
       ['presence not an array', { presence: {} }],
     ] as const)('(33B-1) presence 400 presence_invalid: %s, nothing stored', async (_label, body) => {
       expect(await link(root, PRESENCE, JSON.stringify(body))).toEqual({ status: 400, text: '{"error":"presence_invalid"}' })
+      expect(JSON.parse((await presence(beta, [])).text).presence).toEqual([])
+    }, WAIT)
+
+    // Audit rows: bodies JSON.stringify cannot write (reserved keys, a key twice, numbers out of range, null).
+    it.each([
+      [PUT, 'a __proto__ key', '{"id":"m","to":["beta"],"body":"x","__proto__":{"from":"beta"}}'],
+      [PUT, 'a constructor key', '{"id":"m","to":["beta"],"body":"x","constructor":{}}'],
+      [PUT, 'a sender key', '{"id":"m","to":["beta"],"body":"x","sender":"beta"}'],
+      [PUT, 'to null', '{"id":"m","to":null,"body":"x"}'],
+      [PUT, 'to an object', '{"id":"m","to":{"0":"beta","length":1},"body":"x"}'],
+      [PUT, 'to twice, the last one bad', '{"id":"m","to":["beta"],"to":[],"body":"x"}'],
+      [PUT, 'null', 'null'],
+      [TAKE, 'a __proto__ key', '{"ack":0,"__proto__":{}}'],
+      [TAKE, 'ack twice, the last one bad', '{"ack":0,"ack":-1}'],
+      [TAKE, 'ack 1e400', '{"ack":1e400}'],
+      [TAKE, 'ack 2^53', '{"ack":9007199254740992}'],
+      [TAKE, 'ack null', '{"ack":null}'],
+      [TAKE, 'a from key', '{"ack":0,"from":"beta"}'],
+      [PRESENCE, 'presence null', '{"presence":null}'],
+      [PRESENCE, 'an item null', '{"presence":[null]}'],
+      [PRESENCE, 'an item with a cwd key', '{"presence":[{"to":"beta","envelope":"E","cwd":"/Users/x"}]}'],
+      [PRESENCE, 'an item with a path key', '{"presence":[{"to":"beta","envelope":"E","path":"/Users/x"}]}'],
+      [PRESENCE, 'an item with an at key', '{"presence":[{"to":"beta","envelope":"E","at":1}]}'],
+      [PRESENCE, 'a cwd key beside presence', '{"presence":[{"to":"beta","envelope":"E"}],"cwd":"/Users/x"}'],
+      [PRESENCE, 'an item with a __proto__ key', '{"presence":[{"to":"beta","envelope":"E","__proto__":{}}]}'],
+      [PRESENCE, 'arrays 20,000 deep', `{"presence":${'['.repeat(20_000)}${']'.repeat(20_000)}}`],
+      [PRESENCE, '50,000 empty items', `{"presence":[${Array.from({ length: 50_000 }, () => '{}').join(',')}]}`],
+    ] as const)('(33B-1) (audit) %s 400: %s, nothing queued or stored', async (path, _label, body) => {
+      const word = path === PRESENCE ? 'presence_invalid' : 'mail_invalid'
+      expect(await link(root, path, body)).toEqual({ status: 400, text: `{"error":"${word}"}` })
+      expect(copiesOf(await take(beta, 0))).toEqual([])
       expect(JSON.parse((await presence(beta, [])).text).presence).toEqual([])
     }, WAIT)
   })

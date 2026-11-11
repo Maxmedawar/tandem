@@ -161,12 +161,17 @@ export class TunnelDO extends DurableObject<Env> {
     return members.some((m) => m.id === id && m.key === key) && to.every((t) => members.some((m) => m.id === t))
   }
 
-  /** Queue `msg` from the proof's computer (the only sender there is) to roster members. A put that throws queues nothing: 400. */
+  /**
+   * Queue `msg` from the proof's computer (the only sender there is) to roster members. A put the
+   * queue refuses (its own `queue put:` errors) queues nothing: 400. Any other throw (storage) is
+   * not the sender's fault and is thrown on, so the sender tries again and never drops the message.
+   */
   async mailPut(id: string, key: string, msg: { id: string; to: string[]; body: string }): Promise<{ status: number; body: unknown }> {
     if (!(await this.inRoster(id, key, msg.to))) return { status: 403, body: { error: 'not_in_roster' } }
     try {
       return { status: 200, body: { results: this.hubQueue().put({ id: msg.id, from: id, to: msg.to, body: msg.body }) } }
-    } catch {
+    } catch (e) {
+      if (!(e instanceof Error) || !e.message.startsWith('queue put:')) throw e
       return { status: 400, body: { error: 'mail_invalid' } }
     }
   }
