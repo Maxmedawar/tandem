@@ -238,6 +238,15 @@ describe("droid: the built-in harness file", () => {
     ["a reply that lists the rows", ["Droid shows:", "  Yes, allow", "  No, cancel", "  No, cancel all", "  No, keep iterating on spec"]],
     ["a reply that quotes the shield title", ["Droid-Shield approval required means a secret was found.", "  Proceed anyway", "  Cancel"]],
     ["an answered confirmation's rows left above the input", ["  EXECUTE  npm test", "  Yes, allow", "  No, cancel", "", "⛬ Ran npm test: 3 passed"]],
+    // Audit (U-R1B-DROID): quoted lists WITH their key hint, the lockout class; an open list
+    // replaces the input box, so a hint with the input box under it is reply text.
+    ["a fake tool list with its hint in a code block", ["The prompt looks like this:", "```", "╭" + "─".repeat(40) + "╮", "│  Yes, allow" + " ".repeat(28) + "│", "│  No, cancel" + " ".repeat(28) + "│", "╰" + "─".repeat(40) + "╯", "  ↑↓ navigate · Enter select · Esc cancel", "```"]],
+    ["a cancel-all row and its hint", ["  No, cancel all", "  ↑↓ navigate · Enter select · Esc cancel · Alt/Option+E to inspect approval details"]],
+    ["the shield list with its hint", ["Droid-Shield approval required", "  Proceed anyway", "  Cancel", "  ↑↓ navigate · Enter select · Esc cancel"]],
+    ["the spec exit rows with their hint", ["  3. No, keep iterating on spec", "  4. No and explain why", "  ↑↓ navigate · 1-4 select · Enter select · Esc cancel"]],
+    ["the autonomy step with its hint", [" 1. Proceed with Manual Approvals", "  ↑↓ navigate · 1-1 select · Enter select · Tab reasoning · Esc back"]],
+    ["the sandbox list with its hint", ["   ✕ No, cancel", "     ↑↓ to select, Enter to confirm, Esc to deny"]],
+    ["the mission proposal with its hint", ["  No and explain why", "  ↑/↓ Navigate · Enter Select · 1-3 Quick select · ESC Cancel"]],
   ])("reply text: %s, above the empty input box, reads idle", (_label, lines) => {
     expect(state(["", ...lines, "", ...IDLE_BOX, ""].join("\n"))).toBe("idle");
   });
@@ -262,6 +271,9 @@ describe("droid: the built-in harness file", () => {
     ["sandbox list, cancel row selected", "waiting_for_approval", ["   Sandbox Violation: network access blocked", "     example.com", TOP, R("   Yes, allow"), R(" ✕ No, cancel"), BOT, "     ↑↓ to select, Enter to confirm, Esc to deny"]],
     ["spec exit", "waiting_for_approval", ["    Will save to: ~/work/.factory/docs/spec.md", TOP, R(" 1. Proceed with the proposal"), R(" 2. Proceed with comment"), R(" 3. Manually edit spec (vim via $EDITOR)"), R(" 4. No and explain why"), BOT, "  ↑↓ navigate · 1-4 select · Enter select · Esc cancel"]],
     ["spec exit, autonomy step", "waiting_for_approval", [TOP, R(" 1. Proceed with Manual Approvals"), R(" 2. Proceed with Low autonomy"), R(" 3. Proceed with Medium autonomy"), BOT, "  ↑↓ navigate · 1-3 select · Enter select · Tab reasoning · Esc back"]],
+    ["mission proposal", "waiting_for_approval", ["  Mission proposal", "  Build a /health route", TOP, R(" Proceed with the proposal"), R(" Proceed with comment"), R(" No and explain why"), BOT, "  ↑/↓ Navigate · Enter Select · 1-3 Quick select · ESC Cancel"]],
+    ["deny-listed command", "waiting_for_approval", ["  Command to approve (deny-listed)", "  ↳ rm -rf build", TOP, R(" Droid would like to run a deny-listed command"), R(""), R("  Yes, allow"), R("  No, cancel"), BOT, HINT]],
+    ["spec exit with the Ctrl+C warning and the droids hint under it", "waiting_for_approval", [TOP, R(" 1. Proceed with the proposal"), R(" 2. No and explain why"), BOT, "  ↑↓ navigate · 1-2 select · Enter select · Esc cancel", "  Press Ctrl+C again to exit", "", "Ctrl+D for droids"]],
     ["empty input after the first turn", "idle", ["⛬ Done: 3 tests pass.", "", ...IDLE_BOX]],
     ["empty input, padded", "idle", ["   ╭" + "─".repeat(70) + "╮", "   │ >" + " ".repeat(68) + "│", "   ╰" + "─".repeat(70) + "╯"]],
     ["spec mode first turn", "idle", [TOP, R(" > Droid will research and plan before making changes"), BOT]],

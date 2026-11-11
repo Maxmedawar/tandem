@@ -9,11 +9,14 @@
 # waiting_for_approval is a confirmation list's last row (`No, cancel`, `No, cancel all`, `No, keep
 # iterating on spec`, the spec exit's `N. No and explain why` or its autonomy step's
 # `N. Proceed with ...`) as a whole row, with Droid's key hint `↑↓ navigate ...` / `↑↓ to select ...`
-# at most three lines under it, or the Droid-Shield title with its `Cancel` row and that hint: Droid
-# draws the hint only while a list is open, so reply text that quotes these words is not an
-# approval. approve is Enter (the first row is selected when the list opens), deny is Escape
-# (cancel; the spec exit also takes Escape as cancel). interrupt is one Escape; Ctrl+C once only
-# warns and twice exits. English UI only (Droid ships other languages). account_env is unset:
+# at most three lines under it, or the Droid-Shield title with its `Cancel` row and that hint (the
+# mission proposal's `No and explain why` takes its own `↑/↓ Navigate · Enter Select` hint). An open
+# list replaces the input box, so the hint sits at the bottom of the screen: at most four lines with
+# no box border follow it. Reply text that quotes a list, even with its hint, has the input box
+# under it and is not an approval. approve is Enter (the first row is selected when the list
+# opens), deny is Escape (cancel; the spec exit and the mission proposal also take Escape as
+# cancel). interrupt is one Escape; Ctrl+C once only warns and twice exits. English UI only (Droid
+# ships other languages). account_env is unset:
 # the sign-in may sit in the macOS keychain, which FACTORY_HOME_OVERRIDE may not follow. No dialog
 # row: the `Trust this folder?` menu's form is unproven. delivery is `notice`: Droid's hooks live
 # in its own ~/.factory/settings.json, which Tandem never writes.
@@ -28,8 +31,8 @@ delivery = "notice"
 
 [states]
 waiting_for_approval = [
-  '(?m)^[ │]*(?:[>✕] )?(?:No, cancel(?: all)?|No, keep iterating on spec|\d+\. No and explain why|\d+\. Proceed with (?:Manual Approvals|Low autonomy|Medium autonomy|High autonomy))[ │]*$(?:\n[^\n]*){0,3}?\n *↑↓ (?:navigate · (?:1-\d+ select · )?Enter select|to select, Enter to confirm)',
-  '(?m)Droid-Shield approval required(?:\n[^\n]*){1,40}?\n[ │]*(?:[>✕] )?Cancel[ │]*$(?:\n[^\n]*){0,3}?\n *↑↓ navigate · Enter select',
+  '(?m)^[ │]*(?:[>✕] )?(?:No, cancel(?: all)?|No, keep iterating on spec|(?:\d+\. )?No and explain why|\d+\. Proceed with (?:Manual Approvals|Low autonomy|Medium autonomy|High autonomy))[ │]*$(?:\n[^\n]*){0,3}?\n *(?:↑↓ (?:navigate · (?:1-\d+ select · )?Enter select|to select, Enter to confirm)|↑/↓ Navigate · Enter Select)[^\n]*(?:\n[^\n╭╮╰╯│]*){0,4}\z',
+  '(?m)Droid-Shield approval required(?:\n[^\n]*){1,40}?\n[ │]*(?:[>✕] )?Cancel[ │]*$(?:\n[^\n]*){0,3}?\n *↑↓ navigate · Enter select[^\n]*(?:\n[^\n╭╮╰╯│]*){0,4}\z',
 ]
 working = ['\((?:Press ESC to stop|Please wait)\)']
 idle = [
