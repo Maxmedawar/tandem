@@ -21,7 +21,6 @@ import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fingerprintOf, openDeviceKey, verifySignature } from './device-keys.ts'
 import type { DeviceKey } from './device-keys.ts'
-import { deriveBridgeId } from './hub-link.ts'
 
 export type Entry = { seq: number; id: string; key: string; signer: string; ts: number; prev: string; sig: string }
 export type Offer = { v: 1; id: string; key: string; ts: number; sig: string }
@@ -72,7 +71,15 @@ const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'obj
 export function rosterDir(): string {
   return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'roster')
 }
-const thisId = (): string => deriveBridgeId(process.env.TANDEM_HUB_LINK_ID, hostname())
+/** hub/src/bridge-id.ts slugifyBridgeId, copied: see thisId. */
+const slugOf = (raw: string): string =>
+  raw.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/-+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64).replace(/-+$/g, '')
+/**
+ * This computer's id, as the hub link names it: bridge/hub-link.ts deriveBridgeId, copied
+ * (U-R1A-33B-2), because bridge/limits.ts, and so the router and the mailbox, load this file and
+ * must load without the hub code. test/roster.test.ts (c5) holds the copy to the original.
+ */
+export const thisId = (): string => slugOf(process.env.TANDEM_HUB_LINK_ID ?? '') || slugOf(hostname().replace(/\.local$/i, '')) || 'default'
 
 /** JSON text within `max` bytes, parsed; RosterError 'shape' otherwise. */
 function parseJson(raw: unknown, max: number): unknown {
@@ -262,20 +269,31 @@ function withLock<T>(fn: (dir: string) => T): T {
 
 const rosterText = (entries: Entry[]) => JSON.stringify({ v: 1, entries })
 
+/**
+ * The last roster text that verified and its entries (U-R1A-33B-2): the same bytes again are
+ * not verified again (verifyRoster depends on nothing but the text). Other bytes are verified;
+ * a refused text is never kept, so a change on disk is always checked.
+ */
+let kept: { text: string; entries: Entry[] } | undefined
+const copyOf = (entries: Entry[]): Entry[] => entries.map((e) => ({ ...e }))
+
 /** The verified roster in `dir`/roster.json, or undefined when there is none. */
 function rosterIn(dir: string): Entry[] | undefined {
   const path = join(dir, 'roster.json')
   const text = readChecked(path, MAX_ROSTER_BYTES)
   if (text === undefined) return undefined
+  if (kept?.text === text) return copyOf(kept.entries)
   try {
-    return verifyRoster(text)
+    const entries = verifyRoster(text)
+    kept = { text, entries: copyOf(entries) }
+    return entries
   } catch (e) {
     if (e instanceof RosterError) throw new RosterError(e.reason, path)
     throw e
   }
 }
 
-/** This computer's trusted roster, re-verified at every read; undefined when there is none. */
+/** This computer's trusted roster, read (and checked) at every call, verified when its bytes changed; undefined when there is none. */
 export function readRoster(): Entry[] | undefined {
   const dir = rosterDir()
   return checkDir(dir, false) ? rosterIn(dir) : undefined

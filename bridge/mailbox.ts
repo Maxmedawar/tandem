@@ -13,6 +13,14 @@
  * Senders are `owner` or `session:<name>`. Interrupt needs the sender listed in the applied
  * limits file's `interrupt_from` (bridge/limits.ts); absent means nobody, the owner included.
  * A refusal throws MailError (400, 403 or 429), saves nothing, and writes one audit line.
+ *
+ * Mail to another computer (U-R1A-33B-2): `to` is `<computer>:<session>` for a computer in this
+ * computer's roster. Its row waits here as queued until the carrier (bridge/hub-mail.ts, in the
+ * bridge process) hands it to the hub: then sent, queue_full, refused or expired (only such rows
+ * take those states). Its signed envelope is kept in `mail_remote`, so a retry resends the same
+ * bytes. Mail from another computer enters only through receive(), which the carrier calls with a
+ * sender `machine:<computer>/<owner or session:name>` it built from a checked signature; send()
+ * never stores such a sender.
  */
 import { randomUUID } from 'node:crypto'
 import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs'
@@ -22,7 +30,7 @@ import { dirname, join, resolve } from 'node:path'
 import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { MAX_ROOM_EVENT_BODY_BYTES } from '../src/fabric/types.ts'
 import { audit } from './audit.ts'
-import { isMailSender, limitsSnapshot } from './limits.ts'
+import { isMailSender, isRemoteSender, limitsSnapshot, thisId, trustedKey } from './limits.ts'
 
 // Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
@@ -30,7 +38,9 @@ const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof
 export type Level = 'fyi' | 'ask' | 'interrupt'
 /** Where a deliverer stands: at the agent's tool call, or idle (a turn end counts as idle). */
 export type Point = 'tool_call' | 'idle'
-export type State = 'queued' | 'delivering' | 'delivered' | 'maybe_delivered'
+export type State = 'queued' | 'delivering' | 'delivered' | 'maybe_delivered' | RemoteState
+/** The hub's word on a row to another computer. */
+export type RemoteState = 'sent' | 'queue_full' | 'refused' | 'expired'
 
 export interface Message {
   id: string
@@ -65,6 +75,18 @@ export interface Sent {
   replyBy?: number
 }
 
+/** A message from another computer, as the carrier opened it from a signed envelope. */
+export interface ReceiveInput {
+  id: string
+  /** `machine:<computer>/owner` or `machine:<computer>/session:<name>`. */
+  from: string
+  to: string
+  level: Level
+  text: string
+  sentAt: number
+  replyBy?: number
+}
+
 export class MailError extends Error {
   readonly status: 400 | 403 | 429
   constructor(status: 400 | 403 | 429, message: string) {
@@ -83,6 +105,12 @@ const MAX_LIST = 500
 const LEVELS: readonly string[] = ['fyi', 'ask', 'interrupt']
 /** A session name on this computer. */
 const NAME = /^[A-Za-z0-9._-]{1,256}$/
+/** A computer id (bridge/envelope.ts ID). */
+const COMPUTER = /^[a-z0-9._-]{1,64}$/
+const MAIL_ID = /^mail-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+/** The last ms a Date can show: a later sentAt would throw where a label prints it. */
+const MAX_DATE_MS = 8_640_000_000_000_000
+const REMOTE_STATES: readonly string[] = ['sent', 'queue_full', 'refused', 'expired']
 /** Every C0 control character except tab and newline, DEL, and the C1 controls (U+009B is an 8-bit CSI, U+0085 a line break). */
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
 /** Half of a surrogate pair on its own: not UTF-8. */
@@ -100,7 +128,6 @@ export function due(level: Level, point: Point): boolean {
 }
 
 function checkName(to: unknown): string {
-  if (typeof to === 'string' && to.includes(':')) throw new MailError(400, 'mail to another computer arrives with U-R1A-33; nothing was saved')
   if (typeof to !== 'string' || !NAME.test(to) || to.startsWith('relay-')) {
     throw new MailError(400, 'to: a session name on this computer (A-Z a-z 0-9 . _ -, 1 to 256 bytes, not relay-); nothing was saved')
   }
@@ -112,17 +139,48 @@ function checkLimit(limit: unknown): number {
   return limit as number
 }
 
-/** 400 checks, then 403 (interrupt_from); the 429 check runs inside the write. Returns reply-by minutes for an ask. */
-function checkSend({ from, to, level, text, replyByMinutes }: SendInput): number | undefined {
-  if (!isMailSender(from)) throw new MailError(400, 'from: owner or session:<name>; nothing was saved')
-  checkName(to)
-  if (!LEVELS.includes(level)) throw new MailError(400, 'level: fyi, ask or interrupt; nothing was saved')
+/**
+ * A send's `to`: a session name here (false), or `<computer>:<session>` (true) for a computer in
+ * this computer's roster that is not this computer. A bad name is the to-name 400 either way.
+ */
+function checkTo(to: unknown): boolean {
+  if (typeof to !== 'string' || !to.includes(':')) {
+    checkName(to)
+    return false
+  }
+  const at = to.indexOf(':')
+  const computer = to.slice(0, at)
+  checkName(COMPUTER.test(computer) ? to.slice(at + 1) : '')
+  let key: string | undefined
+  try {
+    key = trustedKey(computer)
+  } catch {
+    key = undefined
+  }
+  if (key === undefined) throw new MailError(400, `to: computer ${computer} is not in this computer's roster; nothing was saved`)
+  if (computer === thisId()) throw new MailError(400, `to: ${computer} is this computer; use the bare session name; nothing was saved`)
+  return true
+}
+
+/** The 400 checks of a level and a text, for send and receive alike. */
+function checkBody(level: unknown, text: unknown): void {
+  if (!LEVELS.includes(level as string)) throw new MailError(400, 'level: fyi, ask or interrupt; nothing was saved')
   if (typeof text !== 'string' || text === '' || Buffer.byteLength(text, 'utf8') > MAX_ROOM_EVENT_BODY_BYTES || LONE_SURROGATE.test(text)) {
     throw new MailError(400, `text: 1 to ${MAX_ROOM_EVENT_BODY_BYTES} bytes of UTF-8; nothing was saved`)
   }
   if (CONTROL.test(text)) throw new MailError(400, 'text: a control character (only newline and tab are allowed); nothing was saved')
   if (BIDI.test(text)) throw new MailError(400, 'text: a bidi control character; nothing was saved')
   if (TAG.test(text)) throw new MailError(400, 'text: an invisible tag character; nothing was saved')
+}
+
+/**
+ * 400 checks, then 403 (interrupt_from, for a local `to` only: the receiving computer's limits
+ * decide for a remote one); the 429 check runs inside the write. Returns reply-by minutes for an ask.
+ */
+function checkSend({ from, to, level, text, replyByMinutes }: SendInput): number | undefined {
+  if (!isMailSender(from)) throw new MailError(400, 'from: owner or session:<name>; nothing was saved')
+  const remote = checkTo(to)
+  checkBody(level, text)
   let minutes: number | undefined
   if (level === 'ask') {
     minutes = replyByMinutes ?? 10
@@ -130,10 +188,25 @@ function checkSend({ from, to, level, text, replyByMinutes }: SendInput): number
   } else if (replyByMinutes !== undefined) {
     throw new MailError(400, 'replyByMinutes is for ask only; nothing was saved')
   }
-  if (level === 'interrupt' && !(limitsSnapshot().interrupt_from ?? []).includes(from)) {
+  if (!remote && level === 'interrupt' && !(limitsSnapshot().interrupt_from ?? []).includes(from)) {
     throw new MailError(403, `interrupt_from: ${from} may not send Interrupt (limits file); nothing was saved`)
   }
   return minutes
+}
+
+/** The checks of a message from another computer, in the order send makes them; the 429 check runs inside the write. */
+function checkReceive({ id, from, to, level, text, sentAt, replyBy }: ReceiveInput): void {
+  if (typeof id !== 'string' || !MAIL_ID.test(id)) throw new MailError(400, 'id: mail-<uuid>; nothing was saved')
+  if (!isRemoteSender(from)) throw new MailError(400, 'from: machine:<id>/owner or machine:<id>/session:<name>; nothing was saved')
+  checkName(to)
+  checkBody(level, text)
+  if (!Number.isSafeInteger(sentAt) || sentAt < 0 || sentAt > MAX_DATE_MS) throw new MailError(400, 'sentAt: ms since the epoch; nothing was saved')
+  if (replyBy !== undefined && level !== 'ask') throw new MailError(400, 'replyByMinutes is for ask only; nothing was saved')
+  // Remote Ask arrives with control_from (U-R1A-36B), which may then list the computer; nothing does yet.
+  if (level === 'ask') throw new MailError(403, `control_from: ${from.slice('machine:'.length, from.indexOf('/'))} may not send Ask here (limits file); nothing was saved`)
+  if (level === 'interrupt' && !(limitsSnapshot().interrupt_from ?? []).includes(from)) {
+    throw new MailError(403, `interrupt_from: ${from} may not send Interrupt (limits file); nothing was saved`)
+  }
 }
 
 interface Row {
@@ -181,7 +254,8 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
         reply_by_ms INTEGER, state TEXT NOT NULL, state_at_ms INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS mail_inbox ON mail (to_name, state, seq);
       CREATE TABLE IF NOT EXISTS mail_notice (to_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS mail_interrupt (to_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, at_ms INTEGER NOT NULL)`)
+      CREATE TABLE IF NOT EXISTS mail_interrupt (to_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, at_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS mail_remote (id TEXT PRIMARY KEY, envelope TEXT NOT NULL, hub_seq INTEGER)`)
   } catch (e) {
     db.close()
     throw e
@@ -213,6 +287,15 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   const interruptedSeq = db.prepare(`SELECT seq, at_ms FROM mail_interrupt WHERE to_name = ?`)
   const interruptedSet = db.prepare(`INSERT INTO mail_interrupt (to_name, seq, at_ms) VALUES (?, ?, ?)
     ON CONFLICT (to_name) DO UPDATE SET seq = excluded.seq, at_ms = excluded.at_ms`)
+  // ponytail: a scan of queued rows (no index on the remote ones); index them if outboxes grow large.
+  const outgoingRows = db.prepare(`SELECT * FROM mail WHERE state = 'queued' AND instr(to_name, ':') > 0 ORDER BY seq LIMIT ?`)
+  const envelopeRow = db.prepare(`SELECT envelope FROM mail_remote WHERE id = ?`)
+  const keepRow = db.prepare(`INSERT OR IGNORE INTO mail_remote (id, envelope) VALUES (?, ?)`)
+  const remoteMove = db.prepare(`UPDATE mail SET state = ?, state_at_ms = ?
+    WHERE id = ? AND instr(to_name, ':') > 0 AND state IN (SELECT value FROM json_each(?))`)
+  const hubSeqSet = db.prepare(`UPDATE mail_remote SET hub_seq = ? WHERE id = ?`)
+  const receiveInsert = db.prepare(`INSERT OR IGNORE INTO mail (id, from_id, to_name, level, text, sent_at_ms, reply_by_ms, state, state_at_ms)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)`)
 
   /** One audit line per send or refusal; the text becomes a byte count there. */
   const note = (input: SendInput, outcome: Record<string, unknown>) =>
@@ -245,6 +328,63 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
     refuse(input: SendInput, message: string): never {
       note(input, { state: 'denied', status: 400 })
       throw new MailError(400, message)
+    },
+    /**
+     * A message from another computer (only the carrier, bridge/hub-mail.ts, calls this): the
+     * checks of checkReceive, then one INSERT OR IGNORE by id: 'stored' (queued), or 'repeat' when
+     * that id is here already in any state (nothing changes). One audit line, text as a byte count.
+     */
+    receive(input: ReceiveInput): 'stored' | 'repeat' {
+      const line = (outcome: Record<string, unknown>) =>
+        audit({ event: 'mail.receive', id: String(input.id).slice(0, 300), from: String(input.from).slice(0, 300), to: String(input.to).slice(0, 300), level: String(input.level).slice(0, 20), text: input.text, ...outcome })
+      try {
+        checkReceive(input)
+        let stored = false
+        db.exec('BEGIN IMMEDIATE')
+        try {
+          if (Number((queuedCount.get(input.to) as { n: number }).n) >= MAX_INBOX) throw new MailError(429, 'inbox full')
+          stored = Number(receiveInsert.run(input.id, input.from, input.to, input.level, input.text, input.sentAt, input.replyBy ?? null, now()).changes) === 1
+          db.exec('COMMIT')
+        } catch (e) {
+          db.exec('ROLLBACK')
+          throw e
+        }
+        line({ state: stored ? 'queued' : 'repeat' })
+        return stored ? 'stored' : 'repeat'
+      } catch (e) {
+        if (e instanceof MailError) line({ state: 'denied', status: e.status })
+        throw e
+      }
+    },
+    /** Up to `limit` rows to another computer still queued, oldest first; nothing changes. */
+    outgoing(limit: number): Message[] {
+      return (outgoingRows.all(checkLimit(limit)) as unknown as Row[]).map(toMessage)
+    },
+    /** The signed envelope kept for row `id`, or undefined. */
+    envelopeOf(id: string): string | undefined {
+      return (envelopeRow.get(id) as { envelope: string } | undefined)?.envelope
+    },
+    /** Keep `text` as row `id`'s envelope; a second keep of the same id is ignored. */
+    keepEnvelope(id: string, text: string): void {
+      keepRow.run(id, text)
+    },
+    /**
+     * Row `id` to another computer moves to `state`: sent (with the hub's seq), queue_full or
+     * refused only from queued; expired from queued or sent. Returns whether it moved.
+     */
+    markRemote(id: string, state: RemoteState, hubSeq?: number): boolean {
+      if (!REMOTE_STATES.includes(state)) throw new MailError(400, 'state: sent, queue_full, refused or expired')
+      const from = JSON.stringify(state === 'expired' ? ['queued', 'sent'] : ['queued'])
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        const moved = Number(remoteMove.run(state, now(), id, from).changes) === 1
+        if (moved && state === 'sent' && hubSeq !== undefined) hubSeqSet.run(hubSeq, id)
+        db.exec('COMMIT')
+        return moved
+      } catch (e) {
+        db.exec('ROLLBACK')
+        throw e
+      }
     },
     /** Queued counts per level. */
     pending(to: string): Record<Level, number> {
@@ -288,7 +428,7 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
     read(to: string, limit: number): Message[] {
       return oldestFirst(readRows.all(now(), checkName(to), checkLimit(limit)))
     },
-    /** The sender's last `limit` messages, oldest first, with their states; nothing changes. */
+    /** The sender's last `limit` messages, oldest first, with their states (a row to another computer: up to expired); nothing changes. */
     sent(from: string, limit: number): Message[] {
       return (sentRows.all(from, checkLimit(limit)) as unknown as Row[]).reverse().map(toMessage)
     },

@@ -48,6 +48,8 @@ export class EnvelopeError extends Error {
 export interface ReplayStore {
   /** True when `from` + `nonce` is new (now recorded until `expiresAt`), false when already seen. */
   remember(from: string, nonce: string, expiresAt: number): boolean
+  /** True when `from` + `nonce` is recorded; nothing changes (U-R1A-33B-2: the mail carrier records a nonce only once its message is stored). */
+  has(from: string, nonce: string): boolean
   size(): number
   close(): void
 }
@@ -197,10 +199,14 @@ export function openReplayStore(options: { path?: string; now?: () => number } =
   const sweep = db.prepare('DELETE FROM envelope_seen WHERE expires_ms < ?')
   const insert = db.prepare('INSERT OR IGNORE INTO envelope_seen (from_id, nonce, expires_ms) VALUES (?, ?, ?)')
   const count = db.prepare('SELECT count(*) AS n FROM envelope_seen')
+  const find = db.prepare('SELECT 1 FROM envelope_seen WHERE from_id = ? AND nonce = ?')
   return {
     remember(from: string, nonce: string, expiresAt: number): boolean {
       sweep.run(now())
       return Number(insert.run(from, nonce, expiresAt).changes) === 1
+    },
+    has(from: string, nonce: string): boolean {
+      return find.get(from, nonce) !== undefined
     },
     size(): number {
       return Number((count.get() as { n: number }).n)

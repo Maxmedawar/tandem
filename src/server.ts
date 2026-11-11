@@ -59,6 +59,9 @@ const fabric = await startFabric();
 // tools' calls to the hub, which sends them to the home.
 let startConfiguredHubLink: (() => { close(): Promise<void> }) | undefined;
 let hubForward: FabricForward | undefined;
+// Mail between computers (bridge/hub-mail.ts): carried by this process only, with the link settings.
+let mailBox: import("../bridge/mailbox.ts").Mailbox | undefined;
+let stopMail: (() => void) | undefined;
 if (process.env.TANDEM_HUB_LINK_URL) {
   try {
     const { hubLinkConfigFromEnv, startHubLink } = await import("../bridge/hub-link.ts");
@@ -70,6 +73,20 @@ if (process.env.TANDEM_HUB_LINK_URL) {
       startConfiguredHubLink = () =>
         startHubLink({ ...hubLinkConfig, memoryHome: fabric !== undefined }, { handleRequest: (frame) => handleHubRequest(frame, fabric) });
       if (!fabric) hubForward = fabricForward(hubLinkConfig);
+      try {
+        const { openMailbox } = await import("../bridge/mailbox.ts");
+        const { hubMail } = await import("../bridge/hub-mail.ts");
+        mailBox = openMailbox();
+        stopMail = hubMail(hubLinkConfig, { box: mailBox }).start();
+      } catch {
+        try {
+          mailBox?.close();
+        } catch {
+          /* already unusable */
+        }
+        mailBox = undefined;
+        console.error("mail: store unavailable; mail between computers is off");
+      }
     }
   } catch {
     console.error("tandem will not start: hub link configuration is invalid");
@@ -141,6 +158,12 @@ async function shutdown(signal: string): Promise<void> {
   ]);
   try {
     fabric?.close();
+  } catch {
+    /* exiting anyway */
+  }
+  try {
+    stopMail?.();
+    mailBox?.close();
   } catch {
     /* exiting anyway */
   }
