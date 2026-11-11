@@ -14,8 +14,9 @@
  * the envelope signed by its key, addressed here, at most PRESENCE_MAX_AGE_MS old, the body
  * exactly a presence body. A refusal writes one `presence.refused` audit line and keeps the old
  * reading; a reading is kept only when newer than the kept one. The hub's `connected` list and the
- * sync time are kept too: a computer is stale when its reading is over STALE_MS old, it is not
- * connected, or the last sync is over STALE_MS old. Every state change happens after the store
+ * sync time are kept too: a computer is stale when its reading is over STALE_MS old (counted on
+ * this computer's clock from no later than its arrival), it is not connected, or the last sync is
+ * over STALE_MS old. Names, engines and projects with hidden characters are refused (`shape`). Every state change happens after the store
  * wrote it: a failed call or store changes nothing here, so the next sync does the work again.
  * Every call carries the link bearer and a `tandem-proof` over the exact bytes; no token, key,
  * proof or reading is ever logged. `now` is the only clock.
@@ -48,6 +49,12 @@ const ROUTE = '/__tunnel/presence'
 const BODY_KEYS = ['at', 'kind', 'more', 'sessions', 'v'].join()
 const ROW_KEYS = ['engine', 'name', 'project', 'state', 'stateAt'].join()
 const STATES = ['working', 'idle', 'waiting_for_approval', 'unknown']
+/** A session name or engine as this product makes them (bridge/sessions.ts), at most 300 characters. */
+const NAME = /^[A-Za-z0-9._-]{1,300}$/
+/** Never shown from another computer: control, format (bidi, zero-width, tag), lone surrogate and line-separator characters. */
+const HIDDEN = /[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}\u{e0000}-\u{e007f}]/u
+/** A project (a folder's last name) that may be shown: at most 300 characters, none hidden. */
+const plain = (s: string) => s.length <= 300 && !HIDDEN.test(s)
 
 export type RemoteSession = { name: string; engine: string; project: string; state: string; stateAt: number; ageMs: number }
 export type RemoteReading = { computer: string; at: number | null; ageMs: number | null; stale: boolean; sessions: RemoteSession[]; more: number }
@@ -98,6 +105,8 @@ function presenceBody(text: string, ts: number): Body | undefined {
     if (!isObject(r) || Object.keys(r).sort().join() !== ROW_KEYS) return undefined
     const { name, engine, project, state, stateAt } = r
     if (typeof name !== 'string' || typeof engine !== 'string' || typeof project !== 'string' || !STATES.includes(state as string)) return undefined
+    // What another computer names is shown to agents: anything that could pass as an instruction line or hide text is refused.
+    if (!NAME.test(name) || !NAME.test(engine) || !plain(project)) return undefined
     if (!isTime(stateAt) || stateAt > ts || ts - stateAt > PRESENCE_MAX_AGE_MS) return undefined
     sessions.push({ name, engine, project, state: state as string, stateAt })
   }
@@ -182,7 +191,7 @@ export function hubPresence(
     const items: { to: string; envelope: string }[] = []
     if (changed || now() - last!.at >= PUSH_HEARTBEAT_MS) {
       const reading = await presence.whoIsUp(changed ? { refresh: true } : {})
-      const rows = [...reading.sessions].sort(byName).map(({ name, engine, project, state, stateAt }) => ({ name, engine, project, state, stateAt }))
+      const rows = [...reading.sessions].sort(byName).map(({ name, engine, project, state, stateAt }) => ({ name, engine, project: plain(project) ? project : '', state, stateAt }))
       for (const to of members) items.push({ to, envelope: envelopeTo(to, reading.at, rows) })
     }
     const body = JSON.stringify({ presence: items })
@@ -220,6 +229,8 @@ export function hubPresence(
     for (const r of rows as unknown[]) {
       if (isObject(r) && typeof r.from === 'string' && typeof r.envelope === 'string' && r.from !== self) receive(r.from, r.envelope)
     }
+    // A computer that left the roster: its kept reading goes too.
+    store().prepare('DELETE FROM presence_remote WHERE computer NOT IN (SELECT value FROM json_each(?))').run(JSON.stringify(members))
     store()
       .prepare('INSERT INTO presence_hub (k, connected, at_ms) VALUES (1, ?, ?) ON CONFLICT (k) DO UPDATE SET connected = excluded.connected, at_ms = excluded.at_ms')
       .run(JSON.stringify(connected), now())
@@ -275,17 +286,21 @@ export function readRemotePresence(opts: { now?: () => number; path?: string; se
     const hub = db.prepare('SELECT connected, at_ms FROM presence_hub WHERE k = 1').get() as { connected: string; at_ms: number } | undefined
     const connected: string[] = hub ? (JSON.parse(hub.connected) as string[]) : []
     const hubGone = hub === undefined || t - hub.at_ms > STALE_MS
-    const one = db.prepare('SELECT reading FROM presence_remote WHERE computer = ?')
+    const one = db.prepare('SELECT reading, received_ms FROM presence_remote WHERE computer = ?')
     return ids.map((computer): RemoteReading => {
-      const row = one.get(computer) as { reading: string } | undefined
+      const row = one.get(computer) as { reading: string; received_ms: number } | undefined
       if (!row) return { computer, at: null, ageMs: null, stale: true, sessions: [], more: 0 }
       const b = JSON.parse(row.reading) as Body
+      // Ages are counted on this computer's clock: a sender's time counts only up to the moment its
+      // reading arrived here, so a clock that runs ahead (envelopes allow 5 min) never reads as fresh.
+      const since = (ms: number) => t - Math.min(ms, row.received_ms)
+      const ageMs = since(b.at)
       return {
         computer,
         at: b.at,
-        ageMs: t - b.at,
-        stale: hubGone || t - b.at > STALE_MS || !connected.includes(computer),
-        sessions: [...b.sessions].sort(byName).map((s) => ({ ...s, ageMs: t - s.stateAt })),
+        ageMs,
+        stale: hubGone || ageMs > STALE_MS || ageMs < 0 || !connected.includes(computer),
+        sessions: [...b.sessions].sort(byName).map((s) => ({ ...s, ageMs: since(s.stateAt) })),
         more: b.more,
       }
     })
