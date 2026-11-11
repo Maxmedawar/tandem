@@ -228,3 +228,97 @@ describe('(d) HubDevices.admit', () => {
     expect(h.devices.admit('alpha', A.publicKey, n(3), false)).toBe('ok')
   })
 })
+
+describe('audit rows (U-R1A-31B-1)', () => {
+  const good = header().split(' ')
+  const swap = (i: number, value: string) => good.map((part, j) => (j === i ? value : part)).join(' ')
+  const n = (i: number) => Buffer.alloc(16, i).toString('base64url')
+  // The same bytes with an unused low bit of the last character set (22 and 86 chars both leave some).
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+  const loose = (text: string) => text.slice(0, -1) + alphabet[alphabet.indexOf(text.at(-1)!) | 1]
+
+  it.each([
+    ['a 1 MB header', 'v1 ' + 'a'.repeat(1_048_576)],
+    ['1 MB of spaces', ' '.repeat(1_048_576)],
+    ['a tab between fields', good.join('\t')],
+    ['a leading space', ' ' + good.join(' ')],
+    ['a trailing space', good.join(' ') + ' '],
+    ['a trailing newline', good.join(' ') + '\n'],
+    ['an id ending in a newline', swap(1, 'alpha\n')],
+    ['a full-width id', swap(1, 'ａlpha')],
+    ['an id with a NUL', swap(1, 'al\u0000pha')],
+    ['an id with a trailing -', swap(1, 'alpha-')],
+    ['an id of dashes only', swap(1, '---')],
+    ['a ts with a sign', swap(3, '+176200000000')],
+    ['a ts in hex', swap(3, '0x19a3f1a2c00')],
+    ['a nonce with padding', swap(4, NONCE.slice(0, 21) + '=')],
+    ['a nonce in plain base64', swap(4, '+'.repeat(22))],
+    ['a non-canonical nonce', swap(4, loose(Buffer.alloc(16, 0).toString('base64url')))],
+    ['a non-canonical sig', swap(5, loose(Buffer.alloc(64, 0).toString('base64url')))],
+  ])('parseProof refuses %s', (_label, value) => {
+    expect(parseProof(value)).toBeUndefined()
+  })
+
+  it.each(WEAK_HEX)('parseProof refuses the weak key %s with its sign bit set', (hex) => {
+    const bytes = Buffer.from(hex, 'hex')
+    bytes[31] |= 0x80
+    expect(parseProof(swap(2, bytes.toString('base64url')))).toBeUndefined()
+  })
+
+  it.each(['a'.repeat(64), 'a.', 'a..b', '_a', '.', 'default'])('parseProof keeps the id %s as it is (no folding into another id)', (id) => {
+    expect(parseProof(header({ id }))?.id).toBe(id)
+  })
+
+  it('verifyProof is false for a signature over tandem-roster-offer-v1 text, and for a host that differs only in case', async () => {
+    const parsed = parseProof(header())!
+    const text = proofText({ ...CTX, id: 'alpha', key: A.publicKey, ts: TS, nonce: NONCE }).replace(/^tandem-hub-proof-v1\n/, 'tandem-roster-offer-v1\n')
+    expect(await verifyProof({ ...parsed, sig: sig(A.privateKey, text) }, CTX)).toBe(false)
+    const named = { ...CTX, host: 'hub.example' }
+    expect(await verifyProof(parseProof(header({}, A.privateKey, named))!, named)).toBe(true)
+    expect(await verifyProof(parseProof(header({}, A.privateKey, named))!, { ...named, host: 'HUB.example' })).toBe(false)
+  })
+
+  it('verifyProof never throws on fields parseProof would refuse', async () => {
+    const parsed = parseProof(header())!
+    expect(await verifyProof({ ...parsed, key: 'x' }, CTX)).toBe(false)
+    expect(await verifyProof({ ...parsed, sig: '' }, CTX)).toBe(false)
+    expect(await verifyProof({ ...parsed, key: Buffer.alloc(32, 0).toString('base64url') }, CTX)).toBe(false)
+  })
+
+  it('admit: ids that differ by a dot are separate; a nonce is per id; one key may hold two ids', () => {
+    const { h, rows } = openDevices()
+    expect(h.devices.admit('a', A.publicKey, n(1), true)).toBe('bound')
+    expect(h.devices.admit('a.', B.publicKey, n(1), true)).toBe('bound')
+    expect(h.devices.admit('a', B.publicKey, n(2), true)).toBe('taken')
+    expect(h.devices.admit('a.', A.publicKey, n(2), true)).toBe('taken')
+    expect(h.devices.admit('b', A.publicKey, n(1), true)).toBe('bound')
+    expect(rows('SELECT id, key FROM hub_devices ORDER BY id')).toEqual([
+      { id: 'a', key: A.publicKey }, { id: 'a.', key: B.publicKey }, { id: 'b', key: A.publicKey },
+    ])
+  })
+
+  it('admit: refusals write nothing (taken, unknown, full, replay), so only the bound key grows the nonce table', () => {
+    const { h, rows } = openDevices()
+    for (let i = 0; i < 100; i++) h.devices.admit(`m${i}`, A.publicKey, n(1), true)
+    const count = () => Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces')[0].c)
+    expect(count()).toBe(100)
+    for (let i = 2; i < 50; i++) {
+      expect(h.devices.admit('m1', B.publicKey, n(i), true)).toBe('taken')
+      expect(h.devices.admit('new', B.publicKey, n(i), true)).toBe('full')
+      expect(h.devices.admit('new', B.publicKey, n(i), false)).toBe('unknown')
+      expect(h.devices.admit('m1', A.publicKey, n(1), true)).toBe('replay')
+    }
+    expect(count()).toBe(100)
+    expect(rows('SELECT COUNT(*) AS c FROM hub_devices')).toEqual([{ c: 100 }])
+  })
+
+  it('admit: a nonce is still refused at every instant its proof can still pass the ±300 s window', () => {
+    // Worst case: ts = hub now + 300 s at first use, so the proof passes the window until first use + 600 s.
+    const { h, clock } = openDevices()
+    expect(h.devices.admit('alpha', A.publicKey, n(1), true)).toBe('bound')
+    for (const later of [1, 299_999, 300_000, 599_999, 600_000]) {
+      clock.now = T0 + later
+      expect(h.devices.admit('alpha', A.publicKey, n(1), true)).toBe('replay')
+    }
+  })
+})

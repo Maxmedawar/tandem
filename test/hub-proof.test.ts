@@ -6,7 +6,7 @@
  */
 import { createHash } from 'node:crypto'
 import { once } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -128,5 +128,71 @@ describe('fabricForward', () => {
     expect(await verifyProof(parsed!, { host: host(url), method: 'POST', path: '/__tunnel/fabric-rpc/fabric/memory/search', bodySha256 })).toBe(true)
     expect(seen[0].proof).not.toContain(TOKEN)
     expect(seen[0].url).not.toContain(TOKEN)
+  })
+})
+
+describe('audit rows (U-R1A-31B-1)', () => {
+  it('a hub that always answers 409 is redialled with growing waits, never hot', async () => {
+    const hub = await wsHub(409)
+    const lines: string[] = []
+    links.push(startHubLink({ url: hub.url, token: TOKEN, bridgeId: 'probe-one', key }, { log: (line) => lines.push(line), timing: TIMING }))
+    const waits = () => lines.flatMap((line) => /^hub link: reconnecting in (\d+)ms$/.exec(line)?.[1] ?? []).map(Number)
+    await vi.waitFor(() => expect(waits().length).toBeGreaterThanOrEqual(6), WAIT)
+    // Planned 20, 40, 80, 160, 320, 400 ms, each up to 20% early.
+    expect(waits()[3]).toBeGreaterThanOrEqual(128)
+    expect(waits()[5]).toBeGreaterThanOrEqual(320)
+    expect(hub.requests.length).toBeLessThanOrEqual(waits().length + 1)
+  })
+
+  it('no log line of a dial, open or refused, carries the proof, its signature or the private key', async () => {
+    const hub = await wsHub()
+    const refusing = await wsHub(409)
+    const lines: string[] = []
+    const log = (line: string) => lines.push(line)
+    links.push(startHubLink({ url: hub.url, token: TOKEN, bridgeId: 'probe-one', key }, { log, timing: TIMING }))
+    links.push(startHubLink({ url: refusing.url, token: TOKEN, bridgeId: 'probe-one', key }, { log, timing: TIMING }))
+    await vi.waitFor(() => expect(hub.sockets.length).toBeGreaterThanOrEqual(1), WAIT)
+    await vi.waitFor(() => expect(refusing.requests.length).toBeGreaterThanOrEqual(2), WAIT)
+    const secret = readFileSync(join(dir, 'keys', 'device.key'), 'utf8').split('\n').filter((line) => line && !line.startsWith('-----'))
+    expect(secret.length).toBeGreaterThan(0)
+    const proofs = [...hub.requests, ...refusing.requests].map((request) => parseProof(String(request.headers[PROOF_HEADER]))!)
+    for (const line of lines) {
+      expect(line).not.toContain(key.publicKey)
+      for (const part of secret) expect(line).not.toContain(part)
+      for (const proof of proofs) {
+        expect(line).not.toContain(proof.sig)
+        expect(line).not.toContain(proof.nonce)
+      }
+    }
+  })
+
+  it('an unusable device key: the dial is not made and logs the reason only; fabricForward answers memory_home_offline with no request', async () => {
+    const home = mkdtempSync(join(dir, 'bad-home-'))
+    writeFileSync(join(home, 'keys'), 'not a folder')
+    const hub = await wsHub()
+    const posts: string[] = []
+    const server = createServer((request, response) => { posts.push(request.url ?? ''); response.end('{}') })
+    servers.push(server)
+    server.listen(0, '127.0.0.1')
+    await once(server, 'listening')
+    const lines: string[] = []
+    const before = process.env.TANDEM_HOME
+    process.env.TANDEM_HOME = home
+    try {
+      links.push(startHubLink({ url: hub.url, token: TOKEN, bridgeId: 'probe-one' }, { log: (line) => lines.push(line), timing: TIMING }))
+      await vi.waitFor(() => expect(lines.filter((line) => line.startsWith('hub link: device key: ')).length).toBeGreaterThanOrEqual(3), WAIT)
+      expect(await fabricForward({ url: `ws://127.0.0.1:${(server.address() as AddressInfo).port}`, token: TOKEN, bridgeId: 'probe-one' }).forward('/fabric/project/list', { input: {} }))
+        .toEqual({ error: 'memory_home_offline', message: 'memory home offline: this computer cannot reach the hub' })
+      await Promise.all(links.splice(0).map((link) => link.close()))
+    } finally {
+      if (before === undefined) delete process.env.TANDEM_HOME
+      else process.env.TANDEM_HOME = before
+    }
+    expect(hub.requests).toHaveLength(0)
+    expect(posts).toHaveLength(0)
+    expect(lines.some((line) => line.includes('dialing'))).toBe(false)
+    const waits = lines.flatMap((line) => /^hub link: reconnecting in (\d+)ms$/.exec(line)?.[1] ?? []).map(Number)
+    expect(waits[2]).toBeGreaterThanOrEqual(64)
+    for (const line of lines) expect(line).not.toContain(TOKEN)
   })
 })

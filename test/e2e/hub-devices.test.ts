@@ -139,6 +139,98 @@ describe.skipIf(Boolean(missing))(title, () => {
     expect((await fabric(body, good)).status).toBe(503)
   })
 
+  describe('audit rows', () => {
+    const keyD = newKey()
+    const keyE = newKey()
+    const body = JSON.stringify({ input: {} })
+    const listPath = '/__tunnel/fabric-rpc/fabric/project/list'
+    const proofed = (key: ReturnType<typeof newKey>, id: string, now?: number) => ({ ...bearer, 'tandem-proof': connectProof(key, id, now) })
+
+    it('two keys first-connect one new id at once: exactly one opens, the other is 409', async () => {
+      const before = open.length
+      const answers = await Promise.all([dial('r1a31b-race', proofed(keyD, 'r1a31b-race')), dial('r1a31b-race', proofed(keyE, 'r1a31b-race'))])
+      expect(answers.filter((a) => a === 'open')).toHaveLength(1)
+      expect(answers.filter((a) => a !== 'open')).toEqual([{ status: 409, body: 'machine id taken' }])
+      expect(open).toHaveLength(before + 1)
+      // The loser stays refused and the winner's socket stays open.
+      const loser = answers[0] === 'open' ? keyE : keyD
+      expect(await dial('r1a31b-race', proofed(loser, 'r1a31b-race'))).toEqual({ status: 409, body: 'machine id taken' })
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(open[open.length - 1].readyState).toBe(WebSocket.OPEN)
+    })
+
+    it.each([
+      ['an uppercase bridge_id that slugs to the bound id', 'R1A31B-A', 'r1a31b-a'],
+      ['a bridge_id with a leading dash that slugs to the bound id', '-r1a31b-a', 'r1a31b-a'],
+      ['a bridge_id with a trailing space that slugs to the bound id', 'r1a31b-a%20', 'r1a31b-a'],
+      ['a second bridge_id after another first one', 'r1a31b-zz&bridge_id=r1a31b-a', 'r1a31b-a'],
+      ['an empty bridge_id with a proof as default', '', 'default'],
+    ])('%s: 401', async (_label, query, id) => {
+      expect(await dial(query, proofed(keyA, id))).toEqual(UNAUTHORIZED)
+    })
+
+    it('no bridge_id at all with a proof as default: 401', async () => {
+      const ws = new WebSocket(`${hub.replace(/^http/, 'ws')}/__tunnel/connect`, CCM_TUNNEL_SUBPROTOCOL, { headers: proofed(keyA, 'default') })
+      const status = await new Promise((resolve) => {
+        ws.on('error', (error) => resolve(error.message))
+        ws.once('open', () => { open.push(ws); resolve('open') })
+        ws.once('unexpected-response', (_request, response) => { resolve(response.statusCode); ws.terminate() })
+      })
+      expect(status).toBe(401)
+    })
+
+    it.each([
+      ['a proof 301 s ahead', () => proofed(keyA, 'r1a31b-a', Date.now() + 301_000)],
+      ['a proof signed for another hub host', () => ({ ...bearer, 'tandem-proof': hubProofHeader(keyA, { url: 'https://other-hub.example', method: 'GET', path: '/__tunnel/connect', id: 'r1a31b-a' }) })],
+      ['a proof signed for POST', () => ({ ...bearer, 'tandem-proof': hubProofHeader(keyA, { url: hub, method: 'POST', path: '/__tunnel/connect', id: 'r1a31b-a' }) })],
+      ['a fabric-route proof on the tunnel', () => ({ ...bearer, 'tandem-proof': hubProofHeader(keyA, { url: hub, method: 'POST', path: listPath, id: 'r1a31b-a', body }) })],
+      ['an 8 kB header of noise', () => ({ ...bearer, 'tandem-proof': 'v1 ' + 'a'.repeat(8000) })],
+      ['two proofs in one header', () => ({ ...bearer, 'tandem-proof': `${connectProof(keyA, 'r1a31b-a')}, ${connectProof(keyA, 'r1a31b-a')}` })],
+      ['the proof in the bearer place and no bearer', () => ({ Authorization: `Bearer ${connectProof(keyA, 'r1a31b-a')}`, 'tandem-proof': connectProof(keyA, 'r1a31b-a') })],
+      ['a wrong bearer with another key under the bound id (no 409 without the bearer)', () => ({ Authorization: `Bearer ${'w'.repeat(32)}`, 'tandem-proof': connectProof(keyB, 'r1a31b-a') })],
+      ['no bearer with another key under the bound id', () => ({ 'tandem-proof': connectProof(keyB, 'r1a31b-a') })],
+    ])('the tunnel refuses %s: 401 unauthorized', async (_label, headers) => {
+      expect(await dial('r1a31b-a', headers())).toEqual(UNAUTHORIZED)
+    })
+
+    it('the fabric route refuses: a tunnel proof, a proof for another op, a used proof, another key under the bound id (409), a wrong bearer with that key (401)', async () => {
+      const forList = () => hubProofHeader(keyA, { url: hub, method: 'POST', path: listPath, id: 'r1a31b-a', body })
+      expect(await fabric(body, connectProof(keyA, 'r1a31b-a'))).toEqual(UNAUTHORIZED)
+      expect(await fabric(body, hubProofHeader(keyA, { url: hub, method: 'POST', path: '/__tunnel/fabric-rpc/fabric/project/create', id: 'r1a31b-a', body }))).toEqual(UNAUTHORIZED)
+      const once = forList()
+      expect((await fabric(body, once)).status).toBe(503)
+      expect(await fabric(body, once)).toEqual(UNAUTHORIZED)
+      const other = () => hubProofHeader(keyB, { url: hub, method: 'POST', path: listPath, id: 'r1a31b-a', body })
+      expect(await fabric(body, other())).toEqual({ status: 409, body: 'machine id taken' })
+      const wrongBearer = await fetch(`${hub}${listPath}`, {
+        method: 'POST', headers: { authorization: `Bearer ${'w'.repeat(32)}`, 'tandem-proof': other() }, body,
+      })
+      expect({ status: wrongBearer.status, body: await wrongBearer.text() }).toEqual(UNAUTHORIZED)
+      // A fabric proof never binds: key C's id is still free for its own first tunnel dial.
+      expect(await fabric(body, hubProofHeader(keyC, { url: hub, method: 'POST', path: listPath, id: 'r1a31b-n', body }))).toEqual(UNAUTHORIZED)
+      expect(await dial('r1a31b-n', proofed(keyC, 'r1a31b-n'))).toBe('open')
+    })
+
+    it('one proof sent twice at once: exactly one opens, the other is 401', async () => {
+      const headers = proofed(keyD, 'r1a31b-twice')
+      const answers = await Promise.all([dial('r1a31b-twice', headers), dial('r1a31b-twice', headers)])
+      expect(answers.filter((a) => a === 'open')).toHaveLength(1)
+      expect(answers.filter((a) => a !== 'open')).toEqual([UNAUTHORIZED])
+    })
+
+    it('no refusal carries a key, a nonce or a proof field', async () => {
+      const refusal = await dial('r1a31b-a', proofed(keyB, 'r1a31b-a'))
+      expect(JSON.stringify(refusal)).not.toContain(keyA.publicKey)
+      expect(JSON.stringify(refusal)).not.toContain(keyB.publicKey)
+    })
+
+    it('a proof 299 s old still opens, and one key may hold a second id', async () => {
+      expect(await dial('r1a31b-old', proofed(keyD, 'r1a31b-old', Date.now() - 299_000))).toBe('open')
+      const again = 'r1a31b-second'
+      expect(await dial(again, proofed(keyD, again))).toBe('open')
+    })
+  })
+
   it('(9) a second bridge as r1a31b-c with another key never connects and logs the taken line', async () => {
     let first: Bridge | undefined
     try {
