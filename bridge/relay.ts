@@ -27,11 +27,11 @@
  *     interrupts both sessions; inject() rewrites the next lead input.
  */
 
-import { appendFileSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { appendFileSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { TerminalSession, bypassPermissionsEnabled } from './terminal-session.ts'
+import { TerminalSession, bypassPermissionsEnabled, readLogPage } from './terminal-session.ts'
 import { loadedHarnesses } from './engine-registry.ts'
 import { harnessDescriptor } from './engines/harness-engine.ts'
 import { emitCompletion, emitEscalation, emitNeedsInput } from './events.ts'
@@ -675,30 +675,16 @@ async function runManager(loop: RelayLoop, goal: string, context: string | undef
   }
 }
 
-/** Page the dual transcript from a byte cursor. Returns undefined for unknown loopId. */
+/** One page of the dual transcript from a byte cursor (readLogPage: every page fits through the
+ *  hub; `more` = read again from `cursor`). Returns undefined for unknown loopId. */
 export function readSince(
   loopId: string,
   cursor = 0,
-): { text: string; cursor: number; running: boolean } | undefined {
+): { text: string; cursor: number; running: boolean; more: boolean } | undefined {
   const loop = loops.get(loopId)
   if (!loop) return undefined
-  let size = 0
-  try {
-    size = statSync(loop.logPath).size
-  } catch {
-    return { text: '', cursor: 0, running: loop.running }
-  }
-  const from = Math.max(0, Math.min(cursor, size))
-  let text = ''
-  if (size > from) {
-    try {
-      const buf = readFileSync(loop.logPath)
-      text = buf.subarray(from, size).toString('utf8')
-    } catch {
-      text = ''
-    }
-  }
-  return { text, cursor: size, running: loop.running }
+  const page = readLogPage(loop.logPath, cursor)
+  return { text: page.text, cursor: page.next, running: loop.running, more: page.more }
 }
 
 /**
