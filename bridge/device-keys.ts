@@ -48,8 +48,32 @@ function decode(text: unknown, shape: RegExp, bytes: number): Buffer | undefined
   return raw.length === bytes && raw.toString('base64url') === text ? raw : undefined
 }
 
-export function fingerprintOf(publicKey: string): string {
+/**
+ * The eight Ed25519 points of small order, as every encoding of them (sign bit cleared). A
+ * signature under one of these verifies for a share of all messages without any private key, so
+ * they are never a computer's key, whatever the crypto library underneath does with them.
+ */
+const WEAK_KEYS = new Set([
+  '00'.repeat(32),
+  '01' + '00'.repeat(31),
+  '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+  'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a',
+  'ec' + 'ff'.repeat(30) + '7f',
+  'ed' + 'ff'.repeat(30) + '7f',
+  'ee' + 'ff'.repeat(30) + '7f',
+])
+
+/** The 32 raw bytes of a base64url Ed25519 public key that is not a weak one, else undefined. */
+function publicKeyBytes(publicKey: unknown): Buffer | undefined {
   const raw = decode(publicKey, PUBLIC_KEY, 32)
+  if (!raw) return undefined
+  const unsigned = Buffer.from(raw)
+  unsigned[31] &= 0x7f
+  return WEAK_KEYS.has(unsigned.toString('hex')) ? undefined : raw
+}
+
+export function fingerprintOf(publicKey: string): string {
+  const raw = publicKeyBytes(publicKey)
   if (!raw) throw new TypeError('fingerprintOf: not a base64url Ed25519 public key')
   return createHash('sha256').update(raw).digest('hex').slice(0, 16)
 }
@@ -60,7 +84,7 @@ const bytesOf = (data: string | Uint8Array): Uint8Array => (typeof data === 'str
 export function verifySignature(publicKey: string, data: string | Uint8Array, signature: string): boolean {
   try {
     if (typeof data !== 'string' && !(data instanceof Uint8Array)) return false
-    if (!decode(publicKey, PUBLIC_KEY, 32)) return false
+    if (!publicKeyBytes(publicKey)) return false
     const sig = decode(signature, SIGNATURE, 64)
     if (!sig) return false
     const key = createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: publicKey }, format: 'jwk' })

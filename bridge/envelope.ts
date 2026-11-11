@@ -99,7 +99,9 @@ function parse(raw: unknown): Envelope | undefined {
   const proto = Object.getPrototypeOf(value)
   if (proto !== Object.prototype && proto !== null) return undefined
   if (Reflect.ownKeys(value).map(String).sort().join() !== FIELDS) return undefined
-  const e = value as Record<string, unknown>
+  // Each field is read once, into a plain object: what was checked is what is returned.
+  const { v, from, to, nonce, ts, body_sha256, sig, body } = value as Record<string, unknown>
+  const e: Record<string, unknown> = { v, from, to, nonce, ts, body_sha256, sig, body }
   const ok =
     e.v === 1 &&
     typeof e.from === 'string' && ID.test(e.from) &&
@@ -127,7 +129,10 @@ export interface OpenOptions {
 /**
  * The checked contents of `raw`, or EnvelopeError with the first failing reason, in order:
  * shape, to, from, time, body, signature, replay. The nonce is recorded only when every other
- * check passed, so a refused envelope never uses one up.
+ * check passed, so a refused envelope never uses one up. It is kept until ts + MAX_AGE_CAP_MS +
+ * CLOCK_SKEW_MS, past the longest window any later caller may pass, whatever maxAgeMs this
+ * caller used: an envelope first opened with a short window stays a replay for queued mail too.
+ * `seen` must run on the same clock as `now`.
  */
 export function openEnvelope(raw: unknown, options: OpenOptions): { from: string; to: string; body: string; ts: number; nonce: string } {
   const maxAgeMs = options.maxAgeMs ?? DEFAULT_MAX_AGE_MS
@@ -143,7 +148,7 @@ export function openEnvelope(raw: unknown, options: OpenOptions): { from: string
   if (now - e.ts > maxAgeMs || e.ts - now > CLOCK_SKEW_MS) throw new EnvelopeError('time')
   if (sha256(e.body) !== e.body_sha256) throw new EnvelopeError('body')
   if (!verifySignature(options.sender.publicKey, signingText(e), e.sig)) throw new EnvelopeError('signature')
-  if (!options.seen.remember(e.from, e.nonce, e.ts + maxAgeMs + CLOCK_SKEW_MS)) throw new EnvelopeError('replay')
+  if (!options.seen.remember(e.from, e.nonce, e.ts + MAX_AGE_CAP_MS + CLOCK_SKEW_MS)) throw new EnvelopeError('replay')
   return { from: e.from, to: e.to, body: e.body, ts: e.ts, nonce: e.nonce }
 }
 
@@ -183,7 +188,8 @@ export function openReplayStore(options: { path?: string; now?: () => number } =
     db.exec(`PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;
       CREATE TABLE IF NOT EXISTS envelope_seen (
         from_id TEXT NOT NULL, nonce TEXT NOT NULL, expires_ms INTEGER NOT NULL,
-        PRIMARY KEY (from_id, nonce))`)
+        PRIMARY KEY (from_id, nonce));
+      CREATE INDEX IF NOT EXISTS envelope_seen_expires ON envelope_seen (expires_ms)`)
   } catch (e) {
     db.close()
     throw e

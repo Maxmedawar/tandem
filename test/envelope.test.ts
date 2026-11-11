@@ -413,7 +413,7 @@ describe('(g) replay', () => {
     expect(open(env)).toBe('replay')
     expect(seen.size()).toBe(1)
     const db = new DatabaseSync(path)
-    expect(db.prepare('SELECT from_id, nonce, expires_ms FROM envelope_seen').all()).toEqual([{ from_id: 'a', nonce: env.nonce, expires_ms: T + 300_000 + 300_000 }])
+    expect(db.prepare('SELECT from_id, nonce, expires_ms FROM envelope_seen').all()).toEqual([{ from_id: 'a', nonce: env.nonce, expires_ms: T + CAP + 300_000 }])
     db.close()
     seen.close()
 
@@ -424,6 +424,9 @@ describe('(g) replay', () => {
     expect(s2.size()).toBe(2)
     clock = T + 600_001
     expect(s2.remember('z', 'n2', clock + 10)).toBe(true)
+    expect(s2.size()).toBe(2)
+    clock = T + CAP + 300_001
+    expect(s2.remember('z', 'n3', clock + 10)).toBe(true)
     expect(s2.size()).toBe(1)
     expect(s2.remember('z', 'n1', clock + 10)).toBe(true)
     s2.close()
@@ -486,4 +489,393 @@ describe('(i) state.db shared with the mailbox', () => {
     box.close()
     expect(mode(file)).toBe(0o600)
   })
+})
+
+/** U-R1A-30-R1 audit: one table per attack row. */
+describe('(R1) audit table', () => {
+  const sender = { id: 'a', publicKey: A.publicKey }
+  const text = (f: { from: string; to: string; nonce: string; ts: number; body_sha256: string }, tag = 'tandem-envelope-v1') =>
+    `${tag}\n${f.from}\n${f.to}\n${f.nonce}\n${f.ts}\n${f.body_sha256}`
+  /** An envelope with every field chosen by the test, signed by `key` over `tag`. */
+  const craft = (key: { sign(d: string): string }, f: { from?: string; to?: string; nonce?: string; ts?: number; body?: string }, tag?: string) => {
+    const head = { from: f.from ?? 'a', to: f.to ?? 'b', nonce: f.nonce ?? Buffer.alloc(16, ++n).toString('base64url'), ts: f.ts ?? T, body_sha256: sha(Buffer.from(f.body ?? 'pay 10', 'utf8')) }
+    return { v: 1, ...head, sig: key.sign(text(head, tag)), body: f.body ?? 'pay 10' }
+  }
+  const SMALL_ORDER = ['00'.repeat(32), '01' + '00'.repeat(31), '26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05',
+    'c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a', 'ec' + 'ff'.repeat(30) + '7f', 'ed' + 'ff'.repeat(30) + '7f', 'ee' + 'ff'.repeat(30) + '7f']
+    .flatMap((h) => { const b = Buffer.from(h, 'hex'); b[31] |= 0x80; return [Buffer.from(h, 'hex'), b] })
+
+  it('(1) every single-bit change of every envelope field is refused and uses no nonce', () => {
+    const seen = store()
+    const g = craft(A, {}) as Record<string, unknown>
+    let tried = 0
+    const accepted: string[] = []
+    for (const field of Object.keys(g)) {
+      const value = g[field]
+      const bits = typeof value === 'number' ? 53 : (value as string).length * 8
+      for (let bit = 0; bit < bits; bit++) {
+        let changed: unknown
+        if (typeof value === 'number') changed = Number(BigInt(value) ^ (1n << BigInt(bit)))
+        else {
+          const at = bit >> 3
+          changed = (value as string).slice(0, at) + String.fromCharCode((value as string).charCodeAt(at) ^ (1 << (bit & 7))) + (value as string).slice(at + 1)
+        }
+        tried++
+        for (const raw of [{ ...g, [field]: changed }, JSON.stringify({ ...g, [field]: changed })]) {
+          if (reasonOf(() => openEnvelope(raw, { sender, self: 'b', seen, now: T })) === 'accepted') accepted.push(`${field} bit ${bit}`)
+        }
+      }
+    }
+    expect(tried).toBeGreaterThan(1400)
+    expect(accepted).toEqual([])
+    expect(seen.size()).toBe(0)
+    expect(reasonOf(() => openEnvelope(g, { sender, self: 'b', seen, now: T }))).toBe('accepted')
+    seen.close()
+  })
+
+  it('(1) signatures and sender keys: another key, truncated, oversized, malleable, weak, wrong length or type', () => {
+    const seen = store()
+    const g = craft(A, {})
+    const sig = Buffer.from(g.sig, 'base64url')
+    // The same signature with the group order added to S: valid for a verifier that does not check S < L.
+    let s = 0n
+    for (let i = 31; i >= 0; i--) s = (s << 8n) | BigInt(sig[32 + i])
+    s += (1n << 252n) + 27742317777372353535851937790883648493n
+    const high = Buffer.from(sig)
+    for (let i = 0; i < 32; i++) { high[32 + i] = Number(s & 255n); s >>= 8n }
+    expect(s).toBe(0n)
+    const lastChar = 'AQgw'.split('').find((c) => c !== g.sig[85])!
+    const rows: [string, unknown, unknown, string][] = [
+      ["another key's signature", craft(B, {}), A.publicKey, 'signature'],
+      ['signed for another key', g, B.publicKey, 'signature'],
+      ['truncated signature (63 bytes)', { ...g, sig: sig.subarray(0, 63).toString('base64url') }, A.publicKey, 'shape'],
+      ['oversized signature (65 bytes)', { ...g, sig: Buffer.concat([sig, Buffer.alloc(1)]).toString('base64url') }, A.publicKey, 'shape'],
+      ['all-zero signature', { ...g, sig: Buffer.alloc(64).toString('base64url') }, A.publicKey, 'signature'],
+      ['S + L (malleable scalar)', { ...g, sig: high.toString('base64url') }, A.publicKey, 'signature'],
+      ['base64url with other unused bits', { ...g, sig: g.sig.slice(0, 85) + lastChar }, A.publicKey, 'signature'],
+      ['padded base64 signature', { ...g, sig: sig.toString('base64') }, A.publicKey, 'shape'],
+      ['public key of 31 bytes', g, Buffer.from(A.publicKey, 'base64url').subarray(0, 31).toString('base64url'), 'signature'],
+      ['public key of 33 bytes', g, Buffer.concat([Buffer.from(A.publicKey, 'base64url'), Buffer.alloc(1)]).toString('base64url'), 'signature'],
+      ['public key as hex', g, Buffer.from(A.publicKey, 'base64url').toString('hex'), 'signature'],
+      ['public key a Buffer', g, Buffer.from(A.publicKey, 'base64url'), 'signature'],
+      ['public key a number', g, 7, 'signature'],
+      ['public key missing', g, undefined, 'signature'],
+      ['an RSA public key', g, generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'pem' }), 'signature'],
+      ['a P-256 public key', g, (generateKeyPairSync('ec', { namedCurve: 'P-256' }).publicKey.export({ format: 'jwk' }).x as string), 'signature'],
+    ]
+    for (const [name, raw, publicKey, want] of rows) {
+      let err: unknown
+      try {
+        openEnvelope(raw, { sender: { id: 'a', publicKey: publicKey as string }, self: 'b', seen, now: T })
+      } catch (e) {
+        err = e
+      }
+      expect([name, err instanceof EnvelopeError && err.reason]).toEqual([name, want])
+      expect((err as Error).message).toBe(`envelope refused: ${want}`)
+    }
+    // A weak (small-order) key, the all-zero key first: no signature verifies and it has no fingerprint.
+    for (const weak of SMALL_ORDER) {
+      const publicKey = weak.toString('base64url')
+      let thrown: unknown
+      try {
+        fingerprintOf(publicKey)
+      } catch (e) {
+        thrown = e
+      }
+      expect([weak.toString('hex'), thrown instanceof TypeError]).toEqual([weak.toString('hex'), true])
+      expect((thrown as Error).message).not.toContain(publicKey)
+      for (const r of SMALL_ORDER) {
+        const forged = Buffer.concat([r, Buffer.alloc(32)]).toString('base64url')
+        for (let i = 0; i < 8; i++) expect(verifySignature(publicKey, `m${i}`, forged)).toBe(false)
+        expect(reasonOf(() => openEnvelope({ ...g, sig: forged }, { sender: { id: 'a', publicKey }, self: 'b', seen, now: T }))).toBe('signature')
+      }
+    }
+    expect(seen.size()).toBe(0)
+    seen.close()
+  })
+
+  it('(1) domain separation: an envelope signature is over the tagged text only, and no other signed text opens as an envelope', () => {
+    const seen = store()
+    const g = craft(A, {})
+    const untagged = `${g.from}\n${g.to}\n${g.nonce}\n${g.ts}\n${g.body_sha256}`
+    const { sig, ...unsigned } = g
+    for (const other of [untagged, text(g, 'tandem-envelope-v2'), text(g, 'tandem-envelope-v1 '), text(g) + '\n', g.body, g.body_sha256, JSON.stringify(g), JSON.stringify(unsigned)]) {
+      expect(verifySignature(A.publicKey, other, sig)).toBe(false)
+      expect(reasonOf(() => openEnvelope({ ...g, sig: A.sign(other) }, { sender, self: 'b', seen, now: T }))).toBe('signature')
+    }
+    for (const tag of ['tandem-envelope-v2', 'tandem-envelope', '', 'tandem-mail-v1']) {
+      expect(reasonOf(() => openEnvelope(craft(A, {}, tag), { sender, self: 'b', seen, now: T }))).toBe('signature')
+    }
+    expect(reasonOf(() => openEnvelope({ ...g, alg: 'none' }, { sender, self: 'b', seen, now: T }))).toBe('shape')
+    expect(reasonOf(() => openEnvelope({ ...g, alg: 'Ed25519' }, { sender, self: 'b', seen, now: T }))).toBe('shape')
+    expect(seen.size()).toBe(0)
+    seen.close()
+  })
+
+  it('(1) a field that reads differently the second time cannot swap the body after the checks', () => {
+    const seen = store()
+    for (const field of ['body', 'from', 'to', 'ts', 'nonce'] as const) {
+      for (let goodReads = 1; goodReads <= 8; goodReads++) {
+        const g = craft(A, {}) as Record<string, unknown>
+        const good = g[field]
+        let reads = 0
+        const shifty = { ...g }
+        Object.defineProperty(shifty, field, { enumerable: true, get: () => (++reads > goodReads ? (typeof good === 'number' ? good + 1 : 'evil') : good) })
+        let got: Record<string, unknown> | string
+        try {
+          got = openEnvelope(shifty, { sender, self: 'b', seen, now: T })
+        } catch (e) {
+          got = (e as Error).message
+        }
+        if (typeof got !== 'string') expect([field, goodReads, got[field]]).toEqual([field, goodReads, good])
+        expect([field, reads]).toEqual([field, 1])
+      }
+    }
+    seen.close()
+  })
+
+  it('(2) a nonce seen under a short window is still a replay under the longest one, until no window can accept it', () => {
+    let clock = T
+    const path = join(folder('db'), 'state.db')
+    const seen = openReplayStore({ path, now: () => clock })
+    const env = craft(A, {})
+    const open = (maxAgeMs?: number) => reasonOf(() => openEnvelope(env, { sender, self: 'b', seen, now: clock, maxAgeMs }))
+    expect(open()).toBe('accepted')
+    const steps: [number, number | undefined, string][] = [
+      [T + 600_000, CAP, 'replay'],
+      [T + 600_001, CAP, 'replay'],
+      [T + 3_600_000, CAP, 'replay'],
+      [T + CAP, CAP, 'replay'],
+      [T + CAP, 1, 'time'],
+      [T + CAP + 1, CAP, 'time'],
+      [T + CAP + 300_001, CAP, 'time'],
+    ]
+    for (const [at, maxAgeMs, want] of steps) {
+      clock = at
+      expect(seen.remember('z', `sweep-${at}-${maxAgeMs}`, at + 1)).toBe(true)
+      expect([at - T, maxAgeMs, open(maxAgeMs)]).toEqual([at - T, maxAgeMs, want])
+    }
+    // Past ts + cap + skew no window can accept it, so the row may go; it outlives every window whatever maxAgeMs the first opener used.
+    const db = new DatabaseSync(path)
+    expect(db.prepare('SELECT expires_ms FROM envelope_seen WHERE nonce = ?').all(env.nonce)).toEqual([])
+    db.close()
+    seen.close()
+    const one = join(folder('db'), 'state.db')
+    const s1 = openReplayStore({ path: one, now: () => T })
+    openEnvelope(craft(A, {}), { sender, self: 'b', seen: s1, now: T, maxAgeMs: 1 })
+    s1.close()
+    const db1 = new DatabaseSync(one)
+    expect(db1.prepare('SELECT expires_ms FROM envelope_seen').all()).toEqual([{ expires_ms: T + CAP + 300_000 }])
+    db1.close()
+  })
+
+  it('(3) time: only a whole, non-negative ts inside the window; the window cannot be widened past the cap', () => {
+    const seen = store()
+    const g = craft(A, {})
+    const open = (raw: unknown, over: Record<string, unknown> = {}) => reasonOf(() => openEnvelope(raw, { sender, self: 'b', seen, now: T, ...over }))
+    for (const ts of [Number.NaN, Infinity, -Infinity, -1, -T, 0.5, T + 0.25, 2 ** 53, 1e300, Number.MAX_VALUE, String(T), null, undefined, [T], { valueOf: () => T }, BigInt(T), true]) {
+      expect([String(ts), open({ ...g, ts })]).toEqual([String(ts), 'shape'])
+    }
+    for (const tsText of ['1e400', '-1', '1.5', '"1"', 'null', '9007199254740993', '1e21']) {
+      expect([tsText, open(JSON.stringify(g).replace(`"ts":${T}`, `"ts":${tsText}`))]).toEqual([tsText, 'shape'])
+    }
+    const edges: [number, number | undefined, string][] = [
+      [0, CAP, 'time'], [1, undefined, 'time'], [T - CAP - 1, CAP, 'time'], [T - CAP, CAP, 'accepted'], [T - 300_001, undefined, 'time'], [T - 300_000, undefined, 'accepted'],
+      [T - 2, 1, 'time'], [T - 1, 1, 'accepted'], [T, 1, 'accepted'], [T + 300_000, 1, 'accepted'], [T + 300_001, CAP, 'time'], [2 ** 53 - 1, CAP, 'time'],
+    ]
+    for (const [ts, maxAgeMs, want] of edges) expect([ts - T, maxAgeMs, open(craft(A, { ts }), { maxAgeMs })]).toEqual([ts - T, maxAgeMs, want])
+    for (const maxAgeMs of [CAP + 1, 2 * CAP, 2 ** 53 - 1, 2 ** 53, Infinity, Number.NaN, 0, -1, 0.5, '300000', null, {}]) {
+      if (maxAgeMs === null) continue
+      expect(() => openEnvelope(craft(A, { ts: 0 }), { sender, self: 'b', seen, now: T, maxAgeMs: maxAgeMs as number })).toThrow(RangeError)
+    }
+    for (const now of [Number.NaN, Infinity, 0.5, '1', {}]) {
+      expect(() => openEnvelope(g, { sender, self: 'b', seen, now: now as number })).toThrow(RangeError)
+    }
+    for (const now of [Number.NaN, Infinity, -1, 0.5]) expect(reasonOf(() => signEnvelope(A, { from: 'a', to: 'b', body: '' }, now))).toBe('shape')
+    seen.close()
+  })
+
+  it('(4) key files: group/world bits, another owner, truncated or empty files are refused and left alone', () => {
+    const made = () => {
+      const home = folder()
+      keyAt(home)
+      return { home, keys: join(home, 'keys'), file: join(home, 'keys', 'device.key') }
+    }
+    const rows: [string, (p: { keys: string; file: string }) => void][] = [
+      ...[0o750, 0o710, 0o705, 0o701, 0o770, 0o777, 0o500].map((m): [string, (p: { keys: string }) => void] => [`keys/ mode 0${m.toString(8)}`, (p) => chmodSync(p.keys, m)]),
+      ...[0o640, 0o620, 0o604, 0o602, 0o660, 0o666, 0o700, 0o400].map((m): [string, (p: { file: string }) => void] => [`device.key mode 0${m.toString(8)}`, (p) => chmodSync(p.file, m)]),
+      ['device.key cut in half', (p) => writeFileSync(p.file, readFileSync(p.file).subarray(0, 60))],
+      ['device.key without its last line', (p) => writeFileSync(p.file, readFileSync(p.file, 'utf8').split('\n').slice(0, 2).join('\n'))],
+      ['device.key empty', (p) => writeFileSync(p.file, '')],
+      ['device.key a folder', (p) => { rmSync(p.file); mkdirSync(p.file, { mode: 0o600 }) }],
+      ['device.key cut DER bytes', (p) => writeFileSync(p.file, createPrivateKey(readFileSync(p.file)).export({ type: 'pkcs8', format: 'der' }).subarray(16))],
+    ]
+    for (const [name, spoil] of rows) {
+      const p = made()
+      const secret = lstatSync(p.file).isFile() ? readFileSync(p.file, 'utf8').split('\n')[1] : ''
+      spoil(p)
+      const isFile = lstatSync(p.file).isFile()
+      const before = isFile ? { bytes: readFileSync(p.file), mode: lstatSync(p.file).mode } : undefined
+      let err: unknown
+      try {
+        openDeviceKey({ path: p.file })
+      } catch (e) {
+        err = e
+      }
+      expect([name, err instanceof DeviceKeyError]).toEqual([name, true])
+      const shown = [String(err), inspect(err, { showHidden: true, depth: 8 }), JSON.stringify(err)].join('\n')
+      expect(shown).toContain('refused: ')
+      expect(shown).not.toContain('PRIVATE')
+      if (secret) expect(shown).not.toContain(secret.slice(0, 24))
+      if (before) {
+        expect(readFileSync(p.file).equals(before.bytes)).toBe(true)
+        expect(lstatSync(p.file).mode).toBe(before.mode)
+      }
+      chmodSync(p.keys, 0o700)
+      expect(tmpLeft(p.keys)).toEqual([])
+    }
+    // Another owner: the folder first, then the file (this user's id seen as someone else's).
+    const p = made()
+    const real = process.getuid!()
+    let calls = 0
+    for (const lieAt of [1, 2]) {
+      calls = 0
+      const spy = vi.spyOn(process, 'getuid').mockImplementation(() => (++calls === lieAt ? real + 1 : real))
+      try {
+        expect(() => openDeviceKey({ path: p.file })).toThrow(/refused: .*not owned by this user/)
+      } finally {
+        spy.mockRestore()
+      }
+    }
+    expect(keyAt(p.home).fingerprint).toMatch(/^[0-9a-f]{16}$/)
+  })
+
+  it('(4) six processes at once: one key, the same fingerprint, no tmp file, nothing printed', async () => {
+    const home = folder('race6')
+    const script = join(folder('script'), 'open6.mjs')
+    writeFileSync(script, [
+      `const { openDeviceKey } = await import(${JSON.stringify(pathToFileURL(join(repo, 'bridge', 'device-keys.ts')).href)})`,
+      'const at = Number(process.argv[2])',
+      'while (Date.now() < at) {}',
+      'process.stdout.write(openDeviceKey().fingerprint)',
+    ].join('\n'))
+    const at = String(Date.now() + 2500)
+    const run = () => new Promise<{ code: number | null; out: string; err: string }>((done) => {
+      const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', script, at], { env: { ...process.env, TANDEM_HOME: home }, stdio: ['ignore', 'pipe', 'pipe'] })
+      let out = ''
+      let err = ''
+      child.stdout.on('data', (d) => (out += d))
+      child.stderr.on('data', (d) => (err += d))
+      child.on('close', (code) => done({ code, out, err }))
+    })
+    const all = await Promise.all([run(), run(), run(), run(), run(), run()])
+    const fingerprint = keyAt(home).fingerprint
+    for (const one of all) expect(one).toEqual({ code: 0, out: fingerprint, err: '' })
+    expect(readdirSync(join(home, 'keys'))).toEqual(['device.key'])
+    expect(mode(join(home, 'keys', 'device.key'))).toBe(0o600)
+  }, 60_000)
+
+  it('(5) replay store: folder modes, symlinked file, pruning, sender and receiver', () => {
+    for (const m of [0o750, 0o710, 0o705, 0o701, 0o777]) {
+      const dir = folder('db')
+      chmodSync(dir, m)
+      expect(() => openReplayStore({ path: join(dir, 'state.db') })).toThrow(/refused: /)
+      expect(readdirSync(dir)).toEqual([])
+      chmodSync(dir, 0o700)
+    }
+    const real = join(folder('db'), 'real.db')
+    openReplayStore({ path: real }).close()
+    const linked = folder('db')
+    symlinkSync(real, join(linked, 'state.db'))
+    expect(() => openReplayStore({ path: join(linked, 'state.db') })).toThrow(/refused: .*symlink/)
+    symlinkSync(join(linked, 'nowhere.db'), join(linked, 'dangling.db'))
+    expect(() => openReplayStore({ path: join(linked, 'dangling.db') })).toThrow(/refused: .*symlink/)
+    expect(existsSync(join(linked, 'nowhere.db'))).toBe(false)
+    // A loose file mode is tightened, as the mailbox does for the same file.
+    chmodSync(real, 0o644)
+    openReplayStore({ path: real }).close()
+    expect(mode(real)).toBe(0o600)
+
+    // Bounded: expired rows go at the next remember, however many there are.
+    let clock = T
+    const path = join(folder('db'), 'state.db')
+    const seen = openReplayStore({ path, now: () => clock })
+    for (let i = 0; i < 300; i++) expect(seen.remember('flood', `n${i}`, T + 1000)).toBe(true)
+    expect(seen.size()).toBe(300)
+    clock = T + 1000
+    expect(seen.remember('flood', 'n0', T + 1000)).toBe(false)
+    expect(seen.size()).toBe(300)
+    clock = T + 1001
+    expect(seen.remember('flood', 'last', clock + 1000)).toBe(true)
+    expect(seen.size()).toBe(1)
+    const db = new DatabaseSync(path)
+    expect(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'index' AND tbl_name = 'envelope_seen' AND sql LIKE '%expires_ms%'").get()).toEqual({ n: 1 })
+    db.close()
+
+    // The same nonce: from another sender it is a different message; from the same sender it is a replay whoever it is for.
+    const nonce = Buffer.alloc(16, 200).toString('base64url')
+    const open = (key: typeof A, from: string, to: string) =>
+      reasonOf(() => openEnvelope(craft(key, { from, to, nonce }), { sender: { id: from, publicKey: key.publicKey }, self: to, seen, now: clock }))
+    const size = seen.size()
+    expect(open(A, 'a', 'b')).toBe('accepted')
+    expect(open(A, 'a', 'b')).toBe('replay')
+    expect(open(A, 'a', 'c')).toBe('replay')
+    expect(open(B, 'c', 'b')).toBe('accepted')
+    expect(open(B, 'c', 'b')).toBe('replay')
+    expect(seen.size()).toBe(size + 2)
+    seen.close()
+  })
+
+  it('(5) SIGKILL in the middle of inserts: every answered nonce is kept once, at most one more', async () => {
+    const path = join(folder('db'), 'state.db')
+    const script = join(folder('script'), 'insert.mjs')
+    writeFileSync(script, [
+      "import { writeSync } from 'node:fs'",
+      `const { openReplayStore } = await import(${JSON.stringify(pathToFileURL(join(repo, 'bridge', 'envelope.ts')).href)})`,
+      `const seen = openReplayStore({ path: ${JSON.stringify(path)}, now: () => ${T} })`,
+      `for (let i = 0; ; i++) { if (!seen.remember('k', 'n' + i, ${T} + 1000)) process.exit(3); writeSync(1, i + '\\n') }`,
+    ].join('\n'))
+    const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', script], { stdio: ['ignore', 'pipe', 'pipe'] })
+    let out = ''
+    let err = ''
+    child.stderr.on('data', (d) => (err += d))
+    const closed = new Promise<NodeJS.Signals | null>((done) => child.on('close', (_code, signal) => done(signal)))
+    child.stdout.on('data', (d) => {
+      out += d
+      if (out.split('\n').length > 60) child.kill('SIGKILL')
+    })
+    expect(await closed).toBe('SIGKILL')
+    expect(err).toBe('')
+    const answered = out.split('\n').slice(0, -1).map(Number)
+    expect(answered.length).toBeGreaterThanOrEqual(60)
+    expect(answered).toEqual(answered.map((_, i) => i))
+    const seen = openReplayStore({ path, now: () => T })
+    const db = new DatabaseSync(path)
+    const rows = (db.prepare("SELECT nonce FROM envelope_seen WHERE from_id = 'k'").all() as { nonce: string }[]).map((r) => Number(r.nonce.slice(1))).sort((x, y) => x - y)
+    db.close()
+    expect([answered.length, answered.length + 1]).toContain(rows.length)
+    expect(rows).toEqual(rows.map((_, i) => i))
+    for (const i of answered) expect(seen.remember('k', `n${i}`, T + 1000)).toBe(false)
+    expect(seen.size()).toBe(rows.length)
+    seen.close()
+    expect(mode(path)).toBe(0o600)
+  }, 60_000)
+
+  it('(6) importing either module reads and writes nothing and prints nothing', async () => {
+    const empty = folder('import')
+    const script = join(folder('script'), 'import.mjs')
+    writeFileSync(script, [
+      `await import(${JSON.stringify(pathToFileURL(join(repo, 'bridge', 'device-keys.ts')).href)})`,
+      `await import(${JSON.stringify(pathToFileURL(join(repo, 'bridge', 'envelope.ts')).href)})`,
+    ].join('\n'))
+    const child = spawn(process.execPath, ['--experimental-strip-types', '--no-warnings', script], {
+      env: { PATH: process.env.PATH, HOME: join(empty, 'home'), TANDEM_HOME: join(empty, 'tandem'), TMPDIR: join(empty, 'tmp') }, cwd: empty, stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let printed = ''
+    child.stdout.on('data', (d) => (printed += d))
+    child.stderr.on('data', (d) => (printed += d))
+    expect(await new Promise((done) => child.on('close', done))).toBe(0)
+    expect(printed).toBe('')
+    expect(readdirSync(empty)).toEqual([])
+  }, 30_000)
 })
