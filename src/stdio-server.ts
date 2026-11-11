@@ -90,7 +90,9 @@ try {
 } catch {
   console.error("mail: store unavailable; mail tools are off");
 }
-const server = await buildMcpServer(fleet, fabric ?? hubForward, mail);
+// Who is up on this computer (bridge/presence.ts): read on a call, never on a timer.
+const presence = (await import("../bridge/presence.ts")).createPresence();
+const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence);
 await server.connect(new StdioServerTransport());
 
 console.error("tandem MCP bridge ready on stdio (local, no token)");

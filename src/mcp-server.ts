@@ -24,6 +24,7 @@
  * each call to the hub, which sends it to the memory home.
  * With a mailbox (bridge/mailbox.ts) mail_send and mail_read are added; every caller here is
  * the owner's client, so mail_send stores the sender `owner` and takes no sender argument.
+ * With a presence (bridge/presence.ts) who_is_up is added: read-only, who is up on this computer.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -40,6 +41,7 @@ import type { LocalFabricHost } from "../bridge/fabric/local-fabric-host.ts";
 import type { FabricForward } from "../bridge/hub-rpc.ts";
 import { configureFabricTools, type FabricToolServer } from "./fabric/mcp-tools.ts";
 import { MailError, type Mailbox } from "../bridge/mailbox.ts";
+import type { Presence } from "../bridge/presence.ts";
 import { FABRIC_MCP_TRUST } from "./fabric/rpc-contract.ts";
 import { isBuiltinEngine, KNOWN_ENGINE_IDS, loadedHarnesses } from "../bridge/engine-registry.ts";
 import { ICON_MIME, ICON_DATA_URI } from "./icon.ts";
@@ -87,7 +89,7 @@ function wrap(result: { status: number; body: unknown }) {
  * resolution rules). The stdio transport uses a local-only runtime, so callers
  * get the same device-aware schema without opening a network listener.
  */
-export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricHost | FabricForward, mail?: Mailbox): Promise<McpServer> {
+export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricHost | FabricForward, mail?: Mailbox, presence?: Presence): Promise<McpServer> {
   const runtime = fleet ?? createFleetRuntime({});
   // `icons` rides in the server's implementation info (a self-contained data:
   // URI, so no public URL is needed). A spec-aware client renders the Tandem
@@ -294,6 +296,19 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
           if (name === undefined) throw new MailError(400, "name: required for box inbox");
           return mail.read(name, limit ?? 50);
         }),
+    );
+  }
+
+  /* ---- who is up (with a presence) ---- */
+
+  if (presence) {
+    server.registerTool(
+      "who_is_up",
+      {
+        description: "Read-only. Who is up on this computer: every session Tandem runs here with its agent (engine), project, folder (cwd) and state (working, idle, waiting_for_approval or unknown), the time that state was read (stateAt, ms since the epoch) and its age (ageMs). Returns { computer, at, ageMs, sessions: [{ name, engine, project, cwd, state, stateAt, ageMs }] }, a reading at most 10 seconds old; refresh: true reads every screen first; no terminal text is returned.",
+        inputSchema: { refresh: z.boolean().optional().describe("true reads every screen first instead of answering the last reading.") },
+      },
+      async ({ refresh }) => wrap({ status: 200, body: await presence.whoIsUp({ refresh }) }),
     );
   }
 
