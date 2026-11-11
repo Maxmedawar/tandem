@@ -1,0 +1,12 @@
+Current folder: ~/work
+
+  EDIT  src/a.ts
+  - const a = 1;
+  + const a = 2;
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Yes, allow                                                         │
+│   No, cancel                                                         │
+╰──────────────────────────────────────────────────────────────────────╯
+  ↑↓ navigate · Enter select · Esc cancel
+
+Auto (Off)  claude-sonnet-4-6                                  ? for help

@@ -1,0 +1,7 @@
+Current folder: ~/work
+shift+tab to cycle modes · ctrl+N to cycle models
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Try "Write unit tests for this file"                               │
+╰──────────────────────────────────────────────────────────────────────╯
+Auto (Off)  claude-sonnet-4-6                                  ? for help

@@ -1,0 +1,11 @@
+Current folder: ~/work
+
+  EXECUTE  npm test
+  EXECUTE  npm run lint
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Yes, allow all                                                     │
+│   No, cancel all                                                     │
+╰──────────────────────────────────────────────────────────────────────╯
+  ↑↓ navigate · Enter select · Esc cancel
+
+Auto (Off)  claude-sonnet-4-6                                  ? for help

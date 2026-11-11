@@ -1,0 +1,11 @@
+Current folder: ~/work
+
+  Droid-Shield approval required
+  ↳ git push origin main
+╭──────────────────────────────────────────────────────────────────────╮
+│ > Proceed anyway                                                     │
+│   Cancel                                                             │
+╰──────────────────────────────────────────────────────────────────────╯
+  ↑↓ navigate · Enter select · Esc cancel
+
+Auto (Off)  claude-sonnet-4-6                                  ? for help

@@ -1,0 +1,4 @@
+Welcome to Factory CLI
+
+> Login with Factory account
+  Continue with API key

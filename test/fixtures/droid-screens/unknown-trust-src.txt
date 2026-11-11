@@ -1,0 +1,9 @@
+Trust this folder?
+
+Droid will read, edit, and run files in this folder, and load any project
+If you just cloned this folder or don't recognize its contents, review the files
+
+> 1. Trust this folder
+  2. Exit without trusting
+
+Enter to confirm · Esc to exit
