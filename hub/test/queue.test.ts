@@ -5,14 +5,16 @@
  * Durable Object's ctx.storage.sql, and a fake clock. A restart closes the file,
  * reopens it and builds a new HubQueue over it. Writes run in BEGIN/COMMIT, with
  * ROLLBACK on a throw (ctx.storage.transactionSync in the Durable Object); `failOn`
- * makes one chosen statement throw, and `seen` lists every statement run.
+ * makes one chosen statement throw, and `seen` lists every statement run. The last
+ * case runs the real TunnelDO, with ctx.storage.transactionSync, in local workerd.
  */
 
 import { afterAll, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
+import { fileURLToPath } from 'node:url'
 import { HubQueue, MAX_BYTES, MAX_COPIES, MAX_COPY_BYTES, TTL_MS, type QueuedCopy } from '../src/queue.ts'
 
 const dir = mkdtempSync(join(tmpdir(), 'hub-queue-'))
@@ -312,4 +314,52 @@ describe('HubQueue', () => {
     const plan = rows(`EXPLAIN QUERY PLAN ${select}`, T0).map((r) => String(r.detail))
     expect(plan.join('\n')).toMatch(/USING (COVERING )?INDEX queue_copies_kind_queued_at \(kind=\? AND queued_at<\?\)/)
   })
+
+  it('33A: all or nothing in workerd: the real TunnelDO keeps nothing of a room put whose second copy SQLite refuses', async () => {
+    // A throwaway Worker in front of the real TunnelDO (wrangler's local workerd, as
+    // `wrangler dev --local`). workerd's SQLite refuses a value over about 2 MB
+    // (SQLITE_TOOBIG), so a 3 MB name makes the put throw after A's copy is written.
+    const { unstable_startWorker } = await import('wrangler')
+    const doDir = join(dir, 'workerd')
+    mkdirSync(doDir)
+    const tunnelDo = fileURLToPath(new URL('../src/tunnel-do.ts', import.meta.url))
+    writeFileSync(join(doDir, 'entry.ts'), `import { TunnelDO } from ${JSON.stringify(tunnelDo)}
+export { TunnelDO }
+export default {
+  async fetch(req: Request, env: { TUNNEL: DurableObjectNamespace<TunnelDO> }): Promise<Response> {
+    const q = env.TUNNEL.get(env.TUNNEL.idFromName('queue'))
+    try {
+      if (req.method === 'POST') return Response.json(await q.queuePut(await req.json()))
+      return Response.json(await q.queueTake(String(new URL(req.url).searchParams.get('to'))))
+    } catch (e) {
+      return Response.json({ thrown: String(e) })
+    }
+  },
+}
+`)
+    writeFileSync(join(doDir, 'wrangler.json'), JSON.stringify({
+      name: 'hub-queue-test', main: 'entry.ts', compatibility_date: '2025-01-01', compatibility_flags: ['nodejs_compat'],
+      durable_objects: { bindings: [{ name: 'TUNNEL', class_name: 'TunnelDO' }] },
+      migrations: [{ tag: 'v1', new_sqlite_classes: ['TunnelDO'] }],
+    }))
+    const worker = await unstable_startWorker({
+      config: join(doDir, 'wrangler.json'),
+      dev: { server: { hostname: '127.0.0.1', port: 0 }, inspector: false, persist: false },
+    })
+    try {
+      const call = async (path: string, body?: unknown) =>
+        (await worker.fetch(`http://hub${path}`, body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) })).json()
+      expect(await call('/put', { id: 'g1', from: 'S', to: ['A', 'B'.repeat(3_000_000)], room: 'g', body: 'x' })).toEqual({
+        thrown: expect.stringMatching(/SQLITE_TOOBIG/),
+      })
+      expect(await call('/take?to=A')).toEqual([])
+      expect(await call('/put', { id: 'g2', from: 'S', to: ['A', 'B'], room: 'g', body: 'x' })).toEqual([
+        { to: 'A', seq: 1 },
+        { to: 'B', seq: 1 },
+      ])
+      expect(await call('/take?to=A')).toEqual([{ id: 'g2', from: 'S', room: 'g', room_seq: 1, seq: 1, kind: 'message', body: 'x' }])
+    } finally {
+      await worker.dispose()
+    }
+  }, 120_000)
 })
