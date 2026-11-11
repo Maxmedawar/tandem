@@ -10,7 +10,7 @@
  * before any tmux call; afterAll kills that server through its own -S socket and removes the folder.
  */
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { homedir } from "node:os";
@@ -442,6 +442,9 @@ describe("limits file: nothing remote can widen it", () => {
       agents: { "fake-bash": entry("fake-bash") },
       shell: true,
       permission_skip: [WORK],
+      skipPrompts: true,
+      allowBypass: true,
+      skip_prompts_args: ["--r1a17-skip"],
     };
     const outside = uniq("remote");
     expectLimitsRefusal(await open(outside, "fake-a", OTHER, widen), outside, "fake-a", false);
@@ -454,4 +457,204 @@ describe("limits file: nothing remote can widen it", () => {
     expect(limits.limitsSnapshot()).toEqual(before);
     expect(existsSync(LIMITS)).toBe(true);
   }, 60_000);
+});
+
+/**
+ * U-R1A-17-R1 (audit): the boundary in one table, straight at limitsGate() (no tmux) and, where the
+ * route matters, through handleHubRequest. A row that names macOS runs only where the volume folds
+ * case (the upper-case spelling of WORK exists).
+ */
+describe("U-R1A-17-R1 audit: the boundary, one table", () => {
+  const UP = (p: string) => p.toUpperCase();
+  const caseBlind = existsSync(UP(WORK));
+  const EVIL = `${WORK}-evil`;
+  const LINK_OUT = join(WORK, "link-out");
+  const LINK_TH = join(WORK, "link-th");
+  const good = () => ({ folders: [WORK], permission_skip: [SKIP], agents: { "fake-a": entry("fake-a") } });
+  const fakeA = () => harnesses.get("fake-a")!;
+  const refusedText = (v: string | undefined) => expect(v ?? "(allowed)").toMatch(/^limits: /);
+  const raw = (text: string) => {
+    rmSync(LIMITS, { force: true });
+    writeFileSync(LIMITS, text, { mode: 0o600 });
+    chmodSync(LIMITS, 0o600);
+  };
+  mkdirSync(EVIL, { recursive: true });
+  for (const [link, target] of [[LINK_OUT, OTHER], [LINK_TH, TH]]) if (!existsSync(link!)) symlinkSync(target!, link!);
+
+  const fileRows: [string, () => void | (() => void), RegExp | undefined][] = [
+    ["a missing file", () => rmSync(LIMITS, { force: true }), /no limits file/],
+    ["an empty file", () => raw(""), undefined],
+    ["a malformed file", () => raw("folders = [\n"), /TOML syntax error/],
+    ["an unreadable file (mode 000)", () => { raw(`folders = ["${WORK}"]\n`); chmodSync(LIMITS, 0); }, /EACCES/],
+    ["a group-writable file (0620)", () => { raw(`folders = ["${WORK}"]\n`); chmodSync(LIMITS, 0o620); }, /permissions are too broad/],
+    ["a world-writable file (0602)", () => { raw(`folders = ["${WORK}"]\n`); chmodSync(LIMITS, 0o602); }, /permissions are too broad/],
+    ["a file with another owner", () => { raw(`folders = ["${WORK}"]\n`); vi.spyOn(process, "getuid").mockReturnValue(process.getuid!() + 1); }, /wrong owner/],
+    ["a symlinked file", () => {
+      const real = join(BOX, "audit-real.toml");
+      writeFileSync(real, `folders = ["${WORK}"]\n`, { mode: 0o600 });
+      rmSync(LIMITS, { force: true });
+      symlinkSync(real, LIMITS);
+    }, /symlink/],
+    ["a file in a group-writable folder (0770)", () => { raw(`folders = ["${WORK}"]\n`); chmodSync(TH, 0o770); return () => chmodSync(TH, 0o700); }, /folder .* writable by group or others/],
+    ["a file in a world-writable folder (0707)", () => { raw(`folders = ["${WORK}"]\n`); chmodSync(TH, 0o707); return () => chmodSync(TH, 0o700); }, /folder .* writable by group or others/],
+    ["a folders entry that is a symlink to the file's folder", () => raw(`folders = ["${LINK_TH}"]\n`), /equals, holds or lies inside/],
+    ...(caseBlind
+      ? ([
+          ["macOS: a folders entry that is the file's folder in another case", () => raw(`folders = ["${UP(TH)}"]\n`), /equals, holds or lies inside/],
+          ["macOS: a folders entry holding the file's folder in another case", () => raw(`folders = ["${UP(BOX)}"]\n`), /equals, holds or lies inside/],
+          ["macOS: a permission_skip entry inside the file's folder in another case", () => raw(`folders = ["${WORK}"]\npermission_skip = ["${UP(join(TH, "sub"))}"]\n`), /equals, holds or lies inside/],
+        ] as [string, () => void, RegExp][])
+      : []),
+  ];
+  it.each(fileRows)("file: %s allows nothing", async (label, setup, reason) => {
+    // root reads a mode-000 file (the Linux image runs as root), so that row has nothing to refuse there
+    if (process.getuid!() === 0 && label.startsWith("an unreadable")) return;
+    const undo = setup();
+    try {
+      await apply();
+      const snap = limits.limitsSnapshot();
+      expect(snap).toMatchObject(EMPTY);
+      if (reason) expect(snap.problem).toMatch(reason);
+      const gate = limits.limitsGate();
+      for (const cwd of [WORK, SKIP, OTHER, TH, BOX, "/"]) refusedText(gate.folder(cwd));
+      refusedText(gate.agent(fakeA()));
+      refusedText(gate.agent(harnesses.get("shell")));
+      refusedText(gate.permissionSkip(SKIP));
+      expect(gate.skipPrompts(SKIP)).toBe(false);
+    } finally {
+      if (undo) undo();
+      vi.restoreAllMocks();
+      rmSync(LIMITS, { force: true });
+    }
+  });
+
+  it("paths: .., a symlink out, a prefix trick, trailing slashes and case", async () => {
+    writeLimits(TH, good());
+    expect((await apply()).lines).toEqual([]);
+    const gate = limits.limitsGate();
+    const inside = [WORK, `${WORK}/`, `${SKIP}//`, `${WORK}/skip/../skip`, join(WORK, "not-made-yet"), ...(caseBlind ? [UP(WORK), UP(SKIP)] : [])];
+    const outside = [`${WORK}/../other`, `${WORK}/..`, LINK_OUT, `${LINK_OUT}/`, LINK_TH, EVIL, `${EVIL}/`, OTHER, BOX, TH, "/", ...(caseBlind ? [UP(EVIL), UP(OTHER), UP(LINK_OUT), UP(TH)] : [UP(WORK)])];
+    for (const cwd of inside) expect([cwd, gate.folder(cwd)]).toEqual([cwd, undefined]);
+    for (const cwd of outside) expect([cwd, gate.folder(cwd)?.slice(0, 8)]).toEqual([cwd, "limits: "]);
+    const skipOn = [SKIP, `${SKIP}/`, join(SKIP, "deep"), ...(caseBlind ? [UP(SKIP)] : [])];
+    const skipOff = [WORK, `${SKIP}/..`, `${SKIP}-evil`, LINK_OUT, OTHER, ...(caseBlind ? [UP(WORK)] : [UP(SKIP)])];
+    for (const cwd of skipOn) expect([cwd, gate.skipPrompts(cwd), gate.permissionSkip(cwd)]).toEqual([cwd, true, undefined]);
+    for (const cwd of skipOff) {
+      expect([cwd, gate.skipPrompts(cwd)]).toEqual([cwd, false]);
+      refusedText(gate.permissionSkip(cwd));
+    }
+  });
+
+  it("agents: pinned by the real path of the found program; a pinned sha256 always holds; a swap after start is caught at the next open", async () => {
+    const claude = harnesses.get("claude")!;
+    const claudeBin = join(CLAUDE_BIN, "claude");
+    const viaLink = join(BOX, "fake-link");
+    if (!existsSync(viaLink)) symlinkSync(FAKE, viaLink);
+    const set = async (agents: Record<string, unknown>, shell = true) => {
+      writeLimits(TH, { folders: [WORK], shell, agents });
+      await apply();
+      return limits.limitsGate();
+    };
+    // the pin written through a symlink still names the same real file
+    expect((await set({ "fake-a": { program: viaLink, sha256: sha256(FAKE) } })).agent(fakeA())).toBeUndefined();
+    // no harness, a harness not listed, and a name that is only an Object.prototype key
+    const gate = await set({ "fake-a": entry("fake-a") });
+    refusedText(gate.agent(undefined));
+    refusedText(gate.agent(harnesses.get("fake-bash")));
+    expect(gate.agent({ ...fakeA(), name: "constructor" })).toMatch(/^limits: agent "constructor" is not in the limits file's agents/);
+    // an owner harness: its program's bytes change after the file was applied
+    expect((await set({ "fake-bash": entry("fake-bash") })).agent(harnesses.get("fake-bash"))).toBeUndefined();
+    try {
+      appendFileSync(FAKE_BASH, "# swapped after start\n");
+      expect(limits.limitsGate().agent(harnesses.get("fake-bash"))).toMatch(/sha256 is not the one the limits file pins/);
+    } finally {
+      copyFileSync(FAKE, FAKE_BASH);
+    }
+    expect(limits.limitsGate().agent(harnesses.get("fake-bash"))).toBeUndefined();
+    // a built-in harness: no sha256 needed, but one that is pinned must match
+    expect(claude.source).toBe("builtin");
+    expect((await set({ claude: agentEntry(claude) })).agent(claude)).toBeUndefined();
+    expect((await set({ claude: { ...agentEntry(claude), sha256: sha256(claudeBin) } })).agent(claude)).toBeUndefined();
+    expect((await set({ claude: { ...agentEntry(claude), sha256: "0".repeat(64) } })).agent(claude)).toMatch(/sha256 is not the one the limits file pins/);
+    // the found program is a PATH link: pinned to the file it leads to, refused once it leads elsewhere
+    const claudeReal = join(BOX, "claude-real");
+    writeFileSync(claudeReal, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    try {
+      unlinkSync(claudeBin);
+      symlinkSync(claudeReal, claudeBin);
+      const pinnedGate = await set({ claude: { program: claudeReal } });
+      expect(pinnedGate.agent(claude)).toBeUndefined();
+      unlinkSync(claudeBin);
+      symlinkSync(OTHER_CLI, claudeBin);
+      expect(pinnedGate.agent(claude)).toMatch(/runs .* but the limits file pins /);
+    } finally {
+      rmSync(claudeBin, { force: true });
+      writeFileSync(claudeBin, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    }
+    await set({ claude: agentEntry(claude) });
+    expect(limits.limitsGate().agent(claude)).toBeUndefined();
+  });
+
+  it("shell = false refuses a plain shell by open, adopt and relay; hermes stays outside the file", async () => {
+    const shell = harnesses.get("shell")!;
+    expect(shell.kind).toBe("shell");
+    writeLimits(TH, { folders: [WORK], permission_skip: [WORK], shell: false, agents: { shell: agentEntry(shell), claude: agentEntry(harnesses.get("claude")!) } });
+    await apply();
+    const spawn = vi.spyOn(TerminalSession, "spawn");
+    const adopt = vi.spyOn(HarnessSession, "attachExisting");
+    const name = uniq("noshell");
+    const res = await open(name, "shell", WORK);
+    expectLimitsRefusal(res, name, "shell", false);
+    expect(res.body.error).toMatch(/shell = false/);
+    expect(adopt).not.toHaveBeenCalled(); // a surviving ccm- shell session is not adopted either
+    // the relay's agent goes through the same check: a claude that is really a shell
+    refusedText(limits.limitsGate().agent({ ...harnesses.get("claude")!, kind: "shell" }));
+    // the relay inside permission_skip still needs TANDEM_ALLOW_BYPASS=1 (unset here): no spawn
+    const relay = await viaHub("POST", "/relay/start", { goal: "r1a17 audit", cwd: WORK, allowBypass: true, skipPrompts: true });
+    expect(relay.status).toBe(400);
+    expect(relay.body.error).toMatch(/TANDEM_ALLOW_BYPASS/);
+    expect(spawn).not.toHaveBeenCalled();
+    expect(tmuxHas(name)).toBe(false);
+    // hermes has no harness file: the limits file neither refuses nor allows it
+    for (const fields of [undefined, { folders: [WORK], shell: true, agents: { hermes: { program: "/bin/sh" } } }]) {
+      if (fields) writeLimits(TH, fields);
+      else rmSync(LIMITS, { force: true });
+      await apply();
+      const hermes = await viaHub("POST", "/sessions/open", { name: uniq("hermes"), engine: "hermes" });
+      expect(hermes.status).not.toBe(200);
+      expect(hermes.body.error).not.toMatch(/^limits: /);
+    }
+  });
+
+  it("a changed file or environment is noticed once and never takes effect until applyLimits()", async () => {
+    writeLimits(TH, good());
+    await apply();
+    const before = limits.limitsSnapshot();
+    const appliedBytes = readFileSync(LIMITS);
+    // widened on disk, not applied
+    writeLimits(TH, { folders: [WORK, OTHER], shell: true, permission_skip: [WORK], agents: { "fake-a": entry("fake-a"), "fake-bash": entry("fake-bash") } });
+    appendFileSync(LIMITS, "# audit widen\n");
+    const widened = await withStderr(() => [limits.limitsGate(), limits.limitsGate(), limits.limitsGate()]);
+    expect(notices(widened.lines)).toHaveLength(1);
+    const gate = widened.result[2]!;
+    expect(gate.folder(OTHER)!.endsWith(NOTICE)).toBe(true);
+    refusedText(gate.agent(harnesses.get("fake-bash")));
+    expect(gate.skipPrompts(WORK)).toBe(false);
+    expect(limits.limitsSnapshot()).toEqual(before);
+    // TANDEM_HOME moved after start to a folder with a wider file: the snapshot stays
+    const otherHome = join(BOX, "other-home");
+    writeLimits(otherHome, { folders: [WORK, OTHER], agents: { "fake-a": entry("fake-a") } });
+    vi.stubEnv("TANDEM_HOME", otherHome);
+    refusedText(limits.limitsGate().folder(OTHER));
+    expect(limits.limitsSnapshot()).toEqual(before);
+    vi.unstubAllEnvs();
+    // narrowed on disk, not applied: still the applied snapshot; the applied bytes back: no notice
+    writeLimits(TH, { folders: [] });
+    expect(limits.limitsGate().folder(WORK)).toBeUndefined();
+    writeFileSync(LIMITS, appliedBytes, { mode: 0o600 });
+    const back = await withStderr(() => limits.limitsGate().folder(OTHER));
+    expect(back.lines).toEqual([]);
+    expect(back.result).not.toContain("notice");
+    expect(limits.limitsSnapshot()).toEqual(before);
+  });
 });

@@ -15,13 +15,13 @@
  * line the first time each new digest is seen. The snapshot is not touched.
  */
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { readFileSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { parse } from 'smol-toml'
 import { readProtectedRegularFileSync } from '../src/runtime-config.ts'
 import type { Harness } from './harness-registry.ts'
-import { isCwdAllowed, safeResolve } from './sessions.ts'
+import { safeResolve } from './sessions.ts'
 
 export interface AgentPin {
   program: string
@@ -29,7 +29,7 @@ export interface AgentPin {
 }
 
 export interface LimitsSnapshot {
-  /** Real paths (safeResolve), checked when the file was read. */
+  /** Real paths (real(): safeResolve plus the volume's own spelling), checked when the file was read. */
   folders: string[]
   shell: boolean
   permission_skip: string[]
@@ -58,9 +58,44 @@ export function limitsFile(): string {
   return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'limits.toml')
 }
 
+/**
+ * safeResolve, then the spelling the volume itself holds for the part that exists (realpath(3)).
+ * Node's own realpath keeps the caller's case, so on a case-insensitive volume (macOS) /users/x/work
+ * and /Users/x/Work, one folder, would compare unequal: a case variant of the limits file's folder
+ * would pass the "not in an allowed folder" rule. A part that does not exist keeps its spelling.
+ */
+function real(p: string): string {
+  let abs = safeResolve(p)
+  const tail: string[] = []
+  for (;;) {
+    try {
+      return join(realpathSync.native(abs), ...tail.reverse())
+    } catch {
+      const parent = dirname(abs)
+      if (parent === abs) return join(abs, ...tail.reverse())
+      tail.push(basename(abs))
+      abs = parent
+    }
+  }
+}
+
+/** True when `candidate` is one of the real paths `roots` or lies inside one ("/work" never holds "/work-evil"). */
+function inside(candidate: string, roots: string[]): boolean {
+  const path = real(candidate)
+  return roots.some((root) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep))
+}
+
+/** The file's folder must be yours and closed to group and others, or anyone there could put another file in its place. */
+function checkFolder(dir: string): void {
+  const info = statSync(dir)
+  if (typeof process.getuid === 'function' && info.uid !== process.getuid()) fail(`the folder ${dir} has the wrong owner`)
+  if ((info.mode & 0o022) !== 0) fail(`the folder ${dir} is writable by group or others`)
+}
+
 /** The bytes on disk and their digest, or the marker for no file or a refused one. */
 function readOnDisk(file: string): { bytes?: Buffer; digest: string; problem?: string } {
   try {
+    checkFolder(dirname(file))
     const bytes = readProtectedRegularFileSync(file)
     return { bytes, digest: createHash('sha256').update(bytes).digest('hex') }
   } catch (e) {
@@ -82,11 +117,11 @@ function folderList(raw: Table, field: string, fileDir: string): string[] {
   const v = raw[field] ?? []
   if (!Array.isArray(v)) fail(`wrong type for ${field}: expected an array of absolute or ~/ paths`)
   return (v as unknown[]).map((p) => {
-    const real = safeResolve(pathText(p, field))
-    if (isCwdAllowed(real, [fileDir]) || isCwdAllowed(fileDir, [real])) {
-      fail(`${field} entry ${real} equals, holds or lies inside the limits file's folder ${fileDir}`)
+    const path = real(pathText(p, field))
+    if (inside(path, [fileDir]) || inside(fileDir, [path])) {
+      fail(`${field} entry ${path} equals, holds or lies inside the limits file's folder ${fileDir}`)
     }
-    return real
+    return path
   })
 }
 
@@ -123,7 +158,7 @@ function readLimits(): LimitsSnapshot {
   let problem = disk.problem
   if (disk.bytes) {
     try {
-      return { ...parseLimits(disk.bytes, safeResolve(dirname(file))), digest: disk.digest }
+      return { ...parseLimits(disk.bytes, real(dirname(file))), digest: disk.digest }
     } catch (e) {
       problem = `${file}: ${reasonOf(e)}`
     }
@@ -166,31 +201,31 @@ export function limitsGate() {
     /** Listed in `agents`, its program's real path the pinned one, an owner file's sha256 pinned, a shell only with `shell = true`. */
     agent(h: Harness | undefined): string | undefined {
       if (!h) return no('the agent has no harness file to check against the limits file')
-      const pin = applied.agents[h.name]
+      const pin = Object.hasOwn(applied.agents, h.name) ? applied.agents[h.name] : undefined
       if (!pin) return no(`agent "${h.name}" is not in the limits file's agents`)
-      const found = h.programPath === undefined ? undefined : safeResolve(h.programPath)
-      const pinned = safeResolve(pin.program)
+      const found = h.programPath === undefined ? undefined : real(h.programPath)
+      const pinned = real(pin.program)
       if (found !== pinned) return no(`agent "${h.name}" runs ${found ?? 'no program'} but the limits file pins ${pinned}`)
       // ponytail: hashed on every open; cache by device, inode, size and mtime if opens get slow.
-      if (h.source === 'owner') {
-        if (pin.sha256 === undefined) return no(`agent "${h.name}" is an owner harness file and the limits file pins no sha256 for its program`)
-        if (sha256Of(pinned) !== pin.sha256) return no(`agent "${h.name}" is an owner harness file and its program's sha256 is not the one the limits file pins`)
-      }
+      // An owner harness file needs a pinned sha256; one pinned for a built-in file holds too.
+      const owner = h.source === 'owner' ? ' is an owner harness file and' : ':'
+      if (h.source === 'owner' && pin.sha256 === undefined) return no(`agent "${h.name}"${owner} the limits file pins no sha256 for its program`)
+      if (pin.sha256 !== undefined && sha256Of(pinned) !== pin.sha256) return no(`agent "${h.name}"${owner} its program's sha256 is not the one the limits file pins`)
       if (h.kind === 'shell' && !applied.shell) return no(`agent "${h.name}" runs a shell or interpreter and the limits file has shell = false`)
       return undefined
     },
     folder(cwd: string): string | undefined {
-      return isCwdAllowed(cwd, applied.folders) ? undefined : no(`cwd ${safeResolve(cwd)} is not inside the limits file's folders`)
+      return inside(cwd, applied.folders) ? undefined : no(`cwd ${real(cwd)} is not inside the limits file's folders`)
     },
     /** The relay starts its agents with their prompts off, so its cwd must be in `permission_skip`. */
     permissionSkip(cwd: string): string | undefined {
-      return isCwdAllowed(cwd, applied.permission_skip)
+      return inside(cwd, applied.permission_skip)
         ? undefined
-        : no(`cwd ${safeResolve(cwd)} is not inside the limits file's permission_skip (the relay starts agents with their prompts off)`)
+        : no(`cwd ${real(cwd)} is not inside the limits file's permission_skip (the relay starts agents with their prompts off)`)
     },
     /** Start with the harness file's skip_prompts_args exactly when the real cwd is in `permission_skip`. */
     skipPrompts(cwd: string): boolean {
-      return isCwdAllowed(cwd, applied.permission_skip)
+      return inside(cwd, applied.permission_skip)
     },
   }
 }
