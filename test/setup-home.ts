@@ -7,7 +7,7 @@
 // removed again when the test file ends (vitest afterAll) and at process exit (TANDEM-B-TESTHOME-T2).
 // A failure names the variable, never its value.
 import { spawnSync } from "node:child_process";
-import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync } from "node:fs";
+import { accessSync, chmodSync, constants, lstatSync, mkdtempSync, readdirSync, realpathSync, rmSync, statSync, writeSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
@@ -35,7 +35,7 @@ const fold = (p: string): string => (process.platform === "darwin" || process.pl
 
 // Cleanup state lives on globalThis: a reused worker (isolate: false) imports this file again per
 // test file, and one exit listener per process must see every folder any of those imports made.
-type Made = { dir: string; kind: "home" | "tmux" | "tmp"; root: string; env: "HOME" | "TMUX_TMPDIR" | "TMPDIR" };
+type Made = { dir: string; kind: "home" | "tmux" | "tmp"; root: string; env: "HOME" | "TMUX_TMPDIR" | "TMPDIR"; dev: number; ino: number };
 type State = { made: Made[]; orig?: Record<string, string | undefined>; live: boolean; hooked?: boolean };
 const KEY = Symbol.for("tandem.test.setup-home");
 const g = globalThis as unknown as Record<symbol, State>;
@@ -49,9 +49,11 @@ function removeTree(dir: string): void {
   chmodSync(dir, (st.mode & 0o7777) | 0o700);
   for (const name of readdirSync(dir)) removeTree(join(dir, name));
 }
-function killServer(socket: string): void {
+// Only a socket inside the made folder r (its realpath) with no link on the way: never a server elsewhere.
+function killServer(r: string, ...parts: string[]): void {
+  const socket = join(r, ...parts);
   try {
-    if (!lstatSync(socket).isSocket()) return;
+    if (realpathSync(socket) !== socket || !lstatSync(socket).isSocket()) return;
   } catch {
     return;
   }
@@ -65,14 +67,22 @@ function cleanup(): void {
   const uid = process.getuid?.() ?? "user";
   for (const m of state.made.splice(0)) {
     try {
+      // the very folder mkdtemp made (same device and inode, not a link put in its place)
+      const st = lstatSync(m.dir);
       const r = realpathSync(m.dir);
-      const ok = PREFIX[m.kind].test(basename(r)) && dirname(r) === realpathSync(m.root) && fold(r) !== home && !home.startsWith(fold(r) + sep);
-      if (!ok) continue;
-      if (m.kind === "tmux") killServer(join(m.dir, `tmux-${uid}`, "default"));
-      if (m.kind === "home") killServer(join(m.dir, ".tandem", "tmux", "tandem"));
+      const ok =
+        st.isDirectory() && st.dev === m.dev && st.ino === m.ino &&
+        PREFIX[m.kind].test(basename(r)) && dirname(r) === realpathSync(m.root) && fold(r) !== home && !home.startsWith(fold(r) + sep);
+      if (!ok) throw Object.assign(new Error("not its folder"), { code: "not its folder" });
+      if (m.kind === "tmux") killServer(r, `tmux-${uid}`, "default");
+      if (m.kind === "home") killServer(r, ".tandem", "tmux", "tandem");
       removeTree(r);
       rmSync(r, { recursive: true, force: true });
-    } catch {}
+    } catch (err) {
+      // gone already (a test removed it) is fine; anything else is a leak: say so, name only
+      const code = (err as NodeJS.ErrnoException).code ?? "error";
+      if (code !== "ENOENT") writeSync(2, `test/setup-home.ts could not remove the ${m.env} folder it made (${code})\n`);
+    }
     // the next file in a reused worker must never start from a removed folder
     if (state.orig && process.env[m.env] === m.dir) {
       const was = state.orig[m.env];
@@ -85,27 +95,32 @@ function cleanup(): void {
 if (!state.hooked) {
   state.hooked = true;
   process.on("exit", cleanup); // cleanup reads only the shared state, so the first import's copy serves all
-  // vitest stops its fork workers with SIGTERM, which skips "exit", and a file whose tests are all
-  // skipped never runs afterAll: clean up on SIGTERM too, then let the signal end the process as before.
-  const onTerm = (): void => {
+  // vitest stops its fork workers with SIGTERM and Ctrl-C sends SIGINT to every worker; neither runs
+  // "exit", and a file whose tests are all skipped never runs afterAll: clean up on these signals too,
+  // then let the signal end the process as before.
+  const onSignal = (sig: NodeJS.Signals): void => {
     cleanup();
-    process.off("SIGTERM", onTerm);
-    process.kill(process.pid, "SIGTERM");
+    process.off(sig, onSignal);
+    process.kill(process.pid, sig);
   };
-  process.on("SIGTERM", onTerm);
+  for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, onSignal);
 }
 if (process.env.VITEST) {
   const { afterAll } = await import("vitest");
   try {
     afterAll(cleanup);
-  } catch {} // a child node that only inherited VITEST has no current suite: its exit listener cleans up
+  } catch (err) {
+    // a child node that only inherited VITEST has no current suite: its exit listener cleans up
+    if (!String((err as Error)?.message).includes("failed to find the current suite")) throw err;
+  }
 }
 
 state.orig ??= { HOME: process.env.HOME, TMUX_TMPDIR: process.env.TMUX_TMPDIR, TMPDIR: process.env.TMPDIR };
 const TMP_ROOT = tmpdir(); // read before TMPDIR moves below; HOME and the tmux folder are made here
 const make = (kind: Made["kind"], env: Made["env"], root: string, prefix: string): string => {
   const dir = mkdtempSync(join(root, prefix)); // mkdtemp makes it mode 0700
-  state.made.push({ dir, kind, root, env });
+  const { dev, ino } = lstatSync(dir);
+  state.made.push({ dir, kind, root, env, dev, ino });
   return dir;
 };
 

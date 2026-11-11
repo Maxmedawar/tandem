@@ -436,4 +436,58 @@ describe("the setup removes what it made (TANDEM-B-TESTHOME-T2)", () => {
     expect(r.stderr.includes("test/setup-home.ts could not isolate HOME"), "failure names HOME").toBe(true);
     expect(r.stderr.includes("7f3a9c") || r.stderr.includes(b), "a value reached the failure output").toBe(false);
   });
+
+  // TANDEM-B-TESTHOME-T2 audit rows
+  it("(m) a made HOME swapped for a link to another run's tandem-test-home- folder in the same root: that folder stays", () => {
+    const b = box();
+    const victim = join(b, "tandem-test-home-other-run");
+    mkdirSync(victim);
+    writeFileSync(join(victim, "kept"), "k");
+    const r = probe({ TMPDIR: b }, `fs.rmSync(H, { recursive: true }); fs.symlinkSync(${JSON.stringify(victim)}, H);`);
+    expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+    expect(existsSync(join(victim, "kept")), "another run's folder removed through a swapped link").toBe(true);
+  });
+
+  it("(n) tmux is never called through a linked folder on the way to the socket (HOME/.tandem -> a folder outside)", () => {
+    const b = box();
+    const t = fakeTmux(b);
+    const outside = join(b, "outside-tandem");
+    mkdirSync(join(outside, "tmux"), { recursive: true });
+    const extra = [`fs.symlinkSync(${JSON.stringify(outside)}, H + "/.tandem");`, listen(JSON.stringify(join(outside, "tmux", "tandem")))].join("\n");
+    const r = probe({ TMPDIR: b, PATH: t.PATH }, extra);
+    expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+    expect(t.calls(), "tmux calls").toEqual([]);
+    expect(gone(r.out.HOME), "HOME left after exit").toBe(true);
+  });
+
+  it("(o) a folder it cannot remove gives one stderr line naming the variable, never the path", () => {
+    const b = box();
+    const r = probe({ TMPDIR: b }, 'fs.chmodSync((await import("node:path")).dirname(H), 0o500);');
+    chmodSync(b, 0o700);
+    expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+    expect(r.stderr, "removal failure reported").toMatch(/test\/setup-home\.ts could not remove the HOME folder it made \(EACCES\)/);
+    expect(r.stderr.includes(b), "a path reached the output").toBe(false);
+  });
+
+  it.each(["SIGINT", "SIGHUP"] as const)("(p) %s (Ctrl-C reaches every worker): the made folders are removed and the signal still ends the process", (sig) => {
+    const b = box();
+    const paths = join(b, "paths.json");
+    const script = [
+      "await import(process.argv[1]);",
+      `(await import("node:fs")).writeFileSync(${JSON.stringify(paths)}, JSON.stringify([process.env.HOME, process.env.TMUX_TMPDIR, process.env.TMPDIR]));`,
+      `process.kill(process.pid, "${sig}");`,
+      "setTimeout(() => {}, 10000);",
+    ].join("\n");
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script, SETUP_URL], {
+      env: { PATH: process.env.PATH ?? "", TMPDIR: b },
+      encoding: "utf8",
+      timeout: 20000,
+    });
+    expect(r.signal, `child ended by ${r.signal} status ${r.status} ${r.stderr}`).toBe(sig);
+    const made = JSON.parse(readFileSync(paths, "utf8")) as string[];
+    const left = made.filter((p) => !gone(p));
+    // a red run must not leave its stt- folder in the shared tmp root: only the one this child printed
+    for (const p of left) if (dirname(p) === SHORT && /^stt-/.test(basename(p))) rmSync(p, { recursive: true, force: true });
+    expect(left, `folders left after ${sig}`).toEqual([]);
+  });
 });
