@@ -1,0 +1,25 @@
+# OpenCode V2, program `opencode`, checked against 2.2.7 (its README, CHANGELOG and fish
+# completions; never run for this file). State rules adapted from kbwo/ccmanager
+# src/services/stateDetector/opencode.ts (MIT, see test/fixtures/screens/NOTICE); the same patterns
+# as test/fixtures/screens/harnesses/opencode.toml. idle is a positive match of the composer's
+# bottom edge with the `ctrl+p commands` hint under it (real 2.2.7 capture,
+# test/fixtures/screens/opencode-idle-real.txt). `--standalone` keeps OpenCode's server inside the
+# session, so a session never starts or shares OpenCode's background service. `--auto` is used
+# only in a permission_skip folder. delivery is `notice`: OpenCode has no hook Tandem can set
+# without writing a plugin into OpenCode's own config, which Tandem never does. interrupt is
+# Escape; Ctrl+C is not used.
+name = "opencode"
+program = "opencode"
+args = ["--standalone"]
+has_prompts = true
+skip_prompts_args = ["--auto"]
+resume = ["--session", "{id}"]
+delivery = "notice"
+
+[states]
+waiting_for_approval = ['△ Permission required', 'esc (?:dismiss|close)']
+working = ['(?i)esc.*interrupt']
+idle = ['╹▀+\n[^\n]*ctrl\+p commands']
+
+[keys]
+interrupt = ["Escape"]
