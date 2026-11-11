@@ -48,6 +48,9 @@ const BLAST_RADIUS =
 
 type RpcMethod = 'GET' | 'POST'
 
+/** Any agent name (the harness name rule of harnesses/SCHEMA.md); the bridge decides. */
+const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
+
 /** Shared description for the optional `machine` selector on every session/relay tool. */
 const MACHINE_DESC =
   'Which Mac to run on, e.g. "laptop" or "desktop". If omitted, uses the only ' +
@@ -88,8 +91,8 @@ export class TandemMcp extends McpAgent<Env> {
             .describe('Maximum sessions to return (default 20).'),
           project: z.string().optional()
             .describe('Optional project/cwd substring filter.'),
-          engine: z.enum(['claude', 'codex', 'grok', 'gemini', 'shell', 'hermes', 'terminal', 'all']).optional()
-            .describe('Filter by engine (default "all"). "terminal" is an alias for bare-shell panes.'),
+          engine: z.string().regex(AGENT_NAME).optional()
+            .describe('Filter by engine: any agent name (default "all"). "terminal" is an alias for bare-shell panes.'),
           machine: z.string().optional().describe(MACHINE_DESC),
         },
       },
@@ -119,8 +122,8 @@ export class TandemMcp extends McpAgent<Env> {
             .describe('Short session name (A-Z a-z 0-9 . _ -). Becomes tmux "ccm-<name>". Auto-generated if omitted.'),
           cwd: z.string().optional()
             .describe('Working directory to launch in. Must be on the bridge allowlist (default $HOME).'),
-          engine: z.enum(['claude', 'codex', 'grok', 'gemini', 'shell']).optional()
-            .describe('Engine to launch (default "claude"): the claude / codex / grok / gemini CLI (all on the owner\'s own subscription, no API), or "shell" for a bare login shell.'),
+          engine: z.string().regex(AGENT_NAME).optional()
+            .describe('Engine to launch (default "claude"): any agent name, e.g. the claude / codex / grok / gemini CLI (all on the owner\'s own subscription, no API), or "shell" for a bare login shell. The bridge refuses an unknown or disabled one.'),
           machine: z.string().optional().describe(MACHINE_DESC),
         },
       },
@@ -157,8 +160,8 @@ export class TandemMcp extends McpAgent<Env> {
             .describe('Name of a live session: the id from list_sessions (a ccm- bare name, a live tmux pane\'s real name, or a Hermes session id).'),
           text: z.string()
             .describe('The instruction / command line to type into the session.'),
-          engine: z.enum(['claude', 'codex', 'grok', 'gemini', 'shell', 'hermes']).optional()
-            .describe('Optional engine hint. Use "hermes" to drive a Hermes WebUI agent session by id; tmux hints help when adopting an unknown pane.'),
+          engine: z.string().regex(AGENT_NAME).optional()
+            .describe('Optional engine hint: any agent name. Use "hermes" to drive a Hermes WebUI agent session by id; tmux hints help when adopting an unknown pane.'),
           waitForTurn: z.boolean().optional()
             .describe('Block until the turn completes (default true). The bridge always caps the wait and may return status:"running".'),
           machine: z.string().optional().describe(MACHINE_DESC),
@@ -197,8 +200,8 @@ export class TandemMcp extends McpAgent<Env> {
           name: z.string().describe('Name of the session to read (id from list_sessions).'),
           sinceCursor: z.number().int().nonnegative().optional()
             .describe('Cursor (byte offset / message index) from a previous read/send; returns only newer transcript.'),
-          engine: z.enum(['claude', 'codex', 'grok', 'gemini', 'shell', 'hermes']).optional()
-            .describe('Optional engine hint. Use "hermes" to read a Hermes session by id; tmux hints help when adopting an unknown pane.'),
+          engine: z.string().regex(AGENT_NAME).optional()
+            .describe('Optional engine hint: any agent name. Use "hermes" to read a Hermes session by id; tmux hints help when adopting an unknown pane.'),
           machine: z.string().optional().describe(MACHINE_DESC),
         },
       },

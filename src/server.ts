@@ -52,8 +52,11 @@ let startConfiguredHubLink: (() => { close(): Promise<void> }) | undefined;
 if (process.env.TANDEM_HUB_LINK_URL) {
   try {
     const { hubLinkConfigFromEnv, startHubLink } = await import("../bridge/hub-link.ts");
+    const { handleHubRequest } = await import("../bridge/hub-rpc.ts");
     const hubLinkConfig = hubLinkConfigFromEnv(process.env);
-    if (hubLinkConfig) startConfiguredHubLink = () => startHubLink(hubLinkConfig);
+    // The config holds the secret now. Out of the environment, so no session this process starts inherits it.
+    delete process.env.TANDEM_HUB_LINK_TOKEN;
+    if (hubLinkConfig) startConfiguredHubLink = () => startHubLink(hubLinkConfig, { handleRequest: handleHubRequest });
   } catch {
     console.error("tandem will not start: hub link configuration is invalid");
     process.exit(1);

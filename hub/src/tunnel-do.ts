@@ -216,10 +216,16 @@ export class TunnelDO extends DurableObject<Env> {
       headers: headersToTunnel(request.headers),
       ...(body !== undefined ? { body_base64: body } : {}),
     }
+    // Measured after base64 and serialization: a frame over the bridge's cap would
+    // drop the bridge's socket and every session on it.
+    const serialized = serializeFrame(frame)
+    if (new TextEncoder().encode(serialized).byteLength > WS_MAX_FRAME_BYTES) {
+      return json({ error: 'payload_too_large' }, 413)
+    }
 
     const responsePromise = this.awaitResponse(requestId)
     try {
-      socket.send(serializeFrame(frame))
+      socket.send(serialized)
     } catch {
       this.failPending(requestId, 503, 'bridge_send_failed')
     }
