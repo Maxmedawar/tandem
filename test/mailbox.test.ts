@@ -430,7 +430,7 @@ describe('(g) path and modes', () => {
       expect(statSync(join(th, 'state.db')).mode & 0o777).toBe(0o600)
       delete process.env.TANDEM_HOME
       const home = join(homedir(), '.tandem')
-      expect(homedir().startsWith(tmpdir())).toBe(true) // setup-home.ts: never the real home
+      expect(homedir() !== process.getBuiltinModule('node:os').userInfo().homedir && join(homedir(), '..') !== process.getBuiltinModule('node:os').userInfo().homedir && /^tandem-test-home-/.test(homedir().split(/[\\/]/).pop() ?? '')).toBe(true) // setup-home.ts: never the real home
       const box = openMailbox()
       box.send({ from: 'owner', to: 'g', level: 'fyi', text: 'here' })
       box.close()
