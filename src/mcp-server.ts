@@ -308,7 +308,7 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
     server.registerTool(
       "who_is_up",
       {
-        description: "Read-only. Who is up on this computer: every session Tandem runs here with its agent (engine), project, folder (cwd) and state (working, idle, waiting_for_approval or unknown), the time that state was read (stateAt, ms since the epoch) and its age (ageMs). Returns { computer, at, ageMs, sessions: [{ name, engine, project, cwd, state, stateAt, ageMs }] }, a reading at most 10 seconds old; refresh: true reads every screen first; no terminal text is returned.",
+        description: "Read-only. Who is up on this computer: every session Tandem runs here with its agent (engine), project, folder (cwd) and state (working, idle, waiting_for_approval or unknown), the time that state was read (stateAt, ms since the epoch) and its age (ageMs). Returns { computer, at, ageMs, sessions: [{ name, engine, project, cwd, state, stateAt, ageMs }] }, a reading at most 10 seconds old; refresh: true reads every screen first; no terminal text is returned. With a roster holding the owner's other computers it also returns others: [{ computer, at, ageMs, stale, sessions: [{ name, engine, project, state, stateAt, ageMs }], more }], each computer's last signed reading received through the hub with its age, stale true when it is over 30 seconds old or that computer is not connected to the hub (at null when none was received); no folder paths are shown for other computers.",
         inputSchema: { refresh: z.boolean().optional().describe("true reads every screen first instead of answering the last reading.") },
       },
       async ({ refresh }) => wrap({ status: 200, body: await presence.whoIsUp({ refresh }) }),

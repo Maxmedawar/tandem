@@ -11,13 +11,19 @@
  *
  * Heartbeat: a reading younger than HEARTBEAT_MS is answered again (only ageMs grows); at
  * HEARTBEAT_MS or older, or with refresh, it reads first. Calls that arrive while a reading is
- * under way share it. No timer runs between calls; the push and the stale rule arrive with
- * U-R1A-33 (presence across computers).
+ * under way share it. No timer runs between calls.
+ *
+ * Other computers (U-R1A-33B-3): with a roster holding another computer, the answer also has
+ * `others`, what this computer last received from each of them through the hub
+ * (bridge/hub-presence.ts readRemotePresence), read at each call, never cached by the heartbeat;
+ * their rows carry no folder. With no roster, or a roster of this computer alone, the answer is
+ * as before. A remote read that throws gives `others: []` and one stderr line, never a failed call.
  */
 import { hostname } from 'node:os'
 import { readInput } from './input-gate.ts'
 import { deriveBridgeId } from './hub-link.ts'
 import { getLive, listSessions, type SessionInfo } from './sessions.ts'
+import { readRemotePresence, type RemoteReading } from './hub-presence.ts'
 
 export type { SessionInfo }
 export const HEARTBEAT_MS = 10_000
@@ -25,8 +31,12 @@ export const HEARTBEAT_MS = 10_000
 export type PresenceState = 'working' | 'idle' | 'waiting_for_approval' | 'unknown'
 export interface PresenceRow { name: string; engine: string; project: string; cwd: string; state: PresenceState; stateAt: number; ageMs: number }
 /** Times are ms since the epoch; `at` is the reading's time and each ageMs is now minus it. */
-export interface PresenceAnswer { computer: string; at: number; ageMs: number; sessions: PresenceRow[] }
-export interface Presence { whoIsUp(opts?: { refresh?: boolean }): Promise<PresenceAnswer> }
+export interface PresenceAnswer { computer: string; at: number; ageMs: number; sessions: PresenceRow[]; others?: RemoteReading[] }
+export interface Presence {
+  whoIsUp(opts?: { refresh?: boolean }): Promise<PresenceAnswer>
+  /** The session names, sorted, from one list (no screen read): the hub carrier pushes when they change. */
+  names(): Promise<string[]>
+}
 
 const STATES: ReadonlySet<string> = new Set(['working', 'idle', 'waiting_for_approval'])
 type Reading = { at: number; rows: Omit<PresenceRow, 'ageMs'>[] }
@@ -36,11 +46,14 @@ export function createPresence(options: {
   list?: () => Promise<SessionInfo[]>
   live?: (name: string) => object | undefined
   computer?: string
+  /** Test seam: the other computers' readings (default readRemotePresence on state.db). */
+  remote?: { read(): RemoteReading[] }
 } = {}): Presence {
   const now = options.now ?? Date.now
   const list = options.list ?? (async () => (await listSessions({ limit: Number.MAX_SAFE_INTEGER })).sessions)
   const live = options.live ?? getLive
   const computer = options.computer ?? deriveBridgeId(process.env.TANDEM_HUB_LINK_ID, hostname())
+  const remote = options.remote ?? { read: () => readRemotePresence({ now, self: computer }) }
   let last: Reading | undefined
   let under: Promise<Reading> | undefined
 
@@ -73,7 +86,20 @@ export function createPresence(options: {
       }
       const t = now()
       const { at, rows } = last
-      return { computer, at, ageMs: t - at, sessions: rows.map((r) => ({ ...r, ageMs: t - r.stateAt })) }
+      const answer: PresenceAnswer = { computer, at, ageMs: t - at, sessions: rows.map((r) => ({ ...r, ageMs: t - r.stateAt })) }
+      let others: RemoteReading[]
+      try {
+        others = remote.read()
+      } catch {
+        process.stderr.write('who_is_up: the other computers could not be read\n')
+        others = []
+        answer.others = others
+      }
+      if (others.length > 0) answer.others = others
+      return answer
+    },
+    async names() {
+      return (await list()).map((s) => s.id).sort()
     },
   }
 }
