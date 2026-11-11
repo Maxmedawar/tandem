@@ -7,7 +7,7 @@
 import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
 import type { IncomingMessage } from 'node:http'
-import type { AddressInfo } from 'node:net'
+import { createServer, type AddressInfo, type Socket } from 'node:net'
 import { hostname } from 'node:os'
 import { WebSocketServer, type WebSocket } from 'ws'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -17,7 +17,9 @@ import {
   hubLinkConfigFromEnv,
   isTunnelStale,
   LIVENESS_TIMEOUT_MS,
+  MAX_BUFFERED_BYTES,
   MAX_FRAME_BYTES,
+  MAX_IN_FLIGHT,
   planReconnect,
   RECONNECT_BASE_MS,
   RECONNECT_MAX_MS,
@@ -49,6 +51,7 @@ const hubs: WebSocketServer[] = []
 const links: Link[] = []
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   await Promise.all(links.splice(0).map((link) => link.close()))
   for (const server of hubs.splice(0)) {
     for (const client of server.clients) client.terminate()
@@ -288,6 +291,7 @@ describe('the hub link dial', () => {
         } else echoHeartbeats(connection)
       },
     })
+    vi.spyOn(Math, 'random').mockReturnValue(0) // no jitter: the planned delays exactly
     const lines: string[] = []
     start(hub.url, {}, lines)
     await vi.waitFor(() => expect(delays(lines).length).toBeGreaterThanOrEqual(4), WAIT)
@@ -298,6 +302,7 @@ describe('the hub link dial', () => {
 
   it('a 401 refusal causes redials with growing delays', async () => {
     const hub = await startHub({ refuse: 401 })
+    vi.spyOn(Math, 'random').mockReturnValue(0) // no jitter: the planned delays exactly
     const lines: string[] = []
     const link = start(hub.url, {}, lines)
     await vi.waitFor(() => expect(hub.dials.length).toBeGreaterThanOrEqual(5), WAIT)
@@ -367,6 +372,103 @@ describe('the hub link dial', () => {
     expect(response.status_code).toBe(503)
     expect(response.headers).toEqual({ 'content-type': ['application/json'] })
     expect(JSON.parse(Buffer.from(response.body_base64 ?? '', 'base64').toString())).toEqual({ error: 'bridge_not_ready' })
+  })
+
+  it('each redial wait takes up to 20% off the planned delay, never more than the plan', async () => {
+    const hub = await startHub({ refuse: 401 })
+    vi.spyOn(Math, 'random').mockReturnValue(0.999)
+    const lines: string[] = []
+    start(hub.url, {}, lines)
+    await vi.waitFor(() => expect(delays(lines).length).toBeGreaterThanOrEqual(4), WAIT)
+    expect(delays(lines).slice(0, 4)).toEqual([16, 32, 64, 128])
+  })
+
+  it('a hub that takes the connection but never answers the upgrade is redialled after the dial timeout', async () => {
+    const sockets: Socket[] = []
+    const sink = createServer((socket) => void sockets.push(socket))
+    sink.listen(0, '127.0.0.1')
+    await once(sink, 'listening')
+    const lines: string[] = []
+    const link = start(`ws://127.0.0.1:${(sink.address() as AddressInfo).port}`, {}, lines)
+    await vi.waitFor(() => expect(sockets.length).toBeGreaterThanOrEqual(2), WAIT)
+    expect(lines.some((line) => line.includes('dial timed out'))).toBe(true)
+    await link.close()
+    for (const socket of sockets) socket.destroy()
+    sink.close()
+  })
+
+  it('a hub redirect is not followed, so the token never goes to another address', async () => {
+    const target = await startHub()
+    const redirector = createServer((socket) => {
+      socket.end(`HTTP/1.1 302 Found\r\nLocation: ${target.url}/__tunnel/connect\r\nContent-Length: 0\r\n\r\n`)
+    })
+    redirector.listen(0, '127.0.0.1')
+    await once(redirector, 'listening')
+    const lines: string[] = []
+    const link = start(`ws://127.0.0.1:${(redirector.address() as AddressInfo).port}`, {}, lines)
+    await vi.waitFor(() => expect(delays(lines).length).toBeGreaterThanOrEqual(2), WAIT)
+    expect(target.dials).toHaveLength(0)
+    expect(link.connected()).toBe(false)
+    await link.close()
+    redirector.close()
+  })
+
+  it('a handler that throws synchronously gets a 500, and one that returns a plain value is answered', async () => {
+    const hub = await startHub()
+    start(hub.url, {
+      handleRequest: ((frame: CcmHttpRequestFrame) => {
+        if (frame.request_id === 'throws') throw new Error('sync failure')
+        return { type: CCM_FRAME_TYPES.httpResponse, request_id: frame.request_id, status_code: 200 }
+      }) as unknown as (frame: CcmHttpRequestFrame) => Promise<CcmHttpResponseFrame>,
+    })
+    await vi.waitFor(() => expect(hub.conns[0]?.frames.length ?? 0).toBeGreaterThan(0), WAIT)
+    hub.conns[0].socket.send(JSON.stringify(requestFrame('throws')))
+    hub.conns[0].socket.send(JSON.stringify(requestFrame('plain')))
+    await vi.waitFor(() => expect(responseFrames(hub.conns[0])).toHaveLength(2), WAIT)
+    const status = Object.fromEntries(responseFrames(hub.conns[0]).map((frame) => [frame.request_id, frame.status_code]))
+    expect(status).toEqual({ throws: 500, plain: 200 })
+    expect(hub.conns).toHaveLength(1)
+  })
+
+  it('a handler error that quotes the token is logged without it', async () => {
+    const hub = await startHub()
+    const lines: string[] = []
+    start(hub.url, { handleRequest: async () => { throw new Error(`upstream echoed ${TOKEN}`) } }, lines)
+    await vi.waitFor(() => expect(hub.conns[0]?.frames.length ?? 0).toBeGreaterThan(0), WAIT)
+    hub.conns[0].socket.send(JSON.stringify(requestFrame('r-3')))
+    await vi.waitFor(() => expect(responseFrames(hub.conns[0])).toHaveLength(1), WAIT)
+    expect(responseFrames(hub.conns[0])[0].status_code).toBe(500)
+    expect(lines.some((line) => line.includes('request handler failed'))).toBe(true)
+    expectNoToken(lines)
+  })
+
+  it('past MAX_IN_FLIGHT running requests, a request is answered 503 bridge_busy', async () => {
+    const hub = await startHub()
+    let calls = 0
+    start(hub.url, { handleRequest: () => { calls++; return new Promise(() => {}) } })
+    await vi.waitFor(() => expect(hub.conns[0]?.frames.length ?? 0).toBeGreaterThan(0), WAIT)
+    for (let i = 0; i < MAX_IN_FLIGHT + 5; i++) hub.conns[0].socket.send(JSON.stringify(requestFrame(`q-${i}`)))
+    await vi.waitFor(() => expect(responseFrames(hub.conns[0])).toHaveLength(5), WAIT)
+    expect(calls).toBe(MAX_IN_FLIGHT)
+    for (const frame of responseFrames(hub.conns[0])) {
+      expect(frame.status_code).toBe(503)
+      expect(JSON.parse(Buffer.from(frame.body_base64 ?? '', 'base64').toString())).toEqual({ error: 'bridge_busy' })
+    }
+  })
+
+  it('a hub that stops reading is dropped before unsent replies pile up', async () => {
+    const hub = await startHub({ onConnection: (connection) => void connection.socket.pause() })
+    const body = Buffer.alloc(512 * 1024).toString('base64')
+    const lines: string[] = []
+    start(hub.url, {
+      timing: { ...TIMING, livenessMs: 60_000 }, // so only the buffer cap can end this session
+      handleRequest: async (frame) => ({ type: CCM_FRAME_TYPES.httpResponse, request_id: frame.request_id, status_code: 200, body_base64: body }),
+    }, lines)
+    await vi.waitFor(() => expect(hub.conns).toHaveLength(1), WAIT)
+    const count = Math.ceil((3 * MAX_BUFFERED_BYTES) / body.length)
+    for (let i = 0; i < count; i++) hub.conns[0].socket.send(JSON.stringify(requestFrame(`b-${i}`)))
+    await vi.waitFor(() => expect(hub.conns).toHaveLength(2), WAIT)
+    expect(lines.some((line) => line.includes('not reading'))).toBe(true)
   })
 
   it('after close() there are no more dials', async () => {

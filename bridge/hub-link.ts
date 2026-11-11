@@ -25,6 +25,10 @@ import { DEFAULT_BRIDGE_ID, slugifyBridgeId } from '../hub/src/bridge-id.ts'
 
 /** Inbound frame ceiling; the hub's WS_MAX_FRAME_BYTES (hub/src/frame-size.ts) is the same number. */
 export const MAX_FRAME_BYTES = 1_048_576
+/** Hub requests the link runs at once; past this, a request is answered 503 bridge_busy. */
+export const MAX_IN_FLIGHT = 64
+/** Unsent bytes a socket may hold before the link drops it: the hub has stopped reading. */
+export const MAX_BUFFERED_BYTES = 8 * MAX_FRAME_BYTES
 
 /** How often the bridge sends a heartbeat; the hub echoes each one. */
 export const HEARTBEAT_MS = 25_000
@@ -188,7 +192,10 @@ function describeError(ev: unknown): string {
 export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): HubLink {
   const origin = hubOrigin(config.url)
   const handleRequest = opts.handleRequest ?? notReady
-  const log = opts.log ?? ((line: string) => void process.stderr.write(`${line}\n`))
+  const writeLog = opts.log ?? ((line: string) => void process.stderr.write(`${line}\n`))
+  // The token never reaches a log line, whatever a handler or library error says.
+  const log = (line: string) => writeLog(config.token ? line.split(config.token).join('[redacted]') : line)
+  let inFlight = 0
   const t: HubLinkTiming = {
     baseMs: RECONNECT_BASE_MS,
     maxMs: RECONNECT_MAX_MS,
@@ -222,6 +229,11 @@ export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): 
       let lastRecvAt = Date.now()
 
       const send = (frame: CcmFrame) => {
+        if (ws.bufferedAmount > MAX_BUFFERED_BYTES) {
+          log('hub link: hub is not reading; reconnecting')
+          settle()
+          return
+        }
         try {
           ws.send(serializeFrame(frame))
         } catch {
@@ -263,13 +275,25 @@ export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): 
         lastRecvAt = Date.now()
         const frame = parseAnyFrame(data)
         if (frame?.type !== CCM_FRAME_TYPES.httpRequest) return
-        handleRequest(frame).then(
-          (response) => send({ ...response, request_id: frame.request_id }),
-          (error: unknown) => {
-            log(`hub link: request handler failed: ${describeError(error)}`)
-            send(jsonResponse(frame.request_id, 500, { error: 'internal_error' }))
-          },
-        )
+        if (inFlight >= MAX_IN_FLIGHT) {
+          send(jsonResponse(frame.request_id, 503, { error: 'bridge_busy' }))
+          return
+        }
+        inFlight++
+        // Called inside then(): a handler that throws synchronously, or returns a
+        // plain value, cannot escape into the socket's event loop and crash the process.
+        Promise.resolve()
+          .then(() => handleRequest(frame))
+          .then(
+            (response) => send({ ...response, request_id: frame.request_id }),
+            (error: unknown) => {
+              log(`hub link: request handler failed: ${describeError(error)}`)
+              send(jsonResponse(frame.request_id, 500, { error: 'internal_error' }))
+            },
+          )
+          .finally(() => {
+            inFlight--
+          })
       })
       ws.on('close', () => {
         if (!settled) log('hub link: closed')
@@ -293,9 +317,11 @@ export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): 
       }
       if (stopped) break
       const { delayMs, nextBackoffMs } = planReconnect(backoffMs, { established, upMs: Date.now() - startedAt }, t)
-      log(`hub link: reconnecting in ${delayMs}ms`)
+      // Up to 20% off the planned wait, never above it, so bridges dropped together do not redial together.
+      const waitMs = Math.round(delayMs * (1 - 0.2 * Math.random()))
+      log(`hub link: reconnecting in ${waitMs}ms`)
       await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, delayMs)
+        const timer = setTimeout(resolve, waitMs)
         wake = () => {
           clearTimeout(timer)
           resolve()
