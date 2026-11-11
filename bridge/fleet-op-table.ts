@@ -66,6 +66,6 @@ export async function executeLocalOp(op: FleetOp, payload: LocalOpPayload): Prom
     case 'close':
       return routeForTest('POST', `/sessions/${encodeURIComponent(payload.sessionId ?? '')}/close`)
     case 'list_sessions':
-      return routeForTest('GET', '/sessions', {}, buildQuery({ limit: payload.limit, project: payload.project }))
+      return routeForTest('GET', '/sessions', {}, buildQuery({ limit: payload.limit, project: payload.project, engine: payload.engine }))
   }
 }

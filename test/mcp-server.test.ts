@@ -1,4 +1,4 @@
-import { describe, it, expect, afterAll, beforeEach } from "vitest";
+import { describe, it, expect, afterAll, beforeEach, vi } from "vitest";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,6 +6,19 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildMcpServer } from "../src/mcp-server.ts";
 import { resetHarnessCache } from "../bridge/engine-registry.ts";
+
+// The session listing is stubbed (as in test/router-filter-audit.test.ts): claude, shell and
+// codex rows, sliced to the limit like the real one; no tmux.
+const ROWS = vi.hoisted(() => [
+  { id: "c1", engine: "claude" },
+  { id: "s1", engine: "shell" },
+  { id: "x1", engine: "codex" },
+  { id: "s2", engine: "shell" },
+]);
+vi.mock("../bridge/sessions.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../bridge/sessions.ts")>()),
+  listSessions: async (opts: { limit?: number } = {}) => ({ sessions: ROWS.slice(0, opts.limit ?? 20) }),
+}));
 
 // Owner harness files load from $TANDEM_HOME/harnesses: an empty home here, so only the
 // harness test below adds an engine name.
@@ -18,7 +31,7 @@ afterAll(() => {
 });
 
 async function engineEnum(): Promise<string[] | undefined> {
-  const server = buildMcpServer();
+  const server = await buildMcpServer();
   const client = new Client({ name: "test", version: "0.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -45,7 +58,7 @@ const EXPECTED_TOOLS = [
 
 describe("buildMcpServer (shared tool surface)", () => {
   it("registers exactly the 7 tools (6 consolidated + Phase 3 list_devices)", async () => {
-    const server = buildMcpServer();
+    const server = await buildMcpServer();
     const client = new Client({ name: "test", version: "0.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -61,7 +74,7 @@ describe("buildMcpServer (shared tool surface)", () => {
   // the tool count/names above (binding — Phase 2 outline: "do not change the
   // number or names of MCP tools").
   it("open_session exposes an optional engine enum: claude|codex|shell|hermes", async () => {
-    const server = buildMcpServer();
+    const server = await buildMcpServer();
     const client = new Client({ name: "test", version: "0.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
@@ -94,5 +107,21 @@ describe("buildMcpServer (shared tool surface)", () => {
     }
     resetHarnessCache();
     expect((await engineEnum())?.slice().sort()).toEqual(["claude", "codex", "hermes", "shell"]);
+  });
+
+  it("local list_sessions takes engine: 'shell' and returns only shell rows", async () => {
+    const server = await buildMcpServer();
+    const client = new Client({ name: "test", version: "0.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    try {
+      const result = await client.callTool({ name: "list_sessions", arguments: { engine: "shell" } });
+      const text = (result.content as { type: string; text: string }[])[0].text;
+      const rows = (JSON.parse(text) as { sessions: { id: string; engine: string }[] }).sessions;
+      expect(rows.map((row) => row.id)).toEqual(["s1", "s2"]);
+    } finally {
+      await client.close();
+      await server.close();
+    }
   });
 });

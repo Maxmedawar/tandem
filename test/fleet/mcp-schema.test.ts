@@ -20,7 +20,7 @@ function fakeSocket(): FleetSocket {
 }
 
 async function connectedClient(fleet?: FleetRuntime) {
-  const server = buildMcpServer(fleet);
+  const server = await buildMcpServer(fleet);
   const client = new Client({ name: "test", version: "0.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);

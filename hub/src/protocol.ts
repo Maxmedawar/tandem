@@ -14,6 +14,7 @@
  */
 
 import { z } from 'zod'
+import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
 /** WebSocket subprotocol negotiated on connect. */
 export const CCM_TUNNEL_SUBPROTOCOL = 'tandem-tunnel-v1'
@@ -44,6 +45,8 @@ const httpRequestFrameSchema = z.object({
   raw_query: z.string().optional(),
   headers: headersSchema,
   body_base64: z.string().optional(),
+  /** Set only by TunnelDO on its /__fabric-rpc route; the bridge's fabric router requires it. */
+  trusted_surface: z.literal(FABRIC_MCP_TRUST).optional(),
 })
 
 const httpResponseFrameSchema = z.object({

@@ -17,7 +17,9 @@
  * The tool surface contains seven tools. read_session is folded into
  * send_to_session (empty text = poll mode); the four relay tools are folded into
  * one `relay` tool with an `action`. The underlying routes are unchanged, so the
- * full capability set remains reachable.
+ * full capability set remains reachable. With a fabric store (the entry point's
+ * own, opened when CCM_FABRIC_ENABLED=1) the 11 room, memory and project tools are
+ * added; they reach the same fabric router the hub's calls reach, as the hub's owner.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -29,6 +31,10 @@ import {
   dispatchSessionOp,
 } from "../bridge/fleet-dispatch.ts";
 import { createFleetRuntime, type FleetRuntime } from "../bridge/fleet-runtime.ts";
+import { routeFabricRpc } from "../bridge/fabric/rpc-router.ts";
+import type { LocalFabricHost } from "../bridge/fabric/local-fabric-host.ts";
+import { configureFabricTools, type FabricToolServer } from "./fabric/mcp-tools.ts";
+import { FABRIC_MCP_TRUST } from "./fabric/rpc-contract.ts";
 import { isBuiltinEngine, KNOWN_ENGINE_IDS, loadedHarnesses } from "../bridge/engine-registry.ts";
 import { ICON_MIME, ICON_DATA_URI } from "./icon.ts";
 
@@ -75,7 +81,7 @@ function wrap(result: { status: number; body: unknown }) {
  * resolution rules). The stdio transport uses a local-only runtime, so callers
  * get the same device-aware schema without opening a network listener.
  */
-export function buildMcpServer(fleet?: FleetRuntime): McpServer {
+export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricHost): Promise<McpServer> {
   const runtime = fleet ?? createFleetRuntime({});
   // `icons` rides in the server's implementation info (a self-contained data:
   // URI, so no public URL is needed). A spec-aware client renders the Tandem
@@ -121,10 +127,11 @@ export function buildMcpServer(fleet?: FleetRuntime): McpServer {
     {
       limit: z.number().int().positive().optional(),
       project: z.string().optional(),
+      engine: z.string().optional().describe("Only this agent's sessions (\"terminal\" means shell; \"all\" or omitted keeps every row)."),
       device: z.string().optional().describe("Fleet device id to list, or omit for local."),
     },
-    async ({ limit, project, device }) => {
-      return wrap(await dispatchListSessions(runtime, device, { limit, project }));
+    async ({ limit, project, engine, device }) => {
+      return wrap(await dispatchListSessions(runtime, device, { limit, project, engine }));
     },
   );
 
@@ -208,6 +215,19 @@ export function buildMcpServer(fleet?: FleetRuntime): McpServer {
       }
     },
   );
+
+  /* ---- rooms, memory and projects (only with a fabric store) ---- */
+
+  if (fabric) {
+    // 'owner' is the hub's single user, so the derived owner (and every project and
+    // memory) is the same whether a call comes through the hub or this server.
+    await configureFabricTools(server as unknown as FabricToolServer, {
+      enabled: "1",
+      oauthSubject: "owner",
+      rpc: async (path, body) =>
+        (await routeFabricRpc({ trust: FABRIC_MCP_TRUST, client: fabric.client, method: "POST", path, body })).body,
+    });
+  }
 
   return server;
 }

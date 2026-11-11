@@ -46,6 +46,12 @@ if (fleetToken && (!Number.isInteger(fleetPort) || fleetPort < 0 || fleetPort > 
   process.exit(1);
 }
 
+// The fabric store (rooms, memory, projects): opened once for this process, before the
+// hub link and the OAuth server that use it, and only when CCM_FABRIC_ENABLED=1. It never
+// stops the bridge from starting; shutdown closes it.
+const { startFabric } = await import("../bridge/fabric/local-fabric-host.ts");
+const fabric = await startFabric();
+
 // The link module (and the hub wire code it imports) loads only when the link is
 // configured, so with the URL unset nothing new is loaded or started.
 let startConfiguredHubLink: (() => { close(): Promise<void> }) | undefined;
@@ -56,7 +62,7 @@ if (process.env.TANDEM_HUB_LINK_URL) {
     const hubLinkConfig = hubLinkConfigFromEnv(process.env);
     // The config holds the secret now. Out of the environment, so no session this process starts inherits it.
     delete process.env.TANDEM_HUB_LINK_TOKEN;
-    if (hubLinkConfig) startConfiguredHubLink = () => startHubLink(hubLinkConfig, { handleRequest: handleHubRequest });
+    if (hubLinkConfig) startConfiguredHubLink = () => startHubLink(hubLinkConfig, { handleRequest: (frame) => handleHubRequest(frame, fabric) });
   } catch {
     console.error("tandem will not start: hub link configuration is invalid");
     process.exit(1);
@@ -79,7 +85,7 @@ try {
   const { loadOAuthConfigFromEnv } = await import("./auth-config.ts");
   const config = loadOAuthConfigFromEnv();
   const { startOAuthServer } = await import("./public-server.ts");
-  publicHandle = await startOAuthServer({ host: publicHost, port: publicPort, config, fleet: fleetRuntime });
+  publicHandle = await startOAuthServer({ host: publicHost, port: publicPort, config, fleet: fleetRuntime, fabric });
 
   if (fleetToken) {
     const { startPrivateFleetServer } = await import("../bridge/fleet-private-server.ts");
@@ -125,6 +131,11 @@ async function shutdown(signal: string): Promise<void> {
     privateHandle?.close() ?? Promise.resolve(),
     hubLink?.close() ?? Promise.resolve(),
   ]);
+  try {
+    fabric?.close();
+  } catch {
+    /* exiting anyway */
+  }
   process.exit(results.some((result) => result.status === "rejected") ? 1 : 0);
 }
 

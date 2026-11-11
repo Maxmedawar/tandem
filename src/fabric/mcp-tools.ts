@@ -172,17 +172,6 @@ const paths: Record<keyof typeof definitions, string> = {
   memory_promote: '/fabric/memory/promote',
 }
 
-/**
- * Naming the device an operation is meant for.
- *
- * A fabric belongs to an owner, not to a machine, so most operations do not
- * care where they run. This exists for the ones that do - reading a room from
- * the device that has been online for it, or writing on the machine whose
- * agents are working - and it is carried to that device over the owner's own
- * mesh rather than through anything in between.
- */
-const deviceParameter = z.string().min(1).max(MAX_IDENTIFIER_BYTES).optional()
-
 const inputKeys: Record<keyof typeof definitions, readonly string[]> = {
   project_create: ['displayName', 'repoRef', 'workspaceRef', 'memberAgentIds', 'retention'],
   project_list: [],
@@ -219,18 +208,13 @@ export async function configureFabricTools(
   }
 
   for (const name of Object.keys(definitions) as Array<keyof typeof definitions>) {
-    const definition = {
-      ...definitions[name],
-      inputSchema: { ...definitions[name].inputSchema, device: deviceParameter },
-    }
-    server.registerTool(name, definition, async args => {
+    server.registerTool(name, definitions[name], async args => {
       try {
         const input = pickDefined(args, inputKeys[name])
         const machineValue = typeof args.machine === 'string' ? args.machine : undefined
-        const device = typeof args.device === 'string' ? args.device : undefined
         const result = await options.rpc(
           paths[name],
-          Object.freeze({ caller, input: Object.freeze(input), ...(device === undefined ? {} : { device }) }),
+          Object.freeze({ caller, input: Object.freeze(input) }),
           machineValue,
         )
         return { content: [{ type: 'text', text: JSON.stringify(result) }] }
