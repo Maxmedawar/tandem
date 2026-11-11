@@ -1117,3 +1117,190 @@ describe('(k) 31B-2 ordering, sweep, clear', () => {
     expect(tandem(z, 'roster', 'bogus').err).toContain('tandem roster clear')
   }, 120_000)
 })
+
+describe('(l) 31B-2 audit rows (U-R1A-31B-2 audit)', () => {
+  const { forkWinner } = roster as unknown as { forkWinner(a: Entry, b: Entry): 'a' | 'b' }
+  const take = roster.receiveRoster as (raw: unknown, now?: number, from?: 'peer' | 'hub') => string
+  const receive = (raw: string, from?: 'peer' | 'hub') => {
+    try {
+      return take(raw, T + 50, from)
+    } catch (e) {
+      if (e instanceof RosterError) return e.reason
+      throw e
+    }
+  }
+  const text = (c: Computer) => readFileSync(rosterFile(c), 'utf8')
+  const trusts = (c: Computer, other: Computer) => {
+    on(c)
+    receiveOffer(JSON.stringify(makeOffer(other.key, other.id, T)), T)
+    trustOffer(c.key, other.key.fingerprint, T + 1)
+  }
+  /** Two computers, the one with the lower fingerprint first. */
+  const ordered = (x: string, y: string): [Computer, Computer] => {
+    const p = computer(x)
+    const q = computer(y)
+    return p.key.fingerprint < q.key.fingerprint ? [p, q] : [q, p]
+  }
+
+  it('forkWinner is a total order: one lowest entry whatever the pairing, the same on both sides', () => {
+    const keys = [memKey(), memKey(), memKey(), memKey()]
+    const base = forge(keys[0], undefined, 'x', keys[0].publicKey)
+    const entries: Entry[] = []
+    for (const s of keys) for (const k of keys) for (const sig of ['A', 'B']) entries.push({ ...base, signer: s.publicKey, key: k.publicKey, sig: sig.repeat(86) })
+    const rank = (e: Entry) => `${fingerprintOf(e.signer)} ${fingerprintOf(e.key)} ${e.sig}`
+    for (const x of entries) {
+      for (const y of entries) {
+        if (x === y) continue
+        const want = rank(x) < rank(y) ? 'a' : 'b'
+        expect([forkWinner(x, y), forkWinner(y, x)]).toEqual([want, want === 'a' ? 'b' : 'a'])
+      }
+    }
+  })
+
+  it('three computers each trust a different new one at once: one roster after a few exchanges, all three kept once, no flip-flop', () => {
+    const a = computer('a')
+    const c = computer('c')
+    const e = computer('e')
+    pair(a, [c, e])
+    const fresh = [computer('x'), computer('y'), computer('z')]
+    const all = [a, c, e]
+    all.forEach((m, i) => trusts(m, fresh[i]))
+    let rounds = 0
+    const stable = () => new Set(all.map(text)).size === 1
+    while (!stable() && rounds < 6) {
+      rounds++
+      for (const to of all) for (const from of all) if (to !== from) {
+        const sent = text(from)
+        on(to)
+        expect(['kept', 'rebased', 'updated', 'same', 'stale']).toContain(receive(sent))
+      }
+    }
+    expect(stable()).toBe(true)
+    expect(rounds).toBeLessThanOrEqual(3)
+    on(a)
+    const final = readRoster() as Entry[]
+    expect(final).toHaveLength(6)
+    for (const n of fresh) expect(final.filter((x) => x.key === n.key.publicKey)).toHaveLength(1)
+    // One more full exchange changes nothing.
+    const before = text(a)
+    for (const to of all) for (const from of all) if (to !== from) {
+      const sent = text(from)
+      on(to)
+      expect(receive(sent)).toBe('same')
+    }
+    expect(all.map(text)).toEqual([before, before, before])
+  })
+
+  it('a rebase signs again only what this computer signed: never another signer\'s entry, never a key outside the two rosters', () => {
+    const [w, l] = ordered('p', 'q')
+    const mine = computer('mine')
+    const theirs = computer('theirs')
+    const d = computer('d')
+    pair(l, [w])
+    // L trusts `mine`; W takes that roster and trusts `theirs` on top; then W (alone, from the base) trusts D.
+    trusts(l, mine)
+    const base = doc((JSON.parse(text(l)).entries as Entry[]).slice(0, 2))
+    const withMine = JSON.parse(text(l)).entries as Entry[]
+    const theirsEntry = forge(w.key, withMine[2], 'theirs', theirs.key.publicKey, T + 2)
+    on(l)
+    expect(receive(doc([...withMine, theirsEntry]))).toBe('updated')
+    const winner = [...(JSON.parse(base).entries as Entry[]), forge(w.key, withMine[1], 'd', d.key.publicKey, T + 3)]
+    expect(forkWinner(withMine[2], winner[2])).toBe('b')
+    expect(receive(doc(winner))).toBe('rebased')
+    const out = readRoster() as Entry[]
+    expect(out.map((x) => [x.id, fingerprintOf(x.signer)])).toEqual([
+      [l.id, l.key.fingerprint], [w.id, l.key.fingerprint], ['d', w.key.fingerprint], ['mine', l.key.fingerprint],
+    ])
+    expect(trustedKey('theirs')).toBeUndefined()
+  })
+
+  it('LIMIT, peer path: one trusted key with the lower fingerprint forks at an earlier seq and the other signer\'s computer is dropped until that signer signs again', () => {
+    const [m, v] = ordered('m', 'v')
+    const d = computer('d')
+    const root = computer('root')
+    pair(root, [m, v])
+    const start = JSON.parse(text(root)).entries as Entry[]
+    trusts(v, d)
+    const good = text(v)
+    on(root)
+    expect(receive(good)).toBe('updated')
+    expect(trustedKey('d')).toBe(d.key.publicKey)
+    // M signs a filler key at the same seq: its fingerprint is lower than V's, so its branch wins.
+    const junk = memKey()
+    const evil = doc([...start, forge(m.key, start[2], 'junk', junk.publicKey, T + 2)])
+    expect(receive(evil)).toBe('rebased')
+    expect(trustedKey('d')).toBeUndefined()
+    // V, the signer, gets D back by the same rule; the junk key came from a trusted key, as any trust does.
+    on(v)
+    expect(receive(evil)).toBe('rebased')
+    expect(trustedKey('d')).toBe(d.key.publicKey)
+    // The other way round (the attacker's fingerprint is the higher one) it loses everywhere.
+    const evilHigh = doc([...start, forge(v.key, start[2], 'junk2', memKey().publicKey, T + 2)])
+    const mTrusts = forge(m.key, start[2], 'd', d.key.publicKey, T + 1)
+    on(root)
+    const mid = bytes(rosterFile(root))
+    expect(forkWinner((readRoster() as Entry[])[3], (JSON.parse(evilHigh).entries as Entry[])[3])).toBe('a')
+    expect(receive(evilHigh)).toBe('kept')
+    expect(bytes(rosterFile(root))).toEqual(mid)
+    expect(mTrusts.seq).toBe(3)
+  })
+
+  it('from the hub: only what verifies under this root, never a roster without this computer, never one that drops a computer another one signed', () => {
+    const [w, l] = ordered('p', 'q')
+    const x = computer('x')
+    const d = computer('d')
+    const e = computer('e')
+    pair(l, [w, x])
+    const start = JSON.parse(text(l)).entries as Entry[]
+    on(w)
+    expect(receive(text(l))).toBe('updated')
+    // W and L trust at once: W signs D, L signs E. Both branches are real, so a hub that saw both can serve either.
+    trusts(w, d)
+    trusts(l, e)
+    const branchW = text(w)
+    const branchL = text(l)
+    const entryW = (JSON.parse(branchW).entries as Entry[])[3]
+    const entryL = (JSON.parse(branchL).entries as Entry[])[3]
+    expect(forkWinner(entryW, entryL)).toBe('a')
+    // Honest hub: it took W's branch; L moves onto it and signs E again ...
+    on(l)
+    expect(receive(branchW, 'hub')).toBe('rebased')
+    const settled = text(l)
+    expect((readRoster() as Entry[]).map((r) => r.id)).toEqual([l.id, w.id, 'x', 'd', 'e'])
+    // ... and where forkWinner picks this computer's branch, the hub's order still stands for its own entries.
+    on(w)
+    const wOwn = text(w)
+    expect(receive(branchL, 'peer')).toBe('kept')
+    expect(text(w)).toBe(wOwn)
+    // X holds the settled roster [.., D by W, E by L]. Each row: what a hub could serve X, and X's roster stays.
+    on(x)
+    expect(receive(settled, 'hub')).toBe('updated')
+    const held = bytes(rosterFile(x))
+    const h = memKey()
+    const hubRoot = forge(h, undefined, l.id, h.publicKey)
+    const rows: [string, string, string][] = [
+      ['an older prefix', doc(start), 'stale'],
+      ['the settled roster cut by one', doc((JSON.parse(settled).entries as Entry[]).slice(0, 4)), 'stale'],
+      ['the losing branch (drops D, signed by W)', branchL, 'fork'],
+      ['a branch before X joined', doc([start[0], start[1], forge(l.key, start[1], 'junk', memKey().publicKey)]), 'fork'],
+      ['a hub-signed entry at the fork point', doc([...start, forge(h, start[2], 'hub', h.publicKey)]), 'signer'],
+      ['a hub-made root', doc([hubRoot, forge(h, hubRoot, 'x', x.key.publicKey)]), 'root'],
+      ['an extra field naming the hub', JSON.stringify({ v: 1, entries: start, from: 'hub' }), 'shape'],
+    ]
+    for (const [name, raw, reason] of rows) {
+      expect([name, receive(raw, 'hub')]).toEqual([name, reason])
+      expect([name, bytes(rosterFile(x))]).toEqual([name, held])
+    }
+    expect(trustedKey('d')).toBe(d.key.publicKey)
+    expect(trustedKey('e')).toBe(e.key.publicKey)
+    // The hub's say is only for a call that names the hub: the same losing branch from a peer is 'kept' by the rule.
+    expect(forkWinner((readRoster() as Entry[])[3], entryL)).toBe('a')
+    expect(receive(branchL)).toBe('kept')
+    expect(bytes(rosterFile(x))).toEqual(held)
+    // Once the signer of the dropped entry is on the hub's roster, X follows: nothing is lost.
+    on(w)
+    expect(receive(settled, 'hub')).toBe('updated')
+    on(x)
+    expect(receive(text(w), 'hub')).toBe('same')
+  })
+})

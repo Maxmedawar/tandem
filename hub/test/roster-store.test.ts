@@ -228,3 +228,57 @@ describe('restart', () => {
     expect(h.s.offers()).toEqual([])
   })
 })
+
+describe('audit rows (U-R1A-31B-2 audit)', () => {
+  const SKEW = 300_000
+
+  it('an offer whose ts is outside the hub window (24 h back, 300,000 ms ahead): invalid, not stored, not counted', () => {
+    const { h, clock } = openStore()
+    const rows: [string, number, string][] = [
+      ['a year ahead', T0 + 365 * DAY, 'invalid'],
+      ['one ms past the skew', T0 + SKEW + 1, 'invalid'],
+      ['one ms past 24 h back', T0 - DAY - 1, 'invalid'],
+      ['at the skew', T0 + SKEW, 'ok'],
+      ['24 h back', T0 - DAY, 'ok'],
+    ]
+    rows.forEach(([name, ts, want], i) => {
+      expect([name, h.s.postOffer(`r${i}`, key(`r${i}`), offer(`r${i}`, ts))]).toEqual([name, want])
+    })
+    expect(h.s.offers()).toEqual([offer('r4', T0 - DAY), offer('r3', T0 + SKEW)])
+    // A refused post is not counted: five good ones still fit in the hour.
+    for (let i = 0; i < 5; i++) expect(h.s.postOffer('r0', key('r0'), offer('r0', T0 + i))).toBe('ok')
+    // No offer outlives 24 h plus the skew after the hub took it.
+    clock.now = T0 + DAY + SKEW + 1
+    expect(h.s.offers()).toEqual([])
+  })
+
+  it('32 ids posting far-future offers never hold the slots', () => {
+    const { h, clock } = openStore()
+    for (let i = 0; i < 32; i++) h.s.postOffer(`j${i}`, key(`j${i}`), offer(`j${i}`, T0 + 365 * DAY))
+    clock.now = T0 + DAY + SKEW + 1
+    expect(h.s.postOffer('late', key('late'), offer('late', clock.now))).toBe('ok')
+    expect(h.s.offers()).toEqual([offer('late', clock.now)])
+  })
+
+  it('put: only an extension; a sender outside the roster, a fork at a stored index, a truncation and a replay all leave the stored bytes', () => {
+    const { h } = openStore()
+    const held = doc(chain('a', 'b', 'c'))
+    expect(h.s.put('a', key('a'), 0, held)).toBe('ok')
+    const fork = chain('a', 'b', 'c')
+    fork[2] = { ...fork[2], sig: 't'.repeat(86) }
+    const rows: [string, string, number, string, string][] = [
+      ['a fork at index 2, longer', 'a', 3, doc([...fork, entry(3, 'd')]), 'conflict'],
+      ['a truncation', 'a', 3, doc(chain('a', 'b')), 'conflict'],
+      ['a replay of the same roster', 'a', 3, held, 'conflict'],
+      ['a new root over the stored one', 'z', 0, doc(chain('z')), 'conflict'],
+      ['a new root, base at len', 'z', 3, doc(chain('z', 'a', 'b', 'c')), 'conflict'],
+      ['an id in the roster under another key', 'b', 3, doc(chain('a', 'b', 'c', 'd')), 'not_in_roster'],
+      ['a base that is not an integer', 'a', 3.5, doc(chain('a', 'b', 'c', 'd')), 'invalid'],
+    ]
+    for (const [name, id, base, text, want] of rows) {
+      const k = name.startsWith('an id in') ? key('other') : key(id)
+      expect([name, h.s.put(id, k, base, text)]).toEqual([name, want])
+      expect([name, h.s.get()]).toEqual([name, { len: 3, roster: held }])
+    }
+  })
+})

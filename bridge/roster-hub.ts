@@ -121,6 +121,9 @@ const rosterFileText = (): string | undefined => {
  * refused ones counted). Returns the hub's roster text and length (0 and undefined on none).
  */
 async function pull(hub: RosterHub): Promise<{ len: number; text: string | undefined }> {
+  // The offers first: the hub drops an offer when a roster with its key is stored, so an offer
+  // gone from this list is in the roster fetched after it (never missing from both).
+  const offers = await hub.offers()
   const got = await hub.get()
   if (got) {
     try {
@@ -131,7 +134,7 @@ async function pull(hub: RosterHub): Promise<{ len: number; text: string | undef
     }
   }
   let skipped = 0
-  for (const offer of await hub.offers()) {
+  for (const offer of offers) {
     try {
       receiveOffer(offer)
     } catch (e) {

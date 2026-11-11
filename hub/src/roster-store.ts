@@ -21,6 +21,8 @@ export const MAX_ROSTER_ENTRIES = 100
 export const MAX_OFFER_BYTES = 4096
 export const OFFER_SLOTS = 32
 export const OFFER_TTL_MS = 86_400_000
+/** An offer's own ts may be this far ahead of the hub's clock (the computers' own limit, bridge/roster.ts). */
+export const OFFER_SKEW_MS = 300_000
 export const POST_WINDOW_MS = 3_600_000
 export const MAX_POSTS = 5
 
@@ -127,7 +129,8 @@ export class RosterStore {
 
   /**
    * Keep `offerText` from `senderId`/`senderKey`. In order: the shape ('invalid'); its id and key
-   * are the sender's ('not_yours'); after the expiry, MAX_POSTS accepted posts by this id in the
+   * are the sender's ('not_yours'); its ts within OFFER_TTL_MS back and OFFER_SKEW_MS ahead of the
+   * hub's clock ('invalid'); after the expiry, MAX_POSTS accepted posts by this id in the
    * window ('slow'); OFFER_SLOTS offers from other ids waiting ('full'). One offer per id: a new
    * one replaces it. Only an accepted post is counted.
    */
@@ -137,6 +140,8 @@ export class RosterStore {
     if (offer.id !== senderId || offer.key !== senderKey) return 'not_yours'
     return this.transaction((): OfferAnswer => {
       const now = this.now()
+      // A ts no computer would take; one far ahead would also never expire here and hold a slot.
+      if (offer.ts < now - OFFER_TTL_MS || offer.ts > now + OFFER_SKEW_MS) return 'invalid'
       this.expire(now)
       const posts = Number(this.sql.exec('SELECT COUNT(*) AS n FROM hub_offer_posts WHERE id = ?', senderId).toArray()[0].n)
       if (posts >= MAX_POSTS) return 'slow'

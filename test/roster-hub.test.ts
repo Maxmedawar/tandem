@@ -237,8 +237,8 @@ describe('main', () => {
       err: '',
     })
     expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual([
-      'GET /__tunnel/roster', 'GET /__tunnel/roster/offers', 'PUT /__tunnel/roster',
-      'GET /__tunnel/roster', 'GET /__tunnel/roster/offers', 'PUT /__tunnel/roster',
+      'GET /__tunnel/roster/offers', 'GET /__tunnel/roster', 'PUT /__tunnel/roster',
+      'GET /__tunnel/roster/offers', 'GET /__tunnel/roster', 'PUT /__tunnel/roster',
     ])
     const sent = JSON.parse(seen[5].body.toString())
     expect(sent).toEqual({ base: 0, roster: readFileSync(rosterFile(a), 'utf8') })
@@ -312,6 +312,40 @@ describe('main', () => {
         expect(JSON.parse(puts[1].body.toString())).toEqual({ base: 3, roster: readFileSync(rosterFile(w), 'utf8') })
       }
     }
+  })
+
+  it('audit: trust while another computer\'s upload of the same offer lands between this one\'s two fetches: exit 0, nothing sent', async () => {
+    const l = computer('r1a31b2-l')
+    const w = computer('r1a31b2-w')
+    const d = computer('r1a31b2-d')
+    on(d)
+    const offerD = JSON.stringify(makeOffer(d.key, d.id))
+    on(l)
+    initRoster(l.key, l.id)
+    receiveOffer(JSON.stringify(makeOffer(w.key, w.id)))
+    roster.trustOffer(l.key, w.key.fingerprint)
+    const base = readFileSync(rosterFile(l), 'utf8')
+    receiveOffer(offerD)
+    roster.trustOffer(l.key, d.key.fingerprint)
+    const hubHeld = readFileSync(rosterFile(l), 'utf8')
+    on(w)
+    receiveRoster(base)
+    roster.joinRoster(w.key, l.key.fingerprint)
+    hubOn()
+    // The hub drops an offer the moment a roster with its key is stored: L's upload lands after W's first fetch.
+    answer = (s) => {
+      const landed = seen.length > 1
+      if (s.url === '/__tunnel/roster/offers') return { status: 200, body: { offers: landed ? [] : [offerD] } }
+      if (s.method === 'GET') return landed ? { status: 200, body: { len: 3, roster: hubHeld } } : { status: 200, body: { len: 2, roster: base } }
+      return { status: 409, body: { error: 'roster_conflict', len: 3 } }
+    }
+    expect(await capture(() => hubClient.main(['trust', d.key.fingerprint]))).toEqual({
+      code: 0,
+      out: `trusted ${d.id} ${d.key.fingerprint}. On ${d.id} run: tandem trust ${w.key.fingerprint}\n`,
+      err: '',
+    })
+    expect(seen.filter((x) => x.method === 'PUT')).toHaveLength(0)
+    expect(readFileSync(rosterFile(w), 'utf8')).toBe(hubHeld)
   })
 
   it('trust with nothing here: the hub holds no roster: exit 1; it holds one: joined', async () => {

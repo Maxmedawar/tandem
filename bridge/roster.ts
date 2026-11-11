@@ -440,7 +440,8 @@ export function forkWinner(a: Entry, b: Entry): 'a' | 'b' {
  * this roster's root (every refusal of verifyRoster stands); then: the same is 'same', a longer
  * one with this one as its exact prefix 'updated', a strict prefix of this one 'stale'. Two
  * branches: at the fork point k, forkWinner of the two entries decides (`from` 'hub': the
- * incoming one always wins, the hub keeps one order and accepts only an extension of it). This
+ * incoming one always wins, the hub keeps one order and accepts only an extension of it; but one
+ * that would drop an entry after k signed by another computer is 'fork', nothing written). This
  * one wins: 'kept', nothing written. The incoming one wins: it must hold this computer's key and
  * id ('fork' otherwise, nothing written: its signer re-signs it later); this computer's own
  * entries after k whose key and id are both missing from it are signed again on its end, and the
@@ -468,6 +469,9 @@ export function receiveRoster(raw: unknown, now: number = Date.now(), from: 'pee
       const key = openDeviceKey()
       const id = thisId()
       if (!next.some((e) => e.key === key.publicKey && e.id === id)) throw new RosterError('fork')
+      // The hub's say never drops a computer another one signed (a hub that kept an old branch
+      // could cut the roster back with it): refused until that signer has signed it onto the hub's roster.
+      if (from === 'hub' && local.slice(k).some((e) => e.signer !== key.publicKey && !next.some((o) => o.key === e.key))) throw new RosterError('fork')
       const out = [...next]
       for (const e of local.slice(k)) {
         if (e.signer !== key.publicKey || out.some((o) => o.key === e.key || o.id === e.id)) continue
