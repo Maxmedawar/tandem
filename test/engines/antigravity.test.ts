@@ -50,6 +50,9 @@ const { routeForTest } = await import("../../bridge/router.ts");
 
 const BUILTIN = fileURLToPath(new URL("../../harnesses/", import.meta.url));
 const SCREENS = fileURLToPath(new URL("../fixtures/screens/", import.meta.url));
+/** Real agy screens kept by the live recorder (U-R1A-15L), named `<state>[-<word>]-real.txt`. */
+const AGY_REAL = fileURLToPath(new URL("../fixtures/agy-screens/", import.meta.url));
+const AGY_REAL_FILES = readdirSync(AGY_REAL).filter((f) => /-real\.txt$/.test(f));
 const NO_OWNER = join(tmp, "no-owner");
 /**
  * A PATH folder holding an executable fake `agy`: it prints `Antigravity (fake)`; each line it
@@ -164,6 +167,21 @@ describe("antigravity: the built-in harness file", () => {
     const idle = files.filter((f) => readScreen(h, readFileSync(join(SCREENS, f), "utf8")) === "idle");
     expect(idle).toEqual([]);
   });
+
+  it("never idle: every non-idle real agy screen", () => {
+    const h = builtinAgy();
+    const files = AGY_REAL_FILES.filter((f) => !f.startsWith("idle-"));
+    expect(files.length).toBeGreaterThanOrEqual(1);
+    const idle = files.filter((f) => readScreen(h, readFileSync(join(AGY_REAL, f), "utf8")) === "idle");
+    expect(idle).toEqual([]);
+  });
+
+  it.each(AGY_REAL_FILES.map((f) => [f, f.split("-")[0]!]))(
+    "real agy screen %s reads %s through the built-in file",
+    (file, state) => {
+      expect(readScreen(builtinAgy(), readFileSync(join(AGY_REAL, file), "utf8"))).toBe(state);
+    },
+  );
 
   it.each(AGY_SCREENS)("never idle: the %s screen", (_label, screen) => {
     expect(readScreen(builtinAgy(), screen)).not.toBe("idle");
