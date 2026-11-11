@@ -45,6 +45,10 @@ tandem - one agent fabric across your computers
   tandem stop                stop it
   tandem restart             stop, then start
   tandem version             what is installed
+  tandem fingerprint         this computer's key fingerprint, to compare when pairing
+  tandem roster              the computers this one trusts, and the keys waiting
+  tandem roster init         start the roster on your first computer
+  tandem trust <fingerprint> trust a waiting computer, or join the roster it signed
 
 Everything else happens from your agent.
 USAGE
@@ -88,6 +92,23 @@ case "${1:-}" in
     ;;
   version)
     "$node" -e "process.stdout.write(require(process.argv[1]).version + '\n')" "$runtime/package.json"
+    ;;
+  fingerprint)
+    need_node
+    exec "$node" --experimental-strip-types "$runtime/bridge/roster.ts" fingerprint
+    ;;
+  roster)
+    need_node
+    shift
+    exec "$node" --experimental-strip-types "$runtime/bridge/roster.ts" roster "$@"
+    ;;
+  trust)
+    if [ "$#" -ne 2 ]; then
+      usage >&2
+      exit 2
+    fi
+    need_node
+    exec "$node" --experimental-strip-types "$runtime/bridge/roster.ts" trust "$2"
     ;;
   ''|-h|--help|help)
     usage
