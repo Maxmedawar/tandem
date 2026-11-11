@@ -9,14 +9,18 @@ has_prompts = true
 waiting_for_approval = [
   # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
   '\d/\d:select[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
-  # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
-  '\([○●]\) No, reject \(type to add feedback\)[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR (audit): not tied to the screen end. This marker is a status line or an option row, and grok 1.0.77
+  # can keep its composer box below it (plan approval: `Type revision notes...`, key hints with no N/N:select); the
+  # real screen was never recorded, so a box after it must not turn an approval into idle.
+  '\([○●]\) No, reject \(type to add feedback\)',
   # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
   ':next answer[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
   # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
   ':accept / toggle[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
-  # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
-  '◆ (?:Waiting on answers for|Waiting on plan approval|No plan written)[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR (audit): not tied to the screen end. This marker is a status line or an option row, and grok 1.0.77
+  # can keep its composer box below it (plan approval: `Type revision notes...`, key hints with no N/N:select); the
+  # real screen was never recorded, so a box after it must not turn an approval into idle.
+  '◆ (?:Waiting on answers for|Waiting on plan approval|No plan written)',
   # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
   'Do you trust the contents of this directory[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
 ]

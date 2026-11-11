@@ -219,3 +219,31 @@ describe("(quoted) a quoted state marker above the real prompt reads as the prom
     },
   );
 });
+
+// Audit (U-R1B-ANCHOR-1): grok 1.0.77's real approval screens were never recorded (U-R1A-14L audit,
+// Limits). Its program text holds `Waiting on plan approval` and `No plan written: approve or request
+// changes` beside the working status texts (the status line sits above the composer box), a `Type
+// revision notes...` composer placeholder, and approve / request changes key hints with no
+// `N/N:select`. So a rule for a status or option-row marker must not need the composer box to be
+// gone: read as idle, an agent's text would be typed into the approval. These screens are built
+// from the real composer box, not captured.
+describe("(live) grok: an approval marker above the composer box still reads waiting_for_approval", () => {
+  const real = linesOf(read("screens/grok-idle-real.txt"));
+  const at = real.map((l) => l.includes("╭─")).lastIndexOf(true);
+  const box = real.slice(at, at + 3);
+  const HINTS = "  a:approve  │  r:request changes  │  c:copy plan  │  p:show plan";
+  it.each([
+    ["the plan approval status line", ["   ◆ Waiting on plan approval"]],
+    ["the no-plan status line", ["   ◆ No plan written: approve or request changes"]],
+    ["the reject option row", ["   (●) Yes, approve", "   (○) No, reject (type to add feedback)"]],
+  ])("%s, the composer box, a key-hint footer", (_label, marker) => {
+    const h = harnesses.get("grok")!;
+    expect(box.map((l) => l.trim()[0])).toEqual(["╭", "│", "╰"]);
+    for (const screen of [[...real.slice(0, at), ...marker, ...box, HINTS], [...real.slice(0, at), ...marker, "", ...box]]) {
+      const state = readScreen(h, screen.join("\n"));
+      expect(state).toBe("waiting_for_approval");
+      expect(decideInput("owner", "type", state)).toBe("refused");
+      expect(decideInput("agent", "type", state)).toBe("held");
+    }
+  });
+});
