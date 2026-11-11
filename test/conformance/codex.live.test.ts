@@ -6,7 +6,7 @@
  * Run (real HOME, only so the signed-in `codex` works; a private tmux socket):
  *   mkdir /tmp/r1a12-live && env -u TMUX TMUX_TMPDIR=/tmp/r1a12-live TANDEM_HOME=/tmp/r1a12-live/tandem \
  *     TANDEM_LIVE=1 npx vitest run test/conformance/codex.live.test.ts --reporter=verbose
- *   then: test -d /tmp/r1a12-live/tmux-$(id -u) && tmux -S /tmp/r1a12-live/tmux-$(id -u)/default kill-server
+ *   then: test -S /tmp/r1a12-live/tandem/tmux/tandem && tmux -S /tmp/r1a12-live/tandem/tmux/tandem kill-server (Tandem's own socket, U-R1A-19)
  *
  * Drives HarnessSession directly, never route(), so Tandem writes nothing under the real HOME:
  * the owner id is injected and the transcript folder is fixed under a temporary HOME while the
