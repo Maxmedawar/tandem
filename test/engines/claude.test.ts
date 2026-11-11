@@ -19,7 +19,7 @@ import {
   resetHarnessCache,
   resolveEngine,
 } from "../../bridge/engine-registry.ts";
-import { spawnArgv, trustAnswerKey, type SpawnOptions } from "../../bridge/terminal-session.ts";
+import { dialogKey, spawnArgv, type SpawnOptions } from "../../bridge/terminal-session.ts";
 
 const BUILTIN = fileURLToPath(new URL("../../harnesses/", import.meta.url));
 const SCREENS = fileURLToPath(new URL("../fixtures/screens/", import.meta.url));
@@ -194,7 +194,10 @@ describe("claude: spawn flags (injected spawn function)", () => {
     expect(await spawned({ model: "opus", effort: "high" })).toEqual(["/usr/bin/env", "--", program, "--model", "opus", "--effort", "high"]);
   });
 
-  describe("warmup's trust answer: one key per screen poll, Enter only on a highlighted 'Yes, I trust this folder'", () => {
+  describe("warmup's trust answer (claude.toml's folder-trust row): one key per screen poll, Enter only on a highlighted 'Yes, I trust this folder'", () => {
+    // U-R1A-18B: the blind Claude-only trust keys became the dialog row; same screens in, same keys out.
+    const row = (name: string) => builtinClaude().dialogs?.find((d) => d.name === name);
+    const trustAnswerKey = (pane: string) => dialogKey(pane, row("folder-trust")!);
     // The real trust dialog of claude 2.1.321 (private tmux socket, new folder), with the options swapped in.
     const dialog = (...options: string[]) =>
       [
@@ -263,6 +266,15 @@ describe("claude: spawn flags (injected spawn function)", () => {
       ["the option with no highlight in its block", dialog("   No, exit", "   Yes, I trust this folder")],
     ])("no key for %s", (_label, pane) => {
       expect(trustAnswerKey(pane)).toBeUndefined();
+    });
+
+    // The blind bypass Down+Enter became the bypass-accept row: Down toward "Yes, I accept", then Enter on it.
+    it.each([
+      ["'No, exit' highlighted", " ❯ 1. No, exit\n   2. Yes, I accept", "Down"],
+      ["'Yes, I accept' highlighted", "   1. No, exit\n ❯ 2. Yes, I accept", "Enter"],
+    ])("bypass-accept row: %s gives %s", (_label, options, key) => {
+      const pane = ` WARNING: Claude Code running in Bypass Permissions mode\n\n${options}\n\n Enter to confirm · Esc to cancel`;
+      expect(dialogKey(pane, row("bypass-accept")!)).toBe(key);
     });
   });
 

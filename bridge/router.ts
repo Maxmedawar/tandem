@@ -56,7 +56,7 @@
  */
 
 import { homedir } from 'node:os'
-import { validateModel, validateEffort, TerminalSession } from './terminal-session.ts'
+import { validateModel, validateEffort, NeedsOwnerError, TerminalSession } from './terminal-session.ts'
 import type { DrivableSession, EngineId } from './drivable.ts'
 import { ADAPTERS, type AdapterOpenResult, type Harness } from './harness-registry.ts'
 import {
@@ -447,8 +447,11 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
 
   try {
+    // The folder check passed above, so warmup may answer trust and update dialogs here, and a
+    // bypass dialog only where the agent starts with its prompts off (permission_skip).
+    const skipPrompts = gate.skipPrompts(cwd)
     const session = await HarnessSession.spawn(harness, {
-      name, cwd, allowlist: ALLOWLIST, model, effort, skipPrompts: gate.skipPrompts(cwd),
+      name, cwd, allowlist: ALLOWLIST, model, effort, skipPrompts, dialogAnswers: skipPrompts ? 'safe-and-bypass' : 'safe',
     })
     registerLive(session)
     audit({ route: 'POST /sessions/open', name: session.id, engine, cwd, model, effort, ready: session.ready })
@@ -464,6 +467,10 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
       ...(session.readinessWarning ? { warning: session.readinessWarning } : {}),
     })
   } catch (e) {
+    if (e instanceof NeedsOwnerError) {
+      audit({ route: 'POST /sessions/open', name, engine, cwd, denied: 'dialog' })
+      return err(409, e.message)
+    }
     return err(500, `failed to open session: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
@@ -638,6 +645,8 @@ async function handleRelayStart(req: RpcRequest): Promise<RpcResult> {
       maxTurns,
       context,
       allowlist: ALLOWLIST,
+      // permission_skip was checked above: warmup may answer the bypass dialog too.
+      dialogAnswers: 'safe-and-bypass',
     })
     return ok({ status: 'running', loopId, leadName, workerName, cursor: 0 })
   } catch (e) {

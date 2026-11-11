@@ -30,3 +30,26 @@ debounce_ms = 5000
 interrupt = ["Escape"]
 approve = "Enter"
 deny = "Escape"
+
+# First-run dialogs warmup may answer (SCHEMA.md `[[dialogs]]`): folder trust (0.167.1 text and the
+# older text, both from the binary's strings) and the update notice, which is only ever skipped.
+[[dialogs]]
+name = "folder-trust"
+kind = "trust"
+match = ['(?i)trust this folder\?']
+answer = "Trust and continue"
+highlight = "›"
+
+[[dialogs]]
+name = "folder-trust-old"
+kind = "trust"
+match = ['(?i)do you trust the contents of this directory']
+answer = "Yes, continue"
+highlight = "›"
+
+[[dialogs]]
+name = "update"
+kind = "update"
+match = ['(?i)update available']
+answer = "Skip"
+highlight = "›"

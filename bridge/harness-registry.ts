@@ -18,11 +18,13 @@ import { basename, delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
 import { RE2JS } from 're2js'
-import type { DrivableSession } from './drivable.ts'
+import type { DrivableSession, EngineDescriptor } from './drivable.ts'
 import { openHermes } from './engines/hermes.ts'
 
 export type StateName = 'working' | 'idle' | 'waiting_for_approval'
 export type KeySpec = string | string[]
+/** One `[[dialogs]]` row: a first-run dialog and the one answer warmup may give (bridge/terminal-session.ts). */
+export type Dialog = NonNullable<EngineDescriptor['dialogs']>[number]
 
 export interface Harness {
   name: string
@@ -37,6 +39,7 @@ export interface Harness {
   history?: string
   states?: { working?: string[]; idle?: string[]; waiting_for_approval?: string[]; debounce_ms: number; precedence: StateName[] }
   keys?: { approve?: KeySpec; deny?: KeySpec; interrupt?: KeySpec }
+  dialogs?: Dialog[]
   delivery: 'hook' | 'notice'
   hook?: string
   permission_hook: boolean
@@ -72,9 +75,15 @@ const NAMED_KEY = /^(Enter|Escape|Tab|BTab|Space|BSpace|Up|Down|Left|Right|Home|
 /** Command text: no control, format (bidi, zero-width) or line-separator character, no shell character, no brace once `{id}` is removed. */
 const BAD_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}`$;|&<>{}]/u
 const FIELDS = ['name', 'program', 'args', 'skip_prompts_args', 'resume', 'fork', 'has_prompts', 'account_env', 'history',
-  'states', 'keys', 'delivery', 'hook', 'permission_hook', 'reports_context', 'adapter', 'logo']
+  'states', 'keys', 'dialogs', 'delivery', 'hook', 'permission_hook', 'reports_context', 'adapter', 'logo']
 const STATE_NAMES: StateName[] = ['working', 'idle', 'waiting_for_approval']
 const KEY_NAMES = ['approve', 'deny', 'interrupt'] as const
+/** Text that is never typed as a dialog answer, and a screen showing it is never answered (sign-in, purchase). */
+export const NEVER = /sign(?:ing)?[ -]?in|log(?:ging)?[ -]?in|login|purchase|buy|subscri|payment|billing|credit card/i
+const DIALOG_FIELDS = ['name', 'kind', 'match', 'answer', 'highlight', 'key']
+const DIALOG_KINDS = ['trust', 'update', 'bypass']
+const HIGHLIGHTS = ['❯', '›', '>']
+const DIALOG_KEY = /^[a-z0-9]$/
 const SHELLS = new Set(('sh bash zsh dash ksh mksh yash csh tcsh fish nu xonsh elvish pwsh powershell cmd busybox env sudo doas ' +
   'su nohup nice timeout xargs script expect python pypy perl ruby php node nodejs bun deno lua luajit tclsh wish osascript ' +
   'awk gawk mawk').split(' '))
@@ -112,7 +121,43 @@ function table(t: Table, k: string): Table | undefined {
   return v as Table | undefined
 }
 
-/** Every string outside `states` is command text. */
+/** `[[dialogs]]`: 0 to 8 tables. `match` and `highlight` are screen text, exempt from the command text rules; `answer` is command text. */
+function dialogsOf(raw: Table): Dialog[] | undefined {
+  const v = raw.dialogs
+  if (v === undefined) return undefined
+  if (!Array.isArray(v) || !v.every(isTable)) fail('wrong type for dialogs: expected [[dialogs]] tables')
+  const rows = v as Table[]
+  if (rows.length > 8) fail('dialogs: at most 8')
+  const names = new Set<string>()
+  return rows.map((t, i) => {
+    const at = `dialogs[${i}].`
+    only(t, DIALOG_FIELDS, at)
+    const name = str(t, 'name', at) ?? fail(`missing ${at}name`)
+    if (!NAME.test(name)) fail(`bad ${at}name`)
+    if (names.has(name)) fail(`duplicate ${at}name: each dialog name once in a file`)
+    names.add(name)
+    const kind = str(t, 'kind', at) ?? fail(`missing ${at}kind`)
+    if (!DIALOG_KINDS.includes(kind)) fail(`bad ${at}kind: "trust", "update" or "bypass"`)
+    const match = strs(t, 'match', at) ?? fail(`missing ${at}match`)
+    if (match.length < 1 || match.length > 4) fail(`${at}match: 1 to 4 patterns`)
+    for (const p of match) {
+      try { RE2JS.compile(p) } catch { fail(`bad pattern in ${at}match`) }
+    }
+    const answer = str(t, 'answer', at) ?? fail(`missing ${at}answer`)
+    if ([...answer].length < 1 || [...answer].length > 80) fail(`${at}answer: 1 to 80 characters`)
+    checkText(answer, `${at}answer`)
+    if (NEVER.test(answer)) fail(`${at}answer: a sign-in or purchase answer is never typed`)
+    if (kind === 'update' && /update|install|upgrade/i.test(answer)) fail(`${at}answer: an update dialog may only be skipped`)
+    const highlight = str(t, 'highlight', at)
+    const key = str(t, 'key', at)
+    if ((highlight === undefined) === (key === undefined)) fail(`${at}highlight or ${at}key: exactly one of them`)
+    if (highlight !== undefined && !HIGHLIGHTS.includes(highlight)) fail(`bad ${at}highlight: one of ${HIGHLIGHTS.join(' ')}`)
+    if (key !== undefined && !DIALOG_KEY.test(key)) fail(`bad ${at}key: one character a-z or 0-9`)
+    return compact({ name, kind: kind as Dialog['kind'], match, answer, highlight: highlight as Dialog['highlight'], key })
+  })
+}
+
+/** Every string outside `states` and `dialogs` is command text. */
 function checkText(v: unknown, where: string): void {
   if (typeof v === 'string') { if (BAD_TEXT.test(v.replaceAll('{id}', ''))) fail(`forbidden character in ${where}`) }
   else if (Array.isArray(v)) for (const x of v) checkText(x, where)
@@ -173,6 +218,8 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
     }
   }
 
+  const dialogs = dialogsOf(raw)
+
   const delivery = str(raw, 'delivery') ?? 'notice'
   if (delivery !== 'hook' && delivery !== 'notice') fail('bad delivery: "hook" or "notice"')
   const hook = str(raw, 'hook')
@@ -186,13 +233,13 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
     skip_prompts_args: strs(raw, 'skip_prompts_args') ?? [],
     resume: strs(raw, 'resume') ?? [],
     fork: strs(raw, 'fork') ?? [],
-    has_prompts, account_env, history, states, keys,
+    has_prompts, account_env, history, states, keys, dialogs,
     delivery: delivery as Harness['delivery'], hook,
     permission_hook: bool(raw, 'permission_hook') ?? false,
     reports_context: bool(raw, 'reports_context') ?? false,
     adapter, logo,
   })
-  for (const [k, v] of Object.entries(raw)) if (k !== 'states') checkText(v, k)
+  for (const [k, v] of Object.entries(raw)) if (k !== 'states' && k !== 'dialogs') checkText(v, k)
   return out
 }
 

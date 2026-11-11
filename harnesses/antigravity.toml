@@ -22,3 +22,11 @@ working = ['(?i)esc to cancel']
 
 [keys]
 interrupt = ["Escape"]
+
+# First-run dialog warmup may answer (SCHEMA.md `[[dialogs]]`): agy 1.5.4's workspace trust.
+[[dialogs]]
+name = "folder-trust"
+kind = "trust"
+match = ['(?i)do you trust the contents of this project\?']
+answer = "Yes, I trust this folder"
+highlight = ">"

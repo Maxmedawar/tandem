@@ -1,0 +1,49 @@
+
+  /p/t/r/r1a14-box-bzxUrl/work
+
+
+
+
+
+
+
+                                                                                             ⠀⠀⠀⠀⠀⠀⣀⣀⡀⠀⠀⠀⢀⠄
+                                                                                             ⠀⠀⠀⣠⣾⠿⠛⠛⠛⠛⢀⡴⠁⠀
+                                                                                             ⠀⠀⣼⡟⠁⠀⠀⠀⢀⡴⠻⣿⡀⠀
+                                                                                             ⠀⠀⣿⡇⠀⠀⠀⠔⠁⠀⠀⣿⡇⠀
+                                                                                             ⠀⠀⢹⣷⠀⠀⠀⠀⠀⢀⣴⡿⠀⠀
+                                                                                             ⠀⢀⠞⠁⠠⢶⣶⣶⣶⠿⠋⠀⠀⠀
+                                                                                             ⠐⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀
+
+
+                                                                              Do you trust the contents of this directory?
+                                                                             /private/tmp/r1a14l-live/r1a14-box-bzxUrl/work
+
+                                                                        Grok Build may run or modify contents in this directory,
+                                                                                         posing security risks.
+
+                                                                                     Yes, proceed                 y
+                                                                                     No, quit                     n
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                                                                                                                                           Grok Build  1.0.77 [stable]

@@ -33,3 +33,19 @@ debounce_ms = 2250
 interrupt = ["Escape", "C-c"]
 approve = "Enter"
 deny = "Escape"
+
+# First-run dialogs warmup may answer (SCHEMA.md `[[dialogs]]`): the folder trust dialog, and the
+# bypass-permissions accept dialog (only with prompts off, in a permission_skip folder).
+[[dialogs]]
+name = "folder-trust"
+kind = "trust"
+match = ['(?i)trust this folder']
+answer = "Yes, I trust this folder"
+highlight = "❯"
+
+[[dialogs]]
+name = "bypass-accept"
+kind = "bypass"
+match = ['(?i)bypass permissions mode']
+answer = "Yes, I accept"
+highlight = "❯"
