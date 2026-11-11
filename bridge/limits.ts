@@ -1,7 +1,8 @@
 /**
  * limits.ts: the limits file, the ceiling on what sessions may start on this computer for the
- * fields `folders`, `agents`, `shell` and `permission_skip` (plan section 3), and who may send
- * mail at the Interrupt level, `interrupt_from` (bridge/mailbox.ts; absent means nobody). The
+ * fields `folders`, `agents`, `shell` and `permission_skip` (plan section 3), who may send mail at
+ * the Interrupt level, `interrupt_from` (bridge/mailbox.ts; absent means nobody), and the most
+ * sessions at once, `session_cap` (bridge/kill-switch.ts reserveSessions; absent means 12). The
  * bridge is the only place limits are enforced, and nothing remote can widen them.
  *
  * The file is `$TANDEM_HOME/limits.toml` when TANDEM_HOME is set, else `~/.tandem/limits.toml`,
@@ -42,11 +43,14 @@ export interface LimitsSnapshot {
   digest: string
   /** Mail senders (`owner`, `session:<name>`, `machine:<id>/owner`, `machine:<id>/session:<name>`) who may send Interrupt; present only when the file has it. */
   interrupt_from?: string[]
+  /** The most sessions open at once on this computer, 1 to 100; 12 when absent, and when the file is missing or refused. */
+  session_cap: number
   /** Why nothing is allowed (missing or refused file). */
   problem?: string
 }
 
-const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from']
+const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap']
+const DEFAULT_SESSION_CAP = 12
 const AGENT_FIELDS = ['program', 'sha256']
 /** A harness name (harness-registry.ts). */
 const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
@@ -171,12 +175,16 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
     if (v.sha256 !== undefined && !(typeof v.sha256 === 'string' && SHA256.test(v.sha256))) fail(`bad sha256 in ${where}: 64 lowercase hex characters`)
     agents[name] = v.sha256 === undefined ? { program } : { program, sha256: v.sha256 as string }
   }
+  const session_cap = raw.session_cap ?? DEFAULT_SESSION_CAP
+  if (typeof session_cap !== 'number' || !Number.isInteger(session_cap) || session_cap < 1 || session_cap > 100) {
+    fail('wrong type for session_cap: expected a whole number 1 to 100')
+  }
   const from = raw.interrupt_from
-  if (from === undefined) return { folders, shell: shell as boolean, permission_skip, agents }
+  if (from === undefined) return { folders, shell: shell as boolean, permission_skip, agents, session_cap: session_cap as number }
   if (!Array.isArray(from) || !from.every(isInterruptSender)) {
     fail('wrong type for interrupt_from: expected an array of "owner", "session:<name>", "machine:<id>/owner" or "machine:<id>/session:<name>"')
   }
-  return { folders, shell: shell as boolean, permission_skip, agents, interrupt_from: from as string[] }
+  return { folders, shell: shell as boolean, permission_skip, agents, interrupt_from: from as string[], session_cap: session_cap as number }
 }
 
 /** Reads and checks the file; a missing or refused one allows nothing and says so on stderr. */
@@ -192,7 +200,7 @@ function readLimits(): LimitsSnapshot {
     }
   }
   process.stderr.write(`limits: ${problem}; nothing is allowed\n`)
-  return { folders: [], shell: false, permission_skip: [], agents: {}, digest: disk.digest, problem }
+  return { folders: [], shell: false, permission_skip: [], agents: {}, digest: disk.digest, problem, session_cap: DEFAULT_SESSION_CAP }
 }
 
 let snapshot = readLimits()
@@ -203,9 +211,12 @@ export function applyLimits(): void {
   snapshot = readLimits()
 }
 
-/** A copy of the applied snapshot. */
+/** A copy of the applied snapshot. `session_cap` is on it but not enumerable, so the snapshot's
+ *  listed fields (and every reader comparing or printing them) stay as they were before the cap. */
 export function limitsSnapshot(): LimitsSnapshot {
-  return structuredClone(snapshot)
+  const copy = structuredClone(snapshot)
+  Object.defineProperty(copy, 'session_cap', { value: snapshot.session_cap, enumerable: false, writable: true, configurable: true })
+  return copy
 }
 
 function sha256Of(file: string): string | undefined {
