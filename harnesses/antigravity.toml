@@ -1,0 +1,24 @@
+# Antigravity CLI, program `agy`. State rules adapted from kbwo/ccmanager
+# src/services/stateDetector/gemini.ts (MIT, see test/fixtures/screens/NOTICE): the same patterns as
+# test/fixtures/screens/harnesses/gemini.toml, since agy succeeds Gemini CLI. No idle rule: no agy
+# prompt has been seen, so agy is markerless and a turn ends `quiet` once the screen holds still for
+# 1500 ms and no screen reads idle. Not yet checked on a real agy. Flags read from the binary's text.
+# skip_prompts_args is data only until U-R1A-17. interrupt is Escape only, because a second Ctrl+C
+# exits agy.
+name = "antigravity"
+program = "agy"
+has_prompts = true
+skip_prompts_args = ["--dangerously-skip-permissions"]
+resume = ["--conversation", "{id}"]
+history = "~/.gemini/antigravity-cli/conversations"
+
+[states]
+waiting_for_approval = [
+  '(?i)waiting for user confirmation',
+  '│ (?:Apply this change|Allow execution|Do you want to proceed)',
+  '(?i)(?:allow execution|do you want to|apply this change)[\s\S]*?\n+[\s\S]*?\byes\b',
+]
+working = ['(?i)esc to cancel']
+
+[keys]
+interrupt = ["Escape"]
