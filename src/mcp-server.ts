@@ -272,8 +272,9 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
       async (args) =>
         answer(() => {
           const extra = Object.keys(args).find((key) => !sendKeys.includes(key));
-          if (extra !== undefined) throw new MailError(400, `unknown key: ${extra}`);
-          return mail.send({ from: "owner", to: args.to, level: args.level, text: args.text, replyByMinutes: args.replyByMinutes });
+          const input = { from: "owner", to: args.to, level: args.level, text: args.text, replyByMinutes: args.replyByMinutes };
+          if (extra !== undefined) mail.refuse(input, `unknown key: ${extra}`);
+          return mail.send(input);
         }),
     );
 

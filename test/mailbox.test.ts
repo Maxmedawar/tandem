@@ -538,3 +538,188 @@ describe('(i) src/stdio-server.ts as its own process', () => {
     }
   }, 60_000)
 })
+
+describe("U-R1A-24-R1 audit table", () => {
+  const SECRET = "SECRETMARK"
+  async function connect(mail: ReturnType<typeof fresh>) {
+    const server = await buildMcpServer(undefined, undefined, mail)
+    const client = new Client({ name: "r1a24-audit", version: "0.0.0" })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+    return { client, close: async () => { await client.close(); await server.close() } }
+  }
+  const rawCount = (path: string) => {
+    const raw = new DatabaseSync(path)
+    try { return Number((raw.prepare("SELECT count(*) AS n FROM mail").get() as { n: number }).n) } finally { raw.close() }
+  }
+
+  it("(1) identity: no argument sets the sender; every unknown key is refused, stores nothing and leaves one audit line", async () => {
+    applyFile({ interrupt_from: ["session:x"] })
+    const path = dbPath()
+    const box = openMailbox({ path, now })
+    const m = await connect(box)
+    for (const key of ["from", "as", "caller", "sender", "agent", "from_id", "interrupt_from", "headers", "x"]) {
+      for (const level of ["fyi", "interrupt"]) {
+        const start = auditLines().length
+        expect(await call(m.client, "mail_send", { to: "w", level, text: SECRET, [key]: "session:x" })).toEqual({ error: `unknown key: ${key}` })
+        const lines = auditLines().slice(start)
+        expect([key, level, lines]).toEqual([key, level, [expect.objectContaining({ from: "owner", to: "w", level, state: "denied", status: 400 })]])
+        expect(JSON.stringify(lines)).not.toContain(SECRET)
+        expect(JSON.stringify(lines)).not.toContain("session:x")
+      }
+    }
+    expect(rawCount(path)).toBe(0)
+    // The store itself takes only owner or session:<name>.
+    for (const from of ["", "Owner", "owner ", "session:", "session:a b", "session:a:b", "hub", undefined, 7, ["owner"]]) {
+      const start = auditLines().length
+      expect([from, statusOf(() => box.send({ from: from as string, to: "w", level: "fyi", text: SECRET }))]).toEqual([from, 400])
+      expect(auditLines().slice(start)).toHaveLength(1)
+    }
+    expect(rawCount(path)).toBe(0)
+    expect(await call(m.client, "mail_send", { to: "w", level: "fyi", text: "hi" })).toEqual(expect.objectContaining({ state: "queued" }))
+    expect(box.sent("owner", 500).map((x) => x.from)).toEqual(["owner"])
+    await m.close()
+    box.close()
+  })
+
+  it("(2) interrupt_from: only listed senders, absent = nobody, and nothing but an applied file widens it", async () => {
+    const box = fresh()
+    const interrupt = (from: string) => statusOf(() => box.send({ from, to: "w", level: "interrupt", text: "stop" }))
+    const table: [string, Record<string, unknown> | undefined, string, number | "sent"][] = [
+      ["no file", undefined, "owner", 403],
+      ["no file", undefined, "session:lead", 403],
+      ["no field", { shell: true }, "owner", 403],
+      ["empty list", { interrupt_from: [] }, "owner", 403],
+      ["owner listed", { interrupt_from: ["owner"] }, "owner", "sent"],
+      ["owner listed", { interrupt_from: ["owner"] }, "session:lead", 403],
+      ["session listed", { interrupt_from: ["session:lead"] }, "session:lead", "sent"],
+      ["session listed", { interrupt_from: ["session:lead"] }, "owner", 403],
+      ["session listed", { interrupt_from: ["session:lead"] }, "session:lead2", 403],
+      ["session listed", { interrupt_from: ["session:lead"] }, "session:LEAD", 403],
+    ]
+    for (const [name, file, from, want] of table) {
+      if (file) applyFile(file)
+      else noFile()
+      expect([name, from, interrupt(from)]).toEqual([name, from, want])
+    }
+    // A copy: changing what limitsSnapshot() returns widens nothing.
+    applyFile({ interrupt_from: ["session:lead"] })
+    limits.limitsSnapshot().interrupt_from!.push("owner")
+    expect(interrupt("owner")).toBe(403)
+    // Allowed, then the file goes bad or goes away and is applied: nobody.
+    applyFile({ interrupt_from: ["owner"] })
+    expect(interrupt("owner")).toBe("sent")
+    applyFile({ interrupt_from: ["owner", "anyone"] })
+    expect(limits.limitsSnapshot().problem).toContain("interrupt_from")
+    expect(interrupt("owner")).toBe(403)
+    applyFile({ interrupt_from: ["owner"] })
+    noFile()
+    expect(interrupt("owner")).toBe(403)
+    // No tool argument widens it.
+    const m = await connect(box)
+    expect(await call(m.client, "mail_send", { to: "w", level: "interrupt", text: "stop", interrupt_from: ["owner"] })).toEqual({ error: "unknown key: interrupt_from" })
+    expect(await call(m.client, "mail_send", { to: "w", level: "interrupt", text: "stop" })).toEqual({ error: DENIED_OWNER })
+    await m.close()
+    box.close()
+  })
+
+  it("(3) a deliverer killed between claim and ack: maybe_delivered after recover, never lost, never claimed twice; recover is idempotent", async () => {
+    const dir = join(BOX, "claimer")
+    mkdirSync(join(dir, "home"), { recursive: true })
+    const path = join(dir, "tandem", "state.db")
+    let t = T
+    let box = openMailbox({ path, now: () => t })
+    const sent = [0, 1, 2].map((k) => box.send({ from: "owner", to: "c", level: "fyi", text: `m${k}` }).id)
+    const ask = box.send({ from: "owner", to: "c", level: "ask", text: "later" }).id
+    box.close()
+    const script = join(dir, "claimer.mjs")
+    writeFileSync(script, [
+      `import { openMailbox } from ${JSON.stringify(pathToFileURL(join(repo, "bridge", "mailbox.ts")).href)}`,
+      `const box = openMailbox()`,
+      `process.stdout.write(JSON.stringify(box.claim("c", "tool_call").map((m) => m.id)) + "\\n")`,
+      `setInterval(() => {}, 60000)`,
+      "",
+    ].join("\n"))
+    const child = spawn(process.execPath, ["--experimental-strip-types", script], {
+      cwd: repo, env: childEnv({ HOME: join(dir, "home"), TANDEM_HOME: join(dir, "tandem") }), stdio: ["ignore", "pipe", "pipe"],
+    })
+    const exited = new Promise<NodeJS.Signals | null>((resolve) => child.on("exit", (_code, signal) => resolve(signal)))
+    const claimed = await new Promise<string[]>((resolve, reject) => {
+      let out = ""
+      child.stdout.on("data", (d) => {
+        out += d
+        if (out.includes("\n")) { child.kill("SIGKILL"); resolve(JSON.parse(out)) }
+      })
+      child.on("exit", () => reject(new Error("the claimer ended early")))
+    })
+    expect(await exited).toBe("SIGKILL")
+    expect(claimed).toEqual(sent)
+
+    box = openMailbox({ path, now: () => t })
+    const states = () => box.sent("owner", 500).map((m) => [m.id, m.state])
+    expect(states()).toEqual([...sent.map((id) => [id, "delivering"]), [ask, "queued"]]) // open recovers nothing
+    expect(box.claim("c", "tool_call")).toEqual([])
+    expect(box.read("c", 500).map((m) => m.id)).toEqual([ask])
+    t += 5
+    expect(box.recover()).toBe(3)
+    const after = states()
+    expect(after).toEqual([...sent.map((id) => [id, "maybe_delivered"]), [ask, "delivered"]])
+    t += 5
+    expect(box.recover()).toBe(0)
+    expect(box.ack(sent)).toBe(0)
+    expect(box.claim("c", "idle")).toEqual([])
+    expect(box.read("c", 500)).toEqual([])
+    expect(states()).toEqual(after)
+    box.close()
+    const raw = new DatabaseSync(path)
+    try {
+      expect(raw.prepare("SELECT count(*) AS n, count(DISTINCT id) AS d, max(state_at_ms) AS at FROM mail").get()).toEqual({ n: 4, d: 4, at: T + 5 })
+    } finally {
+      raw.close()
+    }
+  }, 60_000)
+
+  it("(4) every refusal kind: one audit line, no row, no message text; control characters", () => {
+    applyFile({ interrupt_from: ["session:lead"] })
+    const path = dbPath()
+    const box = openMailbox({ path, now })
+    const ok = { from: "owner", to: "w", level: "fyi", text: SECRET } as const
+    const refusals: [string, Record<string, unknown>, number][] = [
+      ["empty to", { ...ok, to: "" }, 400],
+      ["other computer", { ...ok, to: "mini:w" }, 400],
+      ["relay", { ...ok, to: "relay-x" }, 400],
+      ["space in to", { ...ok, to: "a b" }, 400],
+      ["257 bytes", { ...ok, to: "a".repeat(257) }, 400],
+      ["newline in to", { ...ok, to: "w\n" }, 400],
+      ["to not a string", { ...ok, to: { name: SECRET } }, 400],
+      ["level", { ...ok, level: "urgent" }, 400],
+      ["empty text", { ...ok, text: "" }, 400],
+      ["too long", { ...ok, text: SECRET + "x".repeat(16_384) }, 400],
+      ["text not a string", { ...ok, text: { body: SECRET } }, 400],
+      ["lone surrogate", { ...ok, text: SECRET + "\ud800" }, 400],
+      ["replyBy on fyi", { ...ok, replyByMinutes: 5 }, 400],
+      ["replyBy 0", { ...ok, level: "ask", replyByMinutes: 0 }, 400],
+      ["not listed", { ...ok, level: "interrupt" }, 403],
+    ]
+    for (let c = 0; c <= 0x1f; c++) if (c !== 9 && c !== 10) refusals.push([`control ${c}`, { ...ok, text: SECRET + String.fromCharCode(c) }, 400])
+    refusals.push(["DEL", { ...ok, text: SECRET + "\u007f" }, 400])
+    for (const [name, input, status] of refusals) {
+      const start = auditLines().length
+      expect([name, statusOf(() => box.send(input as never))]).toEqual([name, status])
+      const lines = auditLines().slice(start)
+      expect([name, lines]).toEqual([name, [expect.objectContaining({ event: "mail.send", state: "denied", status })]])
+      expect([name, JSON.stringify(lines).includes(SECRET)]).toEqual([name, false])
+    }
+    expect(rawCount(path)).toBe(0)
+    expect(box.send({ ...ok, text: "tab\tand\nnewline é 😀" }).state).toBe("queued")
+    expect(rawCount(path)).toBe(1)
+    box.close()
+  })
+
+  it("(5) bridge/mailbox.ts imports only node builtins, the body limit, audit and limits", () => {
+    const source = readFileSync(join(repo, "bridge", "mailbox.ts"), "utf8")
+    const froms = [...source.matchAll(/(?:from|import\(|require\(|createRequire\(import\.meta\.url\)\()\s*["\x27]([^"\x27]+)["\x27]/g)].map((x) => x[1]).sort()
+    expect(froms).toEqual(["../src/fabric/types.ts", "./audit.ts", "./limits.ts", "node:crypto", "node:fs", "node:module", "node:os", "node:path", "node:sqlite", "node:sqlite", "node:sqlite"])
+    expect(source).not.toMatch(/child_process|tmux|terminal-session|router|input-gate|harness|send-keys|spawn|exec(File|Sync)/)
+  })
+})

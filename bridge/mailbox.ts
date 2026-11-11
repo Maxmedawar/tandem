@@ -214,6 +214,11 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
         throw e
       }
     },
+    /** A send the caller refuses before it reaches the store (the tool refusing an unknown key): the same one audit line, then the 400. */
+    refuse(input: SendInput, message: string): never {
+      note(input, { state: 'denied', status: 400 })
+      throw new MailError(400, message)
+    },
     /** Queued counts per level. */
     pending(to: string): Record<Level, number> {
       const counts = { fyi: 0, ask: 0, interrupt: 0 }
