@@ -5,18 +5,21 @@
  *
  * Local half: buildMcpServer with a host on a temporary database, over an in-memory
  * transport. Hub half: one local hub (`wrangler dev --local`) and one real bridge,
- * `alpha`, via ../e2e/hub-harness.ts; skipped when wrangler or tmux is missing.
+ * `alpha`, via ../e2e/hub-harness.ts, and a src/stdio-server.ts child on the same database
+ * file (two processes, one SQLite file); skipped when wrangler or tmux is missing.
  */
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { buildMcpServer } from '../../src/mcp-server.ts'
 import { createLocalFabricHost, type LocalFabricHost } from '../../bridge/fabric/local-fabric-host.ts'
 import {
-  hub, missing, signIn, startBridge, startHub, stopBridge, stopHub, type Bridge,
+  hub, missing, repo, signIn, startBridge, startHub, stopBridge, stopHub, type Bridge,
 } from '../e2e/hub-harness.ts'
 
 const SESSION_TOOLS = ['open_session', 'list_sessions', 'send_to_session', 'interrupt_session', 'close_session', 'relay', 'list_devices']
@@ -72,6 +75,29 @@ async function call(client: Client, name: string, args: Record<string, unknown> 
 }
 
 const names = async (client: Client) => (await client.listTools()).tools.map((tool) => tool.name).sort()
+
+/** src/stdio-server.ts as its own process on `path` (own HOME, tmux dir, allowlist); close() ends that child only. */
+async function startStdio(path: string) {
+  const base = mkdtempSync('/tmp/r1a22-stdio-')
+  folders.push(base)
+  mkdirSync(join(base, 'home'))
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(process.env)) {
+    if (value === undefined || key === 'TMUX' || key === 'TMUX_PANE' || key.startsWith('TANDEM_') || key.startsWith('CCM_')) continue
+    env[key] = value
+  }
+  Object.assign(env, {
+    HOME: join(base, 'home'), TMUX_TMPDIR: base, TANDEM_CWD_ALLOWLIST: base, TANDEM_ENABLED_ENGINES: 'shell',
+    CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: path,
+  })
+  const transport = new StdioClientTransport({
+    command: process.execPath, args: ['--experimental-strip-types', 'src/stdio-server.ts'], cwd: repo, env, stderr: 'pipe',
+  })
+  transport.stderr?.on('data', () => {})
+  const client = new Client({ name: 'r1a22-stdio', version: '0.0.0' })
+  await client.connect(transport)
+  return { client, close: () => client.close() }
+}
 
 describe('local MCP server', () => {
   it('with a fabric host: the 7 session tools plus the 11 fabric tools; a post reads back', async () => {
@@ -167,6 +193,42 @@ describe.skipIf(Boolean(missing))(title, () => {
     })
     expect(posted.error).toBeUndefined()
     expect(posted.id).toEqual(expect.any(String))
+  }, WAIT)
+
+  it('a stdio server on the same file: both processes write and read, the file stays sound, a write blocked past busy_timeout answers fabric_unavailable', async () => {
+    const stdio = await startStdio(dbPath)
+    const post = (to: Client, body: string) =>
+      call(to, 'room_post', { projectId, room: 'main', type: 'message', body, idempotencyKey: `r1a22-${body.replace(/ /g, '-')}` })
+    try {
+      expect(await call(stdio.client, 'project_list')).toEqual(expect.arrayContaining([expect.objectContaining({ projectId })]))
+      expect((await post(stdio.client, 'hello from stdio')).error).toBeUndefined()
+      const read = await call(client!, 'room_read', { projectId, room: 'main' })
+      expect((read.events as { body: string }[]).map((event) => event.body)).toEqual(['hello from the hub', 'hello from stdio'])
+      const check = new DatabaseSync(dbPath)
+      try {
+        expect(check.prepare('PRAGMA integrity_check').get()).toEqual({ integrity_check: 'ok' })
+      } finally {
+        check.close()
+      }
+
+      // A third connection holds the write lock: both entry points wait out busy_timeout (5 s), then answer.
+      const blocker = new DatabaseSync(dbPath)
+      blocker.exec('BEGIN IMMEDIATE')
+      const started = Date.now()
+      try {
+        const [viaHub, viaStdio] = await Promise.all([post(client!, 'blocked hub'), post(stdio.client, 'blocked stdio')])
+        expect(Date.now() - started).toBeGreaterThanOrEqual(4_500)
+        expect(viaHub).toEqual({ error: 'fabric_unavailable' })
+        expect(viaStdio).toEqual({ error: 'fabric_unavailable' })
+      } finally {
+        blocker.exec('ROLLBACK')
+        blocker.close()
+      }
+      expect((await post(stdio.client, 'after the lock')).error).toBeUndefined()
+      expect((await post(client!, 'after the lock hub')).error).toBeUndefined()
+    } finally {
+      await stdio.close()
+    }
   }, WAIT)
 
   it("the local server on the same database lists the hub's project (one owner from both surfaces)", async () => {
