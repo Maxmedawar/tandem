@@ -7,8 +7,9 @@
 # test/fixtures/screens/NOTICE) plus `No, suggest changes (esc)`. approve is Enter (the default
 # `Allow once`), deny is Escape. interrupt is one Escape; a second Escape rewinds, and Ctrl+C on an
 # empty input starts the quit. delivery is `notice`: hooks live in gemini's settings.json, which
-# Tandem never writes. No dialog row: the trusted-folders dialog is off by default and its `●`
-# marker is not a SCHEMA highlight.
+# Tandem never writes. The dialog row `folder-trust` answers the trusted-folders dialog (off by
+# default, `●` marks the selected row) with `Trust folder`, which trusts this folder only, never its
+# parent; it is typed only during start and only where the limits file allows `trust`.
 name = "gemini"
 program = "gemini"
 has_prompts = true
@@ -32,3 +33,10 @@ idle = ['(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file']
 interrupt = ["Escape"]
 approve = "Enter"
 deny = "Escape"
+
+[[dialogs]]
+name = "folder-trust"
+kind = "trust"
+match = ['(?i)do you trust the files in this folder\?']
+answer = "Trust folder"
+highlight = "●"

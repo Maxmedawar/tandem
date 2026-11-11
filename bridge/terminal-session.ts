@@ -58,7 +58,7 @@ import { cpus, homedir, loadavg } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { RE2JS } from 're2js'
 import { CLAUDE_DESCRIPTOR, type EngineDescriptor } from './drivable.ts'
-import { NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
+import { HIGHLIGHTS, NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { noteSessionClose, noteSessionStart, TRANSCRIPTS_DIR } from './transcripts/index.ts'
 
@@ -521,15 +521,32 @@ function patternsOf(d: Dialog): RE2JS[] {
   return set
 }
 
+const isAnswer = (t: string, d: Dialog) => t === d.answer || t.startsWith(`${d.answer} (`)
+
+/** Key mode's start form: the trimmed line, after one optional HIGHLIGHTS marker and its spaces,
+ *  starts `[k]` and spaces; the key and the rest, else undefined. */
+function startForm(line: string): { key: string; rest: string } | undefined {
+  let t = line.trim()
+  const mark = HIGHLIGHTS.find((m) => t.startsWith(m))
+  if (mark !== undefined) t = t.slice(mark.length).trimStart()
+  const m = /^\[([a-z0-9])\]\s+(.*)$/.exec(t)
+  return m ? { key: m[1]!, rest: m[2]! } : undefined
+}
+
 /** An option line of `d`: its text, trimmed, after an optional highlight marker and an optional
  *  `N. ` (key mode: before a trailing whitespace and the key), equals the answer or starts with
- *  the answer and ` (`. */
+ *  the answer and ` (`. Key mode also reads the start form: `[key] ` (after an optional marker)
+ *  then the answer. */
 function isAnswerLine(line: string, d: Dialog): boolean {
   let t = line.trim()
   if (d.highlight !== undefined && t.startsWith(d.highlight)) t = t.slice(d.highlight.length).trimStart()
   t = t.replace(/^\d+\.\s*/, '')
-  if (d.key !== undefined) t = t.replace(new RegExp(`\\s+${d.key}$`), '')
-  return t === d.answer || t.startsWith(`${d.answer} (`)
+  if (d.key !== undefined) {
+    const start = startForm(line)
+    if (start?.key === d.key && isAnswer(start.rest, d)) return true
+    t = t.replace(new RegExp(`\\s+${d.key}$`), '')
+  }
+  return isAnswer(t, d)
 }
 
 /** The dialogs on screen: every `match` pattern matches the screen and an answer line is present. */
@@ -541,18 +558,18 @@ export function shownDialogs(pane: string, dialogs: readonly Dialog[] = []): Dia
 /** The one key this screen poll may send to dialog `d`, else undefined. A block is the run of
  *  non-blank lines, not starting `─`, around the answer line. Select mode (`highlight`): Enter only
  *  when the marker is on the answer line, else one Down/Up toward it (the list may wrap, so never a
- *  blind Down+Enter). Key mode (`key`): the key only when the answer line ends with whitespace and
- *  the key and no other line of its block ends that way. */
+ *  blind Down+Enter). Key mode (`key`): the key only when the answer line shows it (ends with
+ *  whitespace and the key, or starts `[key] `) and no other line of its block shows it. */
 export function dialogKey(pane: string, d: Dialog): string | undefined {
   const lines = pane.split('\n')
   const at = lines.findIndex((l) => isAnswerLine(l, d))
   if (at < 0) return undefined
   const inBlock = (i: number) => (lines[i] ?? '').trim() !== '' && !/^\s*─/.test(lines[i]!)
   if (d.key !== undefined) {
-    const ends = (i: number) => new RegExp(`\\s${d.key}$`).test(lines[i]!.trimEnd())
-    if (!ends(at)) return undefined
-    for (let i = at - 1; inBlock(i); i--) if (ends(i)) return undefined
-    for (let i = at + 1; inBlock(i); i++) if (ends(i)) return undefined
+    const shows = (i: number) => new RegExp(`\\s${d.key}$`).test(lines[i]!.trimEnd()) || startForm(lines[i]!)?.key === d.key
+    if (!shows(at)) return undefined
+    for (let i = at - 1; inBlock(i); i--) if (shows(i)) return undefined
+    for (let i = at + 1; inBlock(i); i++) if (shows(i)) return undefined
     return d.key
   }
   const highlighted = (i: number) => lines[i]!.trimStart().startsWith(d.highlight!)

@@ -143,7 +143,7 @@ describe("gemini: the built-in harness file", () => {
     expect(h.hook).toBeUndefined();
     expect(h.adapter).toBeUndefined();
     expect(h.logo).toBeUndefined();
-    expect(h.dialogs).toBeUndefined();
+    expect(h.dialogs).toEqual([{ name: "folder-trust", kind: "trust", match: ["(?i)do you trust the files in this folder\\?"], answer: "Trust folder", highlight: "●" }]);
   });
 
   it("a gemini that is a symlink to an executable named gemini.js is kind agent", () => {

@@ -139,7 +139,7 @@ describe("cursor-agent: the built-in harness file", () => {
     expect(h.hook).toBeUndefined();
     expect(h.adapter).toBeUndefined();
     expect(h.logo).toBeUndefined();
-    expect(h.dialogs).toBeUndefined();
+    expect(h.dialogs).toEqual([{ name: "workspace-trust", kind: "trust", match: ["Workspace Trust Required", "Do you trust the contents of this directory\\?"], answer: "Trust this workspace", key: "a" }]);
   });
 
   it("a cursor-agent that is a symlink to an executable named cursor-agent is kind agent", () => {

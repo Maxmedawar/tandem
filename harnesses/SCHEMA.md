@@ -97,25 +97,31 @@ tables.
 | `kind` | string | required; `trust`, `update` or `bypass` |
 | `match` | array of patterns | required; 1 to 4 RE2 patterns, ALL must match the screen; screen text, not command text |
 | `answer` | string | required; 1 to 80 characters, command text |
-| `highlight` | string | one of `❯` `›` `>`: select mode; screen text, not command text |
-| `key` | string | one character `a`-`z` or `0`-`9`: key mode |
+| `highlight` | string | one of `❯` `›` `>` `●` `▶`: select mode; screen text, not command text |
+| `key` | string | one character `a`-`z` or `0`-`9`: key mode; shown at the end of the answer line or at its start as `[k] ` |
 
 Exactly one of `highlight` and `key`. Refused: an `answer` that matches NEVER
 (`bridge/harness-registry.ts`: sign-in, log-in, purchase, buy, subscription, payment, billing,
 credit card text), any `answer` containing `updat`, `install` or `upgrad` (any case), and an
 `update` answer that does not start with `Skip`, `Not now`, `Later`, `No`, `Dismiss` or `Remind`:
-an update dialog may only be skipped.
+an update dialog may only be skipped, and a `trust` answer matching `parent`, `all` (a whole word),
+`always` or `every` (any case): a trust answer trusts this folder only.
 
 How Tandem uses them (`bridge/terminal-session.ts`):
 
 - **Shown.** A dialog is on screen when all its `match` patterns match and an answer line is
   present: a line whose text, trimmed, after an optional `highlight` marker and an optional `N. `
   (in key mode also without a trailing whitespace and the key), equals `answer` or starts with
-  `answer` and ` (`. Two dialogs shown at once are not answered.
+  `answer` and ` (`. In key mode a line is also an answer line in the start form: the trimmed
+  line, after one optional marker from `❯` `›` `>` `●` `▶` and its following spaces, starts with
+  `[<key>]` and one or more spaces, and the rest equals `answer` or starts with `answer` and ` (`;
+  a row whose bracket holds another key is not an answer line. Two dialogs shown at once are not
+  answered.
 - **The key** (`dialogKey(pane, dialog)`). A block is the run of non-blank lines, not starting
   `─`, around the answer line. Select mode: Enter only when the `highlight` marker is on the
-  answer line, else one Down or Up toward it. Key mode: `key` only when the answer line ends with
-  whitespace and the key and no other line of its block ends that way.
+  answer line, else one Down or Up toward it. Key mode: a line shows the key when it ends with
+  whitespace and the key, or starts with `[<key>]` in the start form; `key` only when the answer
+  line shows it and no other line of its block shows it.
 - **When.** Only during start (warmup), before the ready check, so a dialog wins over any state
   (`waiting_for_approval` included): one key per screen poll, no next key until the screen
   changed, at most 8 arrows and one Enter or key per dialog per start. Only when the start allows
