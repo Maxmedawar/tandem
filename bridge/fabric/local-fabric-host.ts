@@ -2,7 +2,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { isFabricEnabled } from '../../src/fabric/capabilities.ts'
 import type { FabricClient } from '../../src/fabric/client.ts'
-import type { FabricAuditAction, FabricAuditEntry } from './sqlite-fabric-client.ts'
+import type { FabricAuditAction, FabricAuditEntry, SQLiteFabricClientOptions } from './sqlite-fabric-client.ts'
 
 export interface LocalFabricHost {
   readonly client: FabricClient
@@ -14,6 +14,8 @@ export interface LocalFabricHostOptions {
   readonly audit?: (entry: FabricAuditEntry) => void
   /** Receives a one-line diagnostic. It must never be given a request body. */
   readonly log?: (message: string) => void
+  /** Who a room post wakes (SQLiteFabricClientOptions.onWake), passed to the client. */
+  readonly onWake?: SQLiteFabricClientOptions['onWake']
 }
 
 /**
@@ -36,7 +38,7 @@ export async function createLocalFabricHost(
   const databasePath = configuredPath || join(homedir(), '.tandem', 'fabric', 'fabric.sqlite3')
 
   const { SQLiteFabricClient } = await import('./sqlite-fabric-client.ts')
-  const client = new SQLiteFabricClient({ databasePath, now: options.now, audit: options.audit })
+  const client = new SQLiteFabricClient({ databasePath, now: options.now, audit: options.audit, onWake: options.onWake })
 
   let closed = false
   return Object.freeze({
@@ -54,6 +56,8 @@ export interface StartFabricDependencies {
   readonly createFabricHost?: typeof createLocalFabricHost
   readonly stdout?: (value: string) => void
   readonly stderr?: (value: string) => void
+  /** Passed to the host: who a room post wakes. */
+  readonly onWake?: SQLiteFabricClientOptions['onWake']
 }
 
 const FABRIC_AUDIT_ACTIONS = new Set<FabricAuditAction>([
@@ -76,6 +80,7 @@ export async function startFabric(dependencies: StartFabricDependencies = {}): P
   try {
     fabricHost = await createFabricHost(env, {
       audit: productionFabricAuditSink(writeStdout, writeStderr),
+      onWake: dependencies.onWake,
     })
   } catch {
     bestEffort(writeStderr, '[bridge] local Fabric initialization failed; Fabric disabled\n')

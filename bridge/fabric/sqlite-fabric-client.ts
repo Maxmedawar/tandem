@@ -55,7 +55,11 @@ import { createLocalVectorStore, type LocalVectorStore, type VectorBackend } fro
 // the real node:sqlite implementation without adding a package dependency.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
 
-export const CURRENT_FABRIC_SCHEMA_VERSION = 12
+export const CURRENT_FABRIC_SCHEMA_VERSION = 13
+/** The 5th agent post in a row in one room wakes nobody; an owner post starts the count again. */
+export const HOP_BUDGET = 5
+/** Names one post may wake; the rest are ignored. */
+export const MAX_MENTIONS = 10
 export const DEFAULT_ROOM_EVENT_TTL_HOPS = 8
 export const DEFAULT_ROOM_RETENTION_DAYS = 30
 export const DEFAULT_CURSOR_TTL_MS = DEFAULT_ROOM_RETENTION_DAYS * 86_400_000
@@ -162,6 +166,25 @@ export interface SQLiteFabricClientOptions {
    * tests that predate the bus.
    */
   readonly bus?: RoomBus
+  /**
+   * Called once per fresh post that names at least one session to wake, after the post is
+   * committed and outside its transaction. A throw is caught: it never fails or undoes the post.
+   */
+  readonly onWake?: (wake: { names: string[]; room: string; eventId: string; projectId: string }) => void
+}
+
+/** `@name` (a session on the memory home's computer) or `@computer:name`; not inside an email or after `@` or `:`. */
+const MENTION = /(?<![A-Za-z0-9._@:-])@((?:[a-z0-9._-]{1,64}:)?[A-Za-z0-9._-]{1,256})/g
+
+/** The sessions a room post names: trailing dots dropped (a sentence end), distinct, in order, at most MAX_MENTIONS. */
+export function mentionsIn(body: string): string[] {
+  const names: string[] = []
+  for (const match of body.matchAll(MENTION)) {
+    if (names.length === MAX_MENTIONS) break
+    const name = match[1].replace(/\.+$/, '')
+    if (name !== '' && !names.includes(name)) names.push(name)
+  }
+  return names
 }
 
 /**
@@ -523,6 +546,17 @@ DELETE FROM memory_vectors WHERE owner_id IS NULL;
  * bookkeeping changed meaning is the beginning, and reconciliation is
  * idempotent.
  */
+/** How many agent posts in a row each room has had since its last owner post (the hop budget). */
+const SCHEMA_V13 = `
+CREATE TABLE IF NOT EXISTS room_agent_run (
+  owner_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  room TEXT NOT NULL,
+  run INTEGER NOT NULL,
+  PRIMARY KEY (owner_id, project_id, room)
+);
+`
+
 /**
  * Which owner's fabric this device holds.
  *
@@ -600,6 +634,9 @@ const CURRENT_SCHEMA_COLUMNS: Readonly<Record<string, readonly SchemaColumnRequi
   fabric_owner: [
     ['singleton', 'INTEGER', 0, 1], ['owner_id', 'TEXT', 1, 0], ['first_seen_at_ms', 'INTEGER', 1, 0],
   ],
+  room_agent_run: [
+    ['owner_id', 'TEXT', 1, 1], ['project_id', 'TEXT', 1, 2], ['room', 'TEXT', 1, 3], ['run', 'INTEGER', 1, 0],
+  ],
   memories: [
     ['id', 'TEXT', 0, 1], ['owner_id', 'TEXT', 1, 0], ['scope', 'TEXT', 1, 0],
     ['project_id', 'TEXT', 0, 0], ['agent_id', 'TEXT', 0, 0], ['kind', 'TEXT', 1, 0],
@@ -670,6 +707,7 @@ const CURRENT_SCHEMA_UNIQUE_KEYS = Object.freeze([
   ['room_stream_agent_floor', ['owner_id', 'project_id', 'room', 'agent_id']],
   ['room_bus_watermark', ['owner_id', 'project_id']],
   ['room_bus_fence', ['owner_id', 'project_id']],
+  ['room_agent_run', ['owner_id', 'project_id', 'room']],
   ['memory_vectors', ['memory_id']],
 ] as const)
 
@@ -686,6 +724,7 @@ const CURRENT_SCHEMA_FOREIGN_KEYS: Readonly<Record<string, readonly string[][]>>
   room_bus_watermark: [],
   room_bus_fence: [],
   fabric_owner: [],
+  room_agent_run: [],
   memory_vectors: [],
   memory_embedding_config: [],
 })
@@ -856,6 +895,7 @@ export class SQLiteFabricClient implements FabricClient {
   readonly #rateWindowMs: number
   readonly #auditSink?: (entry: FabricAuditEntry) => void
   readonly #bus?: RoomBus
+  readonly #onWake?: SQLiteFabricClientOptions['onWake']
   #closed = false
 
   get vectorBackend(): VectorBackend { return this.#vectorStore.backend }
@@ -868,6 +908,7 @@ export class SQLiteFabricClient implements FabricClient {
     this.#rateWindowMs = options.roomRateLimit?.windowMs ?? DEFAULT_ROOM_RATE_LIMIT.windowMs
     this.#auditSink = options.audit
     this.#bus = options.bus
+    this.#onWake = options.onWake
     this.#embeddingProvider = options.embeddingProvider ?? new DeterministicEmbeddingProvider()
     if (!this.#embeddingProvider.offline || !Number.isSafeInteger(this.#embeddingProvider.dimensions) || this.#embeddingProvider.dimensions < 8) throw new FabricStorageError()
     if (!Number.isSafeInteger(this.#busyTimeoutMs) || this.#busyTimeoutMs < 1 || this.#busyTimeoutMs > 60_000 ||
@@ -1028,23 +1069,55 @@ export class SQLiteFabricClient implements FabricClient {
   }
 
   async postRoomEvent(ctx: CallerContext, input: PostRoomEventInput): Promise<RoomEvent> {
-    return this.audited(ctx, 'room.post', async () => {
+    // Set only inside the transaction that stores a fresh post; a duplicate or a failure leaves it empty.
+    let wake: string[] = []
+    const event = await this.audited(ctx, 'room.post', async () => {
       assertCapability(ctx, 'room:post')
       const project = this.currentActiveProject(ctx)
       validatePostRoomEventInput(input)
       if (!this.#bus) {
         return this.storage(() => this.transaction(() => {
           const prepared = this.prepareRoomPost(ctx, project, input)
-          return prepared.kind === 'duplicate' ? prepared.event : this.commitRoomPost(ctx, prepared)
+          if (prepared.kind === 'duplicate') return prepared.event
+          const stored = this.commitRoomPost(ctx, prepared)
+          wake = this.advanceAgentRun(ctx, stored)
+          return stored
         }))
       }
-      return this.postRoomEventThroughBus(ctx, project, input)
+      return this.postRoomEventThroughBus(ctx, project, input, names => { wake = names })
     }, event => ({
       projectId: event.projectId,
       targetId: event.id,
       byteCount: Buffer.byteLength(input.body, 'utf8'),
       correlationId: opaqueAuditCorrelation(event.correlationId),
     }))
+    if (wake.length > 0 && this.#onWake) {
+      try {
+        const result: unknown = this.#onWake({ names: wake, room: event.room, eventId: event.id, projectId: event.projectId })
+        if (result instanceof Promise) result.catch(() => undefined)
+      } catch { /* a wake never fails or undoes a stored post */ }
+    }
+    return event
+  }
+
+  /**
+   * Counts a fresh post into its room's run, in the transaction that stores it, and returns the
+   * names it wakes: an owner post sets the run to 0 and wakes its mentions; any other post adds 1
+   * and wakes its mentions only while the run is below HOP_BUDGET.
+   *
+   * Known limit: until U-R1A-36A gives agent callers their own identity, bridge/fabric/rpc-router.ts
+   * gives every MCP tool call actorType 'owner', so in production every post resets the run. A post
+   * forwarded through the hub from another computer stays 'owner' even after 36A (36B or later).
+   */
+  private advanceAgentRun(ctx: CallerContext, event: RoomEvent): string[] {
+    const owner = ctx.actorType === 'owner'
+    const row = this.#database.prepare(`
+      INSERT INTO room_agent_run (owner_id, project_id, room, run) VALUES (?, ?, ?, ?)
+      ON CONFLICT (owner_id, project_id, room) DO UPDATE SET run = CASE WHEN ? THEN 0 ELSE run + 1 END
+      RETURNING run
+    `).get(ctx.ownerId, event.projectId, event.room, owner ? 0 : 1, owner ? 1 : 0) as SqlRow | undefined
+    if (!row) throw new FabricStorageError()
+    return owner || requiredNumber(row, 'run') < HOP_BUDGET ? mentionsIn(event.body) : []
   }
 
   /**
@@ -1212,7 +1285,12 @@ export class SQLiteFabricClient implements FabricClient {
    * the process died in between - is repaired by reconciliation on the next
    * read, which is why the projection is allowed to lag but never to lead.
    */
-  private async postRoomEventThroughBus(ctx: CallerContext, project: Project, input: PostRoomEventInput): Promise<RoomEvent> {
+  private async postRoomEventThroughBus(
+    ctx: CallerContext,
+    project: Project,
+    input: PostRoomEventInput,
+    onFresh: (wake: string[]) => void,
+  ): Promise<RoomEvent> {
     const bus = this.#bus
     if (!bus) throw new FabricStorageError()
 
@@ -1245,7 +1323,10 @@ export class SQLiteFabricClient implements FabricClient {
     let event: RoomEvent | undefined
     await this.reconcileProject(ctx.ownerId, project.projectId, {
       untilSequence: published.sequence,
-      finalize: () => { event = this.finishRoomPost(ctx, project, prepared, published.sequence) },
+      finalize: () => {
+        event = this.finishRoomPost(ctx, project, prepared, published.sequence)
+        onFresh(this.advanceAgentRun(ctx, event))
+      },
     })
     if (!event) throw new FabricStorageError()
     return event
@@ -1900,6 +1981,7 @@ export class SQLiteFabricClient implements FabricClient {
         `)
       }
       if (version < 12) this.#database.exec(SCHEMA_V12)
+      if (version < 13) this.#database.exec(SCHEMA_V13)
       this.validateCurrentSchema()
       this.#database.exec(`PRAGMA user_version = ${CURRENT_FABRIC_SCHEMA_VERSION}`)
       this.#database.exec('COMMIT')

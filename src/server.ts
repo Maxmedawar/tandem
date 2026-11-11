@@ -51,7 +51,29 @@ if (fleetToken && (!Number.isInteger(fleetPort) || fleetPort < 0 || fleetPort > 
 // hub link and the OAuth server that use it, and only when CCM_FABRIC_ENABLED=1. It never
 // stops the bridge from starting; shutdown closes it.
 const { startFabric } = await import("../bridge/fabric/local-fabric-host.ts");
-const fabric = await startFabric();
+// This process's one mailbox (bridge/mailbox.ts), opened below when the store or the hub link is on;
+// the carrier and the room wakes share it.
+let mailBox: import("../bridge/mailbox.ts").Mailbox | undefined;
+// A room post that names a session leaves it one fyi line in this mailbox (bound late). A refused
+// wake drops that one name with one stderr line, never the name or the text.
+const onWake = ({ names, room, eventId }: { names: string[]; room: string; eventId: string }) => {
+  for (const name of names) {
+    try {
+      mailBox?.wake(name, room, eventId);
+    } catch (error) {
+      const status = (error as { status?: unknown } | undefined)?.status;
+      console.error(`room wake: ${typeof status === "number" ? status : "failed"}`);
+    }
+  }
+};
+const fabric = await startFabric({ onWake });
+if (fabric || process.env.TANDEM_HUB_LINK_URL) {
+  try {
+    mailBox = (await import("../bridge/mailbox.ts")).openMailbox();
+  } catch {
+    console.error("mail: store unavailable; room wakes and mail between computers are off");
+  }
+}
 
 // The link module (and the hub wire code it imports) loads only when the link is
 // configured, so with the URL unset nothing new is loaded or started. With the store open
@@ -60,7 +82,6 @@ const fabric = await startFabric();
 let startConfiguredHubLink: (() => { close(): Promise<void> }) | undefined;
 let hubForward: FabricForward | undefined;
 // Mail between computers (bridge/hub-mail.ts): carried by this process only, with the link settings.
-let mailBox: import("../bridge/mailbox.ts").Mailbox | undefined;
 let stopMail: (() => void) | undefined;
 // Presence between computers (bridge/hub-presence.ts): pushed and read by this process only, with the link settings.
 let stopPresence: (() => void) | undefined;
@@ -75,19 +96,13 @@ if (process.env.TANDEM_HUB_LINK_URL) {
       startConfiguredHubLink = () =>
         startHubLink({ ...hubLinkConfig, memoryHome: fabric !== undefined }, { handleRequest: (frame) => handleHubRequest(frame, fabric) });
       if (!fabric) hubForward = fabricForward(hubLinkConfig);
-      try {
-        const { openMailbox } = await import("../bridge/mailbox.ts");
-        const { hubMail } = await import("../bridge/hub-mail.ts");
-        mailBox = openMailbox();
-        stopMail = hubMail(hubLinkConfig, { box: mailBox }).start();
-      } catch {
+      if (mailBox) {
         try {
-          mailBox?.close();
+          const { hubMail } = await import("../bridge/hub-mail.ts");
+          stopMail = hubMail(hubLinkConfig, { box: mailBox }).start();
         } catch {
-          /* already unusable */
+          console.error("mail: mail between computers is off");
         }
-        mailBox = undefined;
-        console.error("mail: store unavailable; mail between computers is off");
       }
       try {
         const { createPresence } = await import("../bridge/presence.ts");

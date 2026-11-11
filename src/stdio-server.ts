@@ -46,10 +46,24 @@ const { createFleetRuntime, buildDefaultDeviceIdFromEnv } = await import("../bri
 const { capabilityReport } = await import("../bridge/engine-registry.ts");
 const { startFabric } = await import("../bridge/fabric/local-fabric-host.ts");
 
+// This computer's mailbox (bridge/mailbox.ts), opened below; several processes may open its file at once.
+let mail: import("../bridge/mailbox.ts").Mailbox | undefined;
+// A room post that names a session leaves it one fyi line in this mailbox (bound late: the box opens
+// below). A refused wake drops that one name with one stderr line, never the name or the text.
+const onWake = ({ names, room, eventId }: { names: string[]; room: string; eventId: string }) => {
+  for (const name of names) {
+    try {
+      mail?.wake(name, room, eventId);
+    } catch (error) {
+      const status = (error as { status?: unknown } | undefined)?.status;
+      console.error(`room wake: ${typeof status === "number" ? status : "failed"}`);
+    }
+  }
+};
 // This process's own fabric store (only with CCM_FABRIC_ENABLED=1). The bridge process may
 // open the same SQLite file: SQLite's file locks serialise the writes. Its diagnostics and
 // audit lines go to stderr, since stdout is the wire.
-const fabric = await startFabric({ stdout: (value) => process.stderr.write(value) });
+const fabric = await startFabric({ stdout: (value) => process.stderr.write(value), onWake });
 
 // No store here and a hub link set: the 11 fabric tools pass each call to the hub, which sends
 // it to the memory home. Nothing is stored on this computer.
@@ -83,8 +97,6 @@ const fleet = createFleetRuntime({
   defaultDeviceId: buildDefaultDeviceIdFromEnv(),
   localEngines: localCapabilities.filter((entry) => entry.enabled && entry.available).map((entry) => entry.engine),
 });
-// This computer's mailbox (bridge/mailbox.ts); several processes may open its file at once.
-let mail: import("../bridge/mailbox.ts").Mailbox | undefined;
 try {
   mail = (await import("../bridge/mailbox.ts")).openMailbox();
 } catch {
