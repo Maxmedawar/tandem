@@ -22,6 +22,8 @@ import { basename, dirname, join, resolve, sep } from 'node:path'
 import { parse } from 'smol-toml'
 import { readProtectedRegularFileSync } from '../src/runtime-config.ts'
 import type { Harness } from './harness-registry.ts'
+// U-R1A-33B-2: the mailbox checks a remote `to` against the roster through this module (its own import list is pinned).
+export { thisId, trustedKey } from './roster.ts'
 import { safeResolve } from './sessions.ts'
 
 export interface AgentPin {
@@ -38,7 +40,7 @@ export interface LimitsSnapshot {
   agents: Record<string, AgentPin>
   /** sha256 of the bytes read; `missing` for no file; `refused: <reason>` when no bytes could be read. */
   digest: string
-  /** Mail senders (`owner`, `session:<name>`) who may send Interrupt; present only when the file has it. */
+  /** Mail senders (`owner`, `session:<name>`, `machine:<id>/owner`, `machine:<id>/session:<name>`) who may send Interrupt; present only when the file has it. */
   interrupt_from?: string[]
   /** Why nothing is allowed (missing or refused file). */
   problem?: string
@@ -60,6 +62,19 @@ const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 /** A mail sender: `owner`, or `session:` and a session name (the mail recipient pattern, bridge/mailbox.ts). */
 export function isMailSender(v: unknown): v is string {
   return typeof v === 'string' && (v === 'owner' || /^session:[A-Za-z0-9._-]{1,256}$/.test(v))
+}
+
+/**
+ * A sender on another computer: `machine:<computer id>/owner` or `machine:<computer id>/session:<name>`.
+ * Only the carrier (bridge/hub-mail.ts) stores one, from a signed envelope; no local caller can.
+ */
+export function isRemoteSender(v: unknown): v is string {
+  return typeof v === 'string' && /^machine:[a-z0-9._-]{1,64}\/(owner|session:[A-Za-z0-9._-]{1,256})$/.test(v)
+}
+
+/** A sender `interrupt_from` may list: a local one or one on another computer. */
+export function isInterruptSender(v: unknown): v is string {
+  return isMailSender(v) || isRemoteSender(v)
 }
 
 export function limitsFile(): string {
@@ -158,7 +173,9 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
   }
   const from = raw.interrupt_from
   if (from === undefined) return { folders, shell: shell as boolean, permission_skip, agents }
-  if (!Array.isArray(from) || !from.every(isMailSender)) fail('wrong type for interrupt_from: expected an array of "owner" or "session:<name>"')
+  if (!Array.isArray(from) || !from.every(isInterruptSender)) {
+    fail('wrong type for interrupt_from: expected an array of "owner", "session:<name>", "machine:<id>/owner" or "machine:<id>/session:<name>"')
+  }
   return { folders, shell: shell as boolean, permission_skip, agents, interrupt_from: from as string[] }
 }
 

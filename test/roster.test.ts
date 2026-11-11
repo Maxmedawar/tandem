@@ -1513,3 +1513,76 @@ describe('audit rows (U-R1A-31C-2 audit): roster clear checks every name before 
     expect(run('roster', 'clear')).toEqual({ code: 0, out: 'cleared 0 waiting offers; no pending join\n', err: '' })
   })
 })
+
+describe('(33B-2) (c) the roster read is cached by its bytes, never by trust in them', () => {
+  /** A computer whose roster.json holds `count` entries, all signed by its root. */
+  function bigRoster(count: number): { c: Computer; entries: Entry[]; text: string } {
+    const c = computer('r1a33b2-root')
+    const entries: Entry[] = [forge(c.key, undefined, c.id, c.key.publicKey)]
+    for (let k = 1; k < count; k++) entries.push(forge(c.key, entries[k - 1], `f${k}`, memKey().publicKey))
+    mkdirSync(join(c.home, 'roster'), { recursive: true, mode: 0o700 })
+    chmodSync(join(c.home, 'roster'), 0o700)
+    const text = doc(entries)
+    writeFileSync(rosterFile(c), text, { mode: 0o600 })
+    return { c, entries, text }
+  }
+
+  it('(33B-2) (c1) 2,000 trustedKey calls on a 100-entry roster finish in under 2,000 ms', () => {
+    const { c, entries } = bigRoster(100)
+    on(c)
+    const start = performance.now()
+    for (let k = 0; k < 2000; k++) expect(trustedKey(`f${1 + (k % 99)}`)).toBe(entries[1 + (k % 99)].key)
+    const ms = performance.now() - start
+    expect(ms).toBeLessThan(2000)
+  }, 120_000)
+
+  it('(33B-2) (c2) one signature changed in roster.json: the next trustedKey throws RosterError signature; (c4) the good text written back answers again', () => {
+    const { c, entries, text } = bigRoster(100)
+    on(c)
+    expect(trustedKey('f50')).toBe(entries[50].key)
+    const bad = entries.map((e) => ({ ...e }))
+    const sig = bad[50].sig
+    bad[50].sig = sig.slice(0, 10) + (sig[10] === 'A' ? 'B' : 'A') + sig.slice(11)
+    writeFileSync(rosterFile(c), doc(bad), { mode: 0o600 })
+    expect(reasonOf(() => trustedKey('f50'))).toBe('signature')
+    expect(reasonOf(() => trustedKey('f50'))).toBe('signature')
+    expect(reasonOf(() => readRoster())).toBe('signature')
+    writeFileSync(rosterFile(c), text, { mode: 0o600 })
+    expect(trustedKey('f50')).toBe(entries[50].key)
+    expect(readRoster()).toEqual(entries)
+  })
+
+  it('(33B-2) (c3) with roster/.lock held, trustedKey answers within 50 ms; a copy, never the kept entries, is returned', () => {
+    const { c, entries } = bigRoster(100)
+    on(c)
+    expect(trustedKey('f1')).toBe(entries[1].key)
+    writeFileSync(join(c.home, 'roster', '.lock'), '', { mode: 0o600 })
+    const start = performance.now()
+    expect(trustedKey('f99')).toBe(entries[99].key)
+    expect(performance.now() - start).toBeLessThan(50)
+    const got = readRoster() as Entry[]
+    got[1].key = 'changed'
+    expect(trustedKey('f1')).toBe(entries[1].key)
+    rmSync(join(c.home, 'roster', '.lock'))
+  })
+})
+
+describe('(33B-2) (c5) roster.ts loads without the hub code', () => {
+  it('(33B-2) (c5) thisId is hub-link.ts deriveBridgeId over the hostname for every TANDEM_HUB_LINK_ID; roster.ts imports nothing from hub-link.ts or hub/', async () => {
+    const { deriveBridgeId } = await import('../bridge/hub-link.ts')
+    const { hostname } = await import('node:os')
+    const before = process.env.TANDEM_HUB_LINK_ID
+    try {
+      for (const id of [undefined, '', '   ', 'alpha', '  Mac Book.Local ', '---', 'x--y', 'Ünïcode', `${'a'.repeat(63)}-b`, `${'a'.repeat(80)}-x`, 'a.b_c-9', '!!!']) {
+        if (id === undefined) delete process.env.TANDEM_HUB_LINK_ID
+        else process.env.TANDEM_HUB_LINK_ID = id
+        expect([id, roster.thisId()]).toEqual([id, deriveBridgeId(id, hostname())])
+      }
+    } finally {
+      if (before === undefined) delete process.env.TANDEM_HUB_LINK_ID
+      else process.env.TANDEM_HUB_LINK_ID = before
+    }
+    const source = readFileSync(join(repo, 'bridge', 'roster.ts'), 'utf8')
+    expect(source).not.toMatch(/from ['"](\.\/hub-link\.ts|\.\.\/hub\/)/)
+  })
+})

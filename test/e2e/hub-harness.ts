@@ -38,6 +38,8 @@ export interface Bridge {
   folder: string
   child?: ChildProcess
   stderr: string
+  /** U-R1A-33B-2: the environment startBridge built, for restartBridge and a stdio server on this computer. */
+  env?: NodeJS.ProcessEnv
 }
 
 let wrangler: ChildProcess | undefined
@@ -138,6 +140,7 @@ export async function startBridge(id: string, extraEnv: Record<string, string> =
       TANDEM_HUB_LINK_TOKEN: LINK_TOKEN,
       TANDEM_HUB_LINK_ID: id,
     }, extraEnv)
+    bridge.env = env
     // U-R1A-17: the limits file, where this bridge looks (TANDEM_HOME when extraEnv sets it, else its
     // HOME's .tandem), allowing what it already enables: its work folder, and the shell pinned to the
     // sh its PATH finds.
@@ -239,4 +242,66 @@ export async function signIn(): Promise<string> {
   })
   if (token.status !== 200) throw new Error(`POST /token: ${token.status} ${await token.text()}`)
   return ((await token.json()) as { access_token: string }).access_token
+}
+
+/**
+ * U-R1A-33B-2: stop the bridge (its own process group, `signal`), waiting up to 5 s for it to
+ * exit; its folder, keys, mailbox and tmux server stay for restartBridge.
+ */
+export async function pauseBridge(bridge: Bridge, signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): Promise<void> {
+  const child = bridge.child
+  if (!child?.pid || child.exitCode !== null || child.signalCode !== null) return
+  const exited = once(child, 'exit')
+  try { process.kill(-child.pid, signal) } catch { /* already gone */ }
+  await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))])
+}
+
+/** U-R1A-33B-2: start `src/server.ts` again with the env startBridge kept; resolves on one more `hub link: connected`. */
+export async function restartBridge(bridge: Bridge): Promise<void> {
+  if (!bridge.env) throw new Error(`${bridge.id}: no kept env`)
+  const count = () => bridge.stderr.split('hub link: connected').length - 1
+  const before = count()
+  const child = spawn(process.execPath, ['--experimental-strip-types', 'src/server.ts'], {
+    cwd: repo,
+    env: bridge.env,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  bridge.child = child
+  child.stdout!.on('data', () => {})
+  child.stderr!.on('data', (chunk: Buffer) => { bridge.stderr += chunk.toString() })
+  await waitFor(() => count() > before || child.exitCode !== null, 60_000, `${bridge.id} to connect again`)
+  if (child.exitCode !== null) throw new Error(`${bridge.id} exited ${child.exitCode}:\n${bridge.stderr}`)
+}
+
+/** U-R1A-33B-2: SIGTERM to the hub's own process group, then `wrangler dev` again on the same port and persist folder. */
+export async function restartHub(): Promise<void> {
+  if (wrangler?.pid && wrangler.exitCode === null && wrangler.signalCode === null) {
+    const exited = once(wrangler, 'exit')
+    try { process.kill(-wrangler.pid, 'SIGTERM') } catch { /* already gone */ }
+    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 10_000))])
+  }
+  const inspectorPort = await freePort()
+  const next = spawn(wranglerBin, [
+    'dev', '--local', '--port', String(port), '--ip', '127.0.0.1', '--inspector-port', String(inspectorPort),
+    '--var', `TANDEM_HUB_LINK_TOKEN:${LINK_TOKEN}`,
+    '--var', `TANDEM_HUB_PASSWORD:${HUB_PASSWORD}`,
+    '--persist-to', persist,
+  ], { cwd: hubDir, detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'] })
+  wrangler = next
+  let log = ''
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`wrangler dev was not ready again in 60 s:\n${log}`)), 60_000)
+    const read = (chunk: Buffer) => {
+      log += chunk.toString()
+      hubLog += chunk.toString()
+      if (log.includes('Ready on')) {
+        clearTimeout(timer)
+        resolve()
+      }
+    }
+    next.stdout!.on('data', read)
+    next.stderr!.on('data', read)
+    next.once('exit', (code) => { clearTimeout(timer); reject(new Error(`wrangler dev exited ${code}:\n${log}`)) })
+  })
 }
