@@ -265,6 +265,26 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
     return err(409, `session name "${name}" is reserved for the relay; use the relay routes`)
   }
 
+  // One open per name at a time: every open path checks the name (live, tmux) and registers it
+  // only after an await, so a second open of the same name waits for the first and then sees
+  // what it registered (reused, or 409 for another engine).
+  const earlier = opening.get(name)
+  const mine = (async () => {
+    await earlier?.catch(() => {})
+    return openNamed(name, req)
+  })()
+  opening.set(name, mine)
+  try {
+    return await mine
+  } finally {
+    if (opening.get(name) === mine) opening.delete(name)
+  }
+}
+
+/** The opens in flight by session name (handleOpen). */
+const opening = new Map<string, Promise<RpcResult>>()
+
+async function openNamed(name: string, req: RpcRequest): Promise<RpcResult> {
   // Resolve + validate the engine FIRST — before any cwd/tmux/network side
   // effect (binding — Phase 2 correction E). No engine is on by default and an
   // open must name one (400 naming the enabled ones); each engine needs explicit

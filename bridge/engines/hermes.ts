@@ -30,6 +30,7 @@
  *   - the base URL is canonicalized and restricted to a loopback host
  *     (127.0.0.1, [::1], localhost, or a true *.localhost subdomain), with
  *     credentials/query/fragment rejected outright;
+ *   - a redirect is never followed (it could name a host that is not loopback);
  *   - every fetch (login, send, read, and the one 401 retry) is raced against
  *     an AbortSignal timeout — a slow/wedged Hermes gateway can never hang a
  *     turn past the bound;
@@ -247,7 +248,9 @@ async function boundedFetch(
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetchImpl(url, { ...init, signal: controller.signal })
+    // A redirect is never followed: it could name any host, and the base URL's loopback rule
+    // would not cover it. The 3xx answer comes back as it is and fails the caller's status check.
+    const res = await fetchImpl(url, { ...init, redirect: 'manual', signal: controller.signal })
     const text = await readBounded(res, maxBytes)
     return { status: res.status, text, headers: res.headers }
   } finally {
