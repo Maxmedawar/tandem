@@ -1,0 +1,31 @@
+<!-- Syncthing settings for the sync spike. run.sh fills each @NAME@ per side:
+     VERSION (the config version the binary writes), SELF_ID and PEER_ID
+     (device IDs), PEER_ADDRESS (the one fixed peer address), API_KEY (random).
+     Everything not named here keeps Syncthing's default. -->
+<configuration version="@VERSION@">
+    <folder id="skills" label="skills" path="/st/skills" type="sendreceive">
+        <device id="@SELF_ID@"></device>
+        <device id="@PEER_ID@"></device>
+    </folder>
+    <device id="@SELF_ID@" name="self" introducer="false">
+    </device>
+    <device id="@PEER_ID@" name="peer" introducer="false">
+        <address>@PEER_ADDRESS@</address>
+        <autoAcceptFolders>false</autoAcceptFolders>
+    </device>
+    <gui enabled="true" tls="false">
+        <address>127.0.0.1:8384</address>
+        <apikey>@API_KEY@</apikey>
+    </gui>
+    <options>
+        <listenAddress>tcp://0.0.0.0:22000</listenAddress>
+        <globalAnnounceEnabled>false</globalAnnounceEnabled>
+        <localAnnounceEnabled>false</localAnnounceEnabled>
+        <relaysEnabled>false</relaysEnabled>
+        <natEnabled>false</natEnabled>
+        <stunKeepaliveStartS>0</stunKeepaliveStartS>
+        <urAccepted>-1</urAccepted>
+        <crashReportingEnabled>false</crashReportingEnabled>
+        <autoUpgradeIntervalH>0</autoUpgradeIntervalH>
+    </options>
+</configuration>
