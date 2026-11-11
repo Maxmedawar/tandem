@@ -372,31 +372,34 @@ function checkRemovable(st: Stats, path: string): void {
 }
 
 /**
- * Remove every waiting offer; returns the count. Every name is checked first: one that is neither
- * a regular file nor a symlink is refused with its path and nothing is removed. roster.json is
- * never touched.
+ * In the locked `dir`: remove every waiting offer (`offers`) and pending.json (`pending`), as
+ * asked. Every name is checked before any is removed: one that is neither a regular file nor a
+ * symlink is refused with its path and nothing is removed. roster.json is never touched.
  */
-export function clearOffers(): number {
-  return withLock((dir) => {
-    const offers = join(dir, 'offers')
-    if (!checkDir(offers, false)) return 0
-    const paths = readdirSync(offers).filter((f) => f.endsWith('.json')).map((f) => join(offers, f))
-    for (const path of paths) checkRemovable(lstatSync(path), path)
-    for (const path of paths) unlinkSync(path)
-    return paths.length
-  })
+function clearIn(dir: string, what: { offers: boolean; pending: boolean }): { offers: number; pending: boolean } {
+  const offers = join(dir, 'offers')
+  const paths = what.offers && checkDir(offers, false) ? readdirSync(offers).filter((f) => f.endsWith('.json')).map((f) => join(offers, f)) : []
+  const pending = join(dir, 'pending.json')
+  const hasPending = what.pending && lstatSync(pending, { throwIfNoEntry: false }) !== undefined
+  const all = hasPending ? [...paths, pending] : paths
+  for (const path of all) checkRemovable(lstatSync(path), path)
+  for (const path of all) unlinkSync(path)
+  return { offers: paths.length, pending: hasPending }
 }
 
-/** Remove pending.json; true when one was there (not a regular file or symlink: refused, left as is). roster.json is never touched. */
+/** Remove every waiting offer; returns the count (see clearIn: all checked first, a refusal removes nothing). */
+export function clearOffers(): number {
+  return withLock((dir) => clearIn(dir, { offers: true, pending: false }).offers)
+}
+
+/** Remove pending.json; true when one was there (not a regular file or symlink: refused, left as is). */
 export function clearPending(): boolean {
-  return withLock((dir) => {
-    const path = join(dir, 'pending.json')
-    const st = lstatSync(path, { throwIfNoEntry: false })
-    if (!st) return false
-    checkRemovable(st, path)
-    unlinkSync(path)
-    return true
-  })
+  return withLock((dir) => clearIn(dir, { offers: false, pending: true }).pending)
+}
+
+/** `tandem roster clear`: the offers and pending.json under one lock, every name checked before any is removed. */
+export function clearWaiting(): { offers: number; pending: boolean } {
+  return withLock((dir) => clearIn(dir, { offers: true, pending: true }))
 }
 
 /** The offers waiting, by id and fingerprint. */
@@ -569,8 +572,8 @@ export function main(args: string[]): number {
       return 0
     }
     if (command === 'roster' && rest.length === 1 && rest[0] === 'clear') {
-      const n = clearOffers()
-      say(`cleared ${n} waiting offers; ${clearPending() ? 'pending join removed' : 'no pending join'}`)
+      const cleared = clearWaiting()
+      say(`cleared ${cleared.offers} waiting offers; ${cleared.pending ? 'pending join removed' : 'no pending join'}`)
       return 0
     }
     if (command === 'trust' && rest.length === 1) {

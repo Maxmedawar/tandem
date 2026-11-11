@@ -14,8 +14,8 @@
  *
  * The table is a plain class over injected SQL storage (the shape of a Durable Object's
  * ctx.storage.sql), a clock and a transaction runner, as ./queue.ts and ./devices.ts are, so it
- * tests on a local SQLite file. Every method is one synchronous transaction (putChecked checks
- * the signatures first, then runs put). This file deliberately imports nothing from the Workers
+ * tests on a local SQLite file. Every method is one synchronous transaction (putChecked and
+ * members check the signatures first, outside it). This file deliberately imports nothing from the Workers
  * runtime.
  */
 import { verifyRosterText } from './roster-verify.ts'
@@ -67,6 +67,9 @@ function rosterEntries(text: unknown): Entry[] | undefined {
   return good ? (list as Entry[]) : undefined
 }
 
+type Member = { id: string; key: string }
+type Verify = (text: string) => Promise<Member[] | undefined>
+
 /** The one spelling of `entries` every computer writes (bridge/roster.ts rosterText). */
 const canonical = (entries: Entry[]) =>
   JSON.stringify({ v: 1, entries: entries.map(({ seq, id, key, signer, ts, prev, sig }) => ({ seq, id, key, signer, ts, prev, sig })) })
@@ -109,21 +112,38 @@ export class RosterStore {
     return this.transaction(() => this.stored())
   }
 
+  /** The last roster text stored or read back with its checked entries (undefined: it does not check out). */
+  private checked?: { text: string; entries: Member[] | undefined }
+
   /**
-   * The hub's only way in: `rosterText` kept only when `verify` (verifyRosterText, ./roster-verify,
-   * unless the caller passes its cached copy of it) gives its entries for these exact bytes, else
-   * 'invalid' and nothing stored; then put. With put's order rules the root is always the first
-   * stored one.
+   * The `{ id, key }` of every entry of the stored roster when its whole chain checks out, else
+   * none. Checked once per stored text: only a stored roster is ever kept here, so an upload the
+   * hub refuses never makes the next call check the stored one again.
    */
-  async putChecked(
-    senderId: string,
-    senderKey: string,
-    base: number,
-    rosterText: string,
-    verify: (text: string) => Promise<unknown[] | undefined> = verifyRosterText,
-  ): Promise<PutAnswer> {
-    if (typeof rosterText !== 'string' || !(await verify(rosterText))) return 'invalid'
-    return this.put(senderId, senderKey, base, rosterText)
+  async members(verify: Verify = verifyRosterText): Promise<Member[]> {
+    const text = this.get()?.roster
+    if (text === undefined) return []
+    if (this.checked?.text !== text) {
+      const entries = await verify(text)
+      this.checked = { text, entries }
+      return entries ?? []
+    }
+    return this.checked.entries ?? []
+  }
+
+  /**
+   * The hub's only way in: `rosterText` kept only when `verify` (verifyRosterText, ./roster-verify)
+   * gives its entries for these exact bytes (the stored text itself: its kept check), else
+   * 'invalid' and nothing stored; then put. With put's order rules the root is always the first
+   * stored one. A refused upload costs its own check and nothing after it.
+   */
+  async putChecked(senderId: string, senderKey: string, base: number, rosterText: string, verify: Verify = verifyRosterText): Promise<PutAnswer> {
+    if (typeof rosterText !== 'string') return 'invalid'
+    const entries = this.checked?.text === rosterText ? this.checked.entries : await verify(rosterText)
+    if (!entries) return 'invalid'
+    const answer = this.put(senderId, senderKey, base, rosterText)
+    if (answer === 'ok') this.checked = { text: rosterText, entries }
+    return answer
   }
 
   /**

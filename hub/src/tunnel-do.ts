@@ -47,7 +47,6 @@ import {
 import { HubQueue, type PutResult, type QueuedCopy, type QueueMessage } from './queue'
 import { HubDevices, PROOF_HEADER, PROOF_WINDOW_MS, parseProof, verifyProof, type ProofContext } from './devices'
 import { RosterStore, type OfferAnswer, type PutAnswer } from './roster-store'
-import { verifyRosterText } from './roster-verify'
 import type { Env } from './types'
 import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
@@ -199,28 +198,18 @@ export class TunnelDO extends DurableObject<Env> {
     return this.rosterStore().get()
   }
 
-  /** The last roster text checked and its entries (undefined when refused), kept until another text is checked. */
-  private members?: { text: string; entries: { id: string; key: string }[] | undefined }
-
-  /** verifyRosterText (./roster-verify) of `text`, cached by its exact bytes. */
-  private async verified(text: string): Promise<{ id: string; key: string }[] | undefined> {
-    if (this.members?.text !== text) this.members = { text, entries: await verifyRosterText(text) }
-    return this.members.entries
-  }
-
-  /** The entries of the stored roster when its whole chain checks out (./roster-verify), else none. */
-  private async rosterMembers(): Promise<{ id: string; key: string }[]> {
-    const text = this.rosterGet()?.roster
-    return text === undefined ? [] : ((await this.verified(text)) ?? [])
+  /** The entries of the stored roster when its whole chain checks out (./roster-verify, checked once per stored text), else none. */
+  private rosterMembers(): Promise<{ id: string; key: string }[]> {
+    return this.rosterStore().members()
   }
 
   /**
    * The store's answer and the length it holds after it (0 when none). The store keeps only an
-   * upload whose whole chain checks out (putChecked, through the same cache as rosterMembers: an
-   * accepted upload is then the stored text, checked once).
+   * upload whose whole chain checks out (putChecked); a refused one leaves rosterMembers' kept
+   * check of the stored roster as it was.
    */
   async rosterPut(senderId: string, senderKey: string, base: number, rosterText: string): Promise<{ answer: PutAnswer; len: number }> {
-    const answer = await this.rosterStore().putChecked(senderId, senderKey, base, rosterText, (text) => this.verified(text))
+    const answer = await this.rosterStore().putChecked(senderId, senderKey, base, rosterText)
     return { answer, len: this.rosterStore().get()?.len ?? 0 }
   }
 

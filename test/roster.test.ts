@@ -1417,3 +1417,99 @@ describe('(31C-2) roster clear refuses a folder where a file should be (31B-2 G5
     expect(existsSync(offer)).toBe(false)
   })
 })
+
+describe('audit rows (U-R1A-31C-2 audit): roster clear checks every name before it removes one', () => {
+  /** `main(args)` in this process: its exit code and what it wrote. */
+  const run = (...args: string[]) => {
+    let out = ''
+    let err = ''
+    const spies = [
+      vi.spyOn(process.stdout, 'write').mockImplementation((s: string | Uint8Array) => ((out += String(s)), true)),
+      vi.spyOn(process.stderr, 'write').mockImplementation((s: string | Uint8Array) => ((err += String(s)), true)),
+    ]
+    try {
+      return { code: main(args), out, err }
+    } finally {
+      for (const s of spies) s.mockRestore()
+    }
+  }
+  /** x with a roster, a waiting offer from y and a pending.json symlink placeholder path. */
+  const setup = () => {
+    const x = computer('x')
+    const y = computer('y')
+    on(x)
+    initRoster(x.key, 'x', T)
+    receiveOffer(JSON.stringify(makeOffer(y.key, 'y', Date.now())))
+    const dir = join(x.home, 'roster')
+    return { x, dir, offer: join(dir, 'offers', `${y.key.fingerprint}.json`), pending: join(dir, 'pending.json') }
+  }
+  const tree = (dir: string) => readdirSync(dir, { recursive: true }).map(String).sort()
+
+  it('RED at 2b002b8: a folder pending.json and a real offer waiting: one line, exit 1, and the offer is still there', () => {
+    const { x, dir, offer, pending } = setup()
+    mkdirSync(pending, { mode: 0o700 })
+    const before = [tree(dir), bytes(offer), bytes(rosterFile(x))]
+    expect(run('roster', 'clear')).toEqual({ code: 1, out: '', err: `tandem: not a regular file (${pending})\n` })
+    expect([tree(dir), bytes(offer), bytes(rosterFile(x))]).toEqual(before)
+  })
+
+  it('a FIFO where a file should be (pending.json, then an offer name): one line, exit 1, nothing removed', () => {
+    const { x, dir, offer, pending } = setup()
+    const fifo = (p: string) => expect(spawnSync('mkfifo', ['-m', '600', p]).status).toBe(0)
+    fifo(pending)
+    let before = [tree(dir), bytes(offer), bytes(rosterFile(x))]
+    expect(run('roster', 'clear')).toEqual({ code: 1, out: '', err: `tandem: not a regular file (${pending})\n` })
+    expect([tree(dir), bytes(offer), bytes(rosterFile(x))]).toEqual(before)
+    rmSync(pending)
+    const name = join(dir, 'offers', '0123456789abcdef.json')
+    fifo(name)
+    writeFileSync(pending, 'not a roster', { mode: 0o600 })
+    before = [tree(dir), bytes(offer), bytes(rosterFile(x))]
+    expect(run('roster', 'clear')).toEqual({ code: 1, out: '', err: `tandem: not a regular file (${name})\n` })
+    expect([tree(dir), bytes(offer), bytes(rosterFile(x))]).toEqual(before)
+    expect(readFileSync(pending, 'utf8')).toBe('not a roster')
+  })
+
+  it('symlinks named pending.json and offers/<name>.json pointing out of the roster folder: removed as links, their targets and roster.json unchanged', () => {
+    const { x, dir, offer, pending } = setup()
+    const outside = box()
+    const file = join(outside, 'kept.json')
+    writeFileSync(file, 'kept bytes', { mode: 0o600 })
+    mkdirSync(join(outside, 'folder'))
+    writeFileSync(join(outside, 'folder', 'inner.json'), 'inner bytes')
+    symlinkSync(file, pending)
+    symlinkSync(join(outside, 'folder'), join(dir, 'offers', 'fedcba9876543210.json'))
+    symlinkSync(rosterFile(x), join(dir, 'offers', '0000000000000000.json'))
+    const rosterBefore = bytes(rosterFile(x))
+    expect(run('roster', 'clear')).toEqual({ code: 0, out: 'cleared 3 waiting offers; pending join removed\n', err: '' })
+    expect(tree(dir)).toEqual(['offers', 'roster.json'])
+    expect(existsSync(offer)).toBe(false)
+    expect(readFileSync(file, 'utf8')).toBe('kept bytes')
+    expect(tree(outside)).toEqual(['folder', 'folder/inner.json', 'kept.json'])
+    expect(bytes(rosterFile(x))).toEqual(rosterBefore)
+  })
+
+  it('offers itself a symlink to a folder elsewhere: refused with one line, nothing removed there or here', () => {
+    const { x, dir, pending } = setup()
+    const outside = box()
+    chmodSync(outside, 0o700)
+    writeFileSync(join(outside, 'aaaaaaaaaaaaaaaa.json'), 'elsewhere', { mode: 0o600 })
+    rmSync(join(dir, 'offers'), { recursive: true })
+    symlinkSync(outside, join(dir, 'offers'))
+    writeFileSync(pending, 'not a roster', { mode: 0o600 })
+    expect(run('roster', 'clear')).toEqual({ code: 1, out: '', err: `tandem: the folder is a symlink (${join(dir, 'offers')})\n` })
+    expect(tree(outside)).toEqual(['aaaaaaaaaaaaaaaa.json'])
+    expect(readFileSync(pending, 'utf8')).toBe('not a roster')
+    expect(existsSync(rosterFile(x))).toBe(true)
+  })
+
+  it('nothing in the way: the offers and the pending join go, roster.json stays byte for byte', () => {
+    const { x, dir, pending } = setup()
+    writeFileSync(pending, 'not a roster', { mode: 0o600 })
+    const rosterBefore = bytes(rosterFile(x))
+    expect(run('roster', 'clear')).toEqual({ code: 0, out: 'cleared 1 waiting offers; pending join removed\n', err: '' })
+    expect(tree(dir)).toEqual(['offers', 'roster.json'])
+    expect(bytes(rosterFile(x))).toEqual(rosterBefore)
+    expect(run('roster', 'clear')).toEqual({ code: 0, out: 'cleared 0 waiting offers; no pending join\n', err: '' })
+  })
+})
