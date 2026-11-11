@@ -160,4 +160,59 @@ describe('room_read delivery acknowledgement', () => {
       id: remembered.id,
     })).toEqual(expect.objectContaining({ id: remembered.id }))
   })
+
+  it('at the bridge cap (1,048,576 bytes) the bridge answers 413 itself and the same cursor still returns the first event', async () => {
+    const folder = mkdtempSync('/tmp/r1a22-delivery-')
+    folders.add(folder)
+    const host = await createLocalFabricHost({ CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: join(folder, 'fabric.sqlite3') })
+    if (!host) throw new Error('no fabric host')
+    hosts.add(host)
+    const server = new TestToolServer()
+    const statuses: number[] = []
+    await configureFabricTools(server, {
+      enabled: '1',
+      oauthSubject: 'owner',
+      rpc: async (path: string, body: FabricRpcBody) => {
+        const responseFrame = await handleHubRequest({
+          type: CCM_FRAME_TYPES.httpRequest,
+          request_id: `cap-${statuses.length}`,
+          method: 'POST',
+          path,
+          headers: {},
+          body_base64: Buffer.from(JSON.stringify(body), 'utf8').toString('base64'),
+          trusted_surface: FABRIC_MCP_TRUST,
+        }, host)
+        statuses.push(responseFrame.status_code)
+        return JSON.parse(Buffer.from(responseFrame.body_base64 ?? '', 'base64').toString('utf8')) as unknown
+      },
+    })
+    const invoke = async <T>(name: string, args: Record<string, unknown>): Promise<T> =>
+      resultBody<T>(await server.tools.get(name)!.handler(args))
+
+    const project = await invoke<{ projectId: string }>('project_create', { displayName: 'Bridge cap' })
+    const initial = await invoke<{ cursor: string }>('room_read', { projectId: project.projectId, room: 'main' })
+    const body = 'x'.repeat(MAX_ROOM_EVENT_BODY_BYTES)
+    // 64 bodies of 16 KiB: about 1.4 MB once base64'd into the bridge's own response frame.
+    for (let index = 0; index < 64; index++) {
+      await invoke('room_post', {
+        projectId: project.projectId,
+        room: 'main',
+        type: 'message',
+        body: `${index.toString().padStart(2, '0')}${body.slice(2)}`,
+        idempotencyKey: `cap-event-${index}`,
+      })
+    }
+
+    expect(await invoke('room_read', { projectId: project.projectId, room: 'main', cursor: initial.cursor, limit: 64 }))
+      .toEqual({ error: 'payload_too_large' })
+    expect(statuses.at(-1)).toBe(413)
+
+    const retry = await invoke<{ events: Array<{ body: string }> }>('room_read', {
+      projectId: project.projectId,
+      room: 'main',
+      cursor: initial.cursor,
+      limit: 1,
+    })
+    expect(retry.events.map(event => event.body.slice(0, 2))).toEqual(['00'])
+  })
 })
