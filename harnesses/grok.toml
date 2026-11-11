@@ -1,0 +1,26 @@
+# Grok CLI. Screen rules adapted from kbwo/ccmanager src/services/stateDetector/grok.ts (MIT,
+# see test/fixtures/screens/NOTICE); the same patterns as test/fixtures/screens/harnesses/grok.toml.
+# idle is a positive match of the `>` prompt on the last line. Not yet checked on a signed-in
+# grok. skip_prompts_args is data only until U-R1A-17.
+name = "grok"
+program = "grok"
+has_prompts = true
+skip_prompts_args = ["--always-approve"]
+resume = ["--resume", "{id}"]
+account_env = "GROK_HOME"
+history = "~/.grok/sessions"
+
+[states]
+waiting_for_approval = [
+  '\d/\d:select',
+  '\([○●]\) No, reject \(type to add feedback\)',
+  ':next answer',
+  ':accept / toggle',
+  '◆ (?:Waiting on answers for|Waiting on plan approval|No plan written)',
+  'Do you trust the contents of this directory',
+]
+working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ']
+idle = ['^>(?: [^\n]*)?\z']
+
+[keys]
+interrupt = ["Escape", "C-c"]

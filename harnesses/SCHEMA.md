@@ -22,8 +22,8 @@ A harness file names a program, so Tandem treats it like a program:
 Only `*.toml` files directly inside each folder are read. Subfolders and other files are ignored.
 A missing owner folder just means no owner files.
 
-The built-in files are `claude.toml` (Claude Code), `codex.toml` (Codex CLI) and `shell.toml`
-(plain `sh -l`). No agent is on by default: each one, built-in or owner, runs only when
+The built-in files are `claude.toml` (Claude Code), `codex.toml` (Codex CLI), `grok.toml`
+(Grok CLI) and `shell.toml` (plain `sh -l`). No agent is on by default: each one, built-in or owner, runs only when
 `TANDEM_ENABLED_ENGINES` names it and its program is found.
 
 Each file is named `<name>.toml`, where `<name>` is the harness name.
