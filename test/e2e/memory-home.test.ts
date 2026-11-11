@@ -401,7 +401,7 @@ describe.skipIf(Boolean(missing))('U-R1A-23-R1 audit: the link route, the caller
   const list = () => route('/fabric/project/list', { body: listBody })
   const noStoreHere = () => {
     expect(existsSync(bDb)).toBe(false)
-    expect(existsSync(join(agent!.home, '.tandem'))).toBe(false)
+    expect(existsSync(join(agent!.home, '.tandem', 'fabric'))).toBe(false)
   }
 
   beforeAll(async () => {

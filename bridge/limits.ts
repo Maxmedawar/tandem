@@ -1,7 +1,8 @@
 /**
  * limits.ts: the limits file, the ceiling on what sessions may start on this computer for the
- * fields `folders`, `agents`, `shell` and `permission_skip` (plan section 3). The bridge is the
- * only place limits are enforced, and nothing remote can widen them.
+ * fields `folders`, `agents`, `shell` and `permission_skip` (plan section 3), and who may send
+ * mail at the Interrupt level, `interrupt_from` (bridge/mailbox.ts; absent means nobody). The
+ * bridge is the only place limits are enforced, and nothing remote can widen them.
  *
  * The file is `$TANDEM_HOME/limits.toml` when TANDEM_HOME is set, else `~/.tandem/limits.toml`,
  * worked out at each read. It is read once when this module is first imported (the bridge imports
@@ -37,11 +38,13 @@ export interface LimitsSnapshot {
   agents: Record<string, AgentPin>
   /** sha256 of the bytes read; `missing` for no file; `refused: <reason>` when no bytes could be read. */
   digest: string
+  /** Mail senders (`owner`, `session:<name>`) who may send Interrupt; present only when the file has it. */
+  interrupt_from?: string[]
   /** Why nothing is allowed (missing or refused file). */
   problem?: string
 }
 
-const FIELDS = ['folders', 'shell', 'permission_skip', 'agents']
+const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from']
 const AGENT_FIELDS = ['program', 'sha256']
 /** A harness name (harness-registry.ts). */
 const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
@@ -53,6 +56,11 @@ type Table = Record<string, unknown>
 const fail = (reason: string): never => { throw new Error(reason) }
 const isTable = (v: unknown): v is Table => typeof v === 'object' && v !== null && !Array.isArray(v) && !(v instanceof Date)
 const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
+
+/** A mail sender: `owner`, or `session:` and a session name (the mail recipient pattern, bridge/mailbox.ts). */
+export function isMailSender(v: unknown): v is string {
+  return typeof v === 'string' && (v === 'owner' || /^session:[A-Za-z0-9._-]{1,256}$/.test(v))
+}
 
 export function limitsFile(): string {
   return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'limits.toml')
@@ -148,7 +156,10 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
     if (v.sha256 !== undefined && !(typeof v.sha256 === 'string' && SHA256.test(v.sha256))) fail(`bad sha256 in ${where}: 64 lowercase hex characters`)
     agents[name] = v.sha256 === undefined ? { program } : { program, sha256: v.sha256 as string }
   }
-  return { folders, shell: shell as boolean, permission_skip, agents }
+  const from = raw.interrupt_from
+  if (from === undefined) return { folders, shell: shell as boolean, permission_skip, agents }
+  if (!Array.isArray(from) || !from.every(isMailSender)) fail('wrong type for interrupt_from: expected an array of "owner" or "session:<name>"')
+  return { folders, shell: shell as boolean, permission_skip, agents, interrupt_from: from as string[] }
 }
 
 /** Reads and checks the file; a missing or refused one allows nothing and says so on stderr. */
