@@ -1,6 +1,6 @@
 # Screen rules adapted from kbwo/ccmanager src/services/stateDetector/grok.ts (MIT, see ../NOTICE).
-# idle is a positive match of the prompt: `>` as the last line, as in ccmanager's grok samples.
-# No real grok idle screen was captured (it asks to sign in), so the rule rests on those samples.
+# idle is a positive match of grok 1.0.77's composer box (grok-idle-real*.txt), so ccmanager's
+# `>` samples read unknown (grok-unknown-1..3). The same patterns as harnesses/grok.toml.
 name = "grok"
 program = "grok"
 has_prompts = true
@@ -14,5 +14,8 @@ waiting_for_approval = [
   '◆ (?:Waiting on answers for|Waiting on plan approval|No plan written)',
   'Do you trust the contents of this directory',
 ]
-working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ']
-idle = ['^>(?: [^\n]*)?\z']
+# grok 1.0.77 mid-turn (grok-working-real*.txt): a spinner line and `Ctrl+c:cancel` in the footer.
+working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ', 'Ctrl\+c:cancel']
+# grok 1.0.77's composer box above its bottom border: empty when ready (grok-idle-real.txt), or
+# holding the prompt grok puts back after Ctrl+C cancels a turn (grok-idle-real2.txt).
+idle = ['^\s*│ ❯[^\n]*│\s*\n\s*╰─[^\n]*╯\s*$']

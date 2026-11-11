@@ -11,7 +11,8 @@
  * Drives HarnessSession directly, never route(), so Tandem writes nothing under the real HOME:
  * the owner id is injected and the transcript folder is fixed under a temporary HOME while the
  * bridge modules load (Grok's own files under ~/.grok are expected). No sign-in, no bypass, no
- * account or settings change; nothing here answers a Grok prompt: every send waits for an idle
+ * account or settings change. Only warmup answers, and only grok.toml's `[[dialogs]]` rows the start
+ * allows (dialogAnswers "safe": folder trust for the temp folder); every send waits for an idle
  * screen (a sign-in, trust or update menu never reads idle), so a menu fails the step instead of
  * taking the typed text and Enter. With no `<GROK_HOME or ~/.grok>/auth.json` (checked for
  * existence only, never read) it throws before anything spawns.
@@ -26,9 +27,9 @@ import { readScreen } from "../../bridge/harness-detect.ts";
 import type { Harness } from "../../bridge/harness-registry.ts";
 
 const LIVE = process.env.TANDEM_LIVE === "1";
-// Before the first tmux call: the private tmux server takes this process's environment. With any
-// Claude or Cursor hook in the user's files grok asks to trust every new folder; these switch
-// those scans off (grok docs 26-config-reference.md, compat.claude.hooks / compat.cursor.hooks).
+// Before the first tmux call: the private tmux server takes this process's environment. Once warmup
+// trusts the temp folder, these keep the user's own Claude and Cursor hooks from running in the
+// test grok (grok docs 26-config-reference.md, compat.claude.hooks / compat.cursor.hooks).
 if (LIVE) {
   process.env.GROK_CLAUDE_HOOKS_ENABLED = "0";
   process.env.GROK_CURSOR_HOOKS_ENABLED = "0";
@@ -172,7 +173,7 @@ describe.skipIf(!LIVE)("grok live: the built-in harness file through HarnessSess
       stopRecorder = startRecorder(grok);
       session = await mods.HarnessSession.spawn(
         grok,
-        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)] },
+        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)], dialogAnswers: "safe" },
         async (o) => (terminal = await mods.TerminalSession.spawn({ ...o, ownerIdProvider: async () => "r1a14-live-owner" })),
       );
       expect(session.engine).toBe("grok");
