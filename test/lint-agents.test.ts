@@ -302,3 +302,44 @@ describe("lint-agents.sh empty_prompt (U-R1B-LINT-EMPTY)", () => {
     failed(r, 2);
   });
 });
+
+// Audit of U-R1B-LINT-EMPTY: rule F reads the pattern's decoded text the way RE2 does: `\\z` is
+// an escaped backslash and a `z`, not the end; an array with no pattern has none ending at `\z`.
+describe("lint-agents.sh empty_prompt audit (U-R1B-LINT-EMPTY)", () => {
+  const zz = (tail: string, crlf = false) => {
+    const dir = copy(BOX17);
+    const text = `name = "zzagent"\nprogram = "zzagent"\nhas_prompts = true\n[states]\nidle = ['^zz>']\n${tail}`;
+    writeFileSync(join(dir, "harnesses", "zzagent.toml"), crlf ? text.replace(/\n/g, "\r\n") : text);
+    return lint(dir);
+  };
+  const fails = (r: { rc: number | null; lines: string[] }) => {
+    expect(r.lines).toContain("F harnesses/zzagent.toml:6");
+    expect(r.lines.at(-1)).toBe("lint-agents: FAIL (1)");
+    expect(r.rc).toBe(1);
+  };
+  const passes = (r: { rc: number | null; lines: string[] }) => {
+    expect(r.lines.at(-1)).toBe("lint-agents: PASS");
+    expect(r.rc).toBe(0);
+  };
+
+  it("(a1) a literal string ending in an escaped backslash and z fails F; an odd run of backslashes passes", () => {
+    fails(zz(String.raw`empty_prompt = ['^zz\\z']` + "\n"));
+    passes(zz(String.raw`empty_prompt = ['^zz\\\z']` + "\n"));
+  });
+
+  it("(a2) a basic string decoding to an escaped backslash and z fails F; one decoding to \\\\\\z passes", () => {
+    fails(zz(String.raw`empty_prompt = ["^zz\\\\z"]` + "\n"));
+    passes(zz(String.raw`empty_prompt = ["^zz\\\\\\z"]` + "\n"));
+  });
+
+  it("(a3) an empty array, a non-array value, or an unclosed array fails F", () => {
+    fails(zz("empty_prompt = []\n"));
+    fails(zz("empty_prompt = true\n"));
+    fails(zz(String.raw`empty_prompt = ['^zz\z',` + "\n"));
+  });
+
+  it("(a4) a CRLF file is read like an LF file", () => {
+    passes(zz(String.raw`empty_prompt = ['^zz\z']` + "\n", true));
+    fails(zz(String.raw`empty_prompt = ['^zz']` + "\n", true));
+  });
+});

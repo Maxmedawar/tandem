@@ -26,8 +26,10 @@
 #      "E harnesses/<file>:<line of [states], or 1 when it has none>". So a new agent cannot ship
 #      without an empty-prompt rule.
 #   F  an agent harness file whose [states] `empty_prompt` holds a pattern that does not end at
-#      \z (a '...' string ending \z, or a "..." string ending \\z): "F harnesses/<file>:<line of
-#      the empty_prompt key>", one per key; the array may span lines.
+#      \z (a '...' string ending \z, or a "..." string ending \\z; read decoded, as RE2 reads it:
+#      a final z after an odd run of backslashes), or holds no pattern (an empty, unclosed or
+#      non-array value): "F harnesses/<file>:<line of the empty_prompt key>", one per key; the
+#      array may span lines.
 # ALLOW (below): one "path|fixed text|owner" per line. A hit passes when an entry has its path
 # and its line contains that text. An entry that matches nothing prints
 # "lint-agents: stale <entry>" and does not fail.
@@ -82,6 +84,7 @@ for f in harnesses/*.toml; do
   [ "${f##*/}" = shell.toml ] && continue
   hits=$(awk -v f="$f" '
   BEGIN { q = sprintf("%c", 39); dq = sprintf("%c", 34); bs = sprintf("%c", 92) }
+  { sub(/\r$/, "") }
   /^[ \t]*adapter[ \t]*=/ { adapter = 1 }
   # inside the empty_prompt value: scan chars from pos on this line until the array closes
   col {
@@ -93,7 +96,7 @@ for f in harnesses/*.toml; do
     next
   }
   !col && st && /^[ \t]*empty_prompt[ \t]*=/ {
-    has = 1; key = FNR; bad = 0; depth = 0; col = 1
+    has = 1; key = FNR; bad = 0; np = 0; depth = 0; col = 1
     s = $0; sub(/^[^=]*=/, "", s); i = 1
   }
   col {
@@ -102,25 +105,31 @@ for f in harnesses/*.toml; do
       c = substr(s, i, 1)
       if (c == "#") break
       if (c == "[") depth++
+      else if (depth <= 0 && c != " " && c != "\t") { bad = 1; col = 0 }
       else if (c == "]") { depth--; if (depth <= 0) col = 0 }
       else if (c == q || c == dq) {
+        # v = the decoded text: a basic string drops the backslash of each escape
         j = i + 1; v = ""
         while (j <= n && substr(s, j, 1) != c) {
-          if (c == dq && substr(s, j, 1) == bs) { v = v substr(s, j, 1); j++ }
+          if (c == dq && substr(s, j, 1) == bs) j++
           v = v substr(s, j, 1); j++
         }
-        if (c == q) { if (substr(v, length(v) - 1) != bs "z") bad = 1 }
-        else if (substr(v, length(v) - 2) != bs bs "z") bad = 1
+        np++
+        # ends at \z: a final z after an odd run of backslashes (an even run is escaped ones)
+        k = length(v) - 1
+        while (k > 0 && substr(v, k, 1) == bs) k--
+        if (substr(v, length(v)) != "z" || (length(v) - 1 - k) % 2 == 0) bad = 1
         i = j
-        if (depth <= 0) col = 0
       }
       i++
     }
-    if (!col && bad) fl = fl "F " f ":" key "\n"
+    # no pattern, or not an array, counts as no pattern ending at \z
+    if (!col && (bad || !np)) fl = fl "F " f ":" key "\n"
   }
   END {
     if (adapter) exit
     if (!has) print "E " f ":" (hdr ? hdr : 1)
+    if (col) fl = fl "F " f ":" key "\n"
     printf "%s", fl
   }' "$f")
   while IFS= read -r line; do
