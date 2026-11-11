@@ -61,6 +61,11 @@ const { loadedHarnesses, resetHarnessCache } = await import("../bridge/engine-re
 const { applyLimits } = await import("../bridge/limits.ts");
 const { agentEntry, writeLimits } = await import("./fixtures/limits.ts");
 const { CCM_FRAME_TYPES } = await import("../hub/src/protocol.ts");
+const { registerLive, unregisterLive } = await import("../bridge/sessions.ts");
+const { executeLocalOp } = await import("../bridge/fleet-op-table.ts");
+const { buildMcpServer } = await import("../src/mcp-server.ts");
+const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+const { InMemoryTransport } = await import("@modelcontextprotocol/sdk/inMemory.js");
 
 const WAITING = "waiting_for_approval: the session waits for a person to approve or deny; nothing was typed";
 const AGENT_INTERRUPT = "input gate: an agent may not interrupt a session";
@@ -405,4 +410,227 @@ describe("(c) through route() on the private socket", () => {
     expect(await rq("POST", `/sessions/${name}/close`)).toEqual({ status: 200, body: { ok: true, name, engine: ENGINE } });
     expect(tmuxHas(name)).toBe(false);
   }, 60_000);
+});
+
+/**
+ * U-R1A-18-R1 (audit). Sessions here are HarnessSessions over a terminal that only records what
+ * would be typed, registered live so every caller's path (route, hub frame, fleet op, MCP tool)
+ * reaches them; nothing runs and no tmux call is made.
+ */
+describe("(e) U-R1A-18-R1 audit: identity, fresh reads, controls, malformed bodies, timing", () => {
+  const registered: string[] = [];
+  afterAll(() => registered.forEach((n) => unregisterLive(n)));
+  const rules = () => loadedHarnesses().get("r1a18-rules")!;
+  const builtin = (agent: string) => loadHarnesses({ installDir: BUILTIN, ownerDir: join(BOX, "no-owner") }).harnesses.get(agent)!;
+  const fixture = (n: string) => readFileSync(join(SCREENS, `${n}.txt`), "utf8");
+
+  function recording(name: string, next: () => string | Promise<string>, harness = rules()) {
+    const calls: string[] = [];
+    const terminal: HarnessTerminal = {
+      name,
+      cwd: WORK,
+      ready: true,
+      readinessWarning: undefined,
+      attachHint: () => "",
+      isAlive: async () => true,
+      isCurrentlyWorking: async () => false,
+      send: async (text: string) => {
+        calls.push(`send:${text}`);
+        return { status: "done", report: "", cursor: 0 };
+      },
+      readSince: async () => ({ text: "", cursor: 0, idle: true }) as never,
+      applyControls: async (controls) => {
+        calls.push(`controls:${JSON.stringify(controls)}`);
+        return [];
+      },
+      interrupt: async () => {
+        calls.push("interrupt");
+      },
+      close: async () => {},
+      screen: async () => next(),
+    };
+    const session = new HarnessSession(harness, terminal);
+    registerLive(session);
+    registered.push(name);
+    return { session, calls };
+  }
+  type Answer = { status?: number; body: unknown };
+  const hubCall = async (path: string, body: unknown, extra: Record<string, unknown> = {}): Promise<Answer> => {
+    const frame = {
+      type: CCM_FRAME_TYPES.httpRequest,
+      request_id: `r1a18-${tok()}`,
+      method: "POST",
+      path,
+      headers: {},
+      body_base64: Buffer.from(JSON.stringify(body), "utf8").toString("base64"),
+      ...extra,
+    } as CcmHttpRequestFrame;
+    const response = await handleHubRequest(frame);
+    return { status: response.status_code, body: JSON.parse(Buffer.from(response.body_base64 ?? "", "base64").toString("utf8")) };
+  };
+
+  it("identity: nothing a caller can send makes an agent the owner or the owner an agent, on every path into send and interrupt", async () => {
+    const name = "r1a18-fake-wait";
+    const { calls } = recording(name, () => "run it? (y/n)");
+    const path = (action: string) => `/sessions/${name}/${action}`;
+    const state = "waiting_for_approval";
+    const SEES: Record<From, Record<"send" | "interrupt", Answer>> = {
+      owner: { send: { status: 409, body: { error: WAITING, state } }, interrupt: { status: 409, body: { error: WAITING, state } } },
+      agent: {
+        send: { status: 200, body: { status: "held", name, engine: "r1a18-rules", state, attachHint: "" } },
+        interrupt: { status: 403, body: { error: AGENT_INTERRUPT, state } },
+      },
+    };
+    const claim = (who: From) => ({ from: who, as: who, caller: who, agent: who === "agent", role: who, sender: who, identity: who, rpcFrom: who });
+    const viaRoute = (from: unknown, body: Record<string, unknown>, query = "") => (action: "send" | "interrupt") =>
+      route({ method: "POST", path: path(action), query: new URLSearchParams(query), body: { ...(action === "send" ? { text: tok() } : {}), ...body }, ...(from === undefined ? {} : { from: from as From }) });
+    const q = (who: From) => new URLSearchParams(Object.entries(claim(who)).map(([k, v]) => [k, String(v)])).toString();
+    const mcp = async (action: "send" | "interrupt"): Promise<Answer> => {
+      const server = await buildMcpServer();
+      const client = new Client({ name: "r1a18", version: "0.0.0" });
+      const [a, b] = InMemoryTransport.createLinkedPair();
+      await Promise.all([server.connect(b), client.connect(a)]);
+      try {
+        const args = { name, ...(action === "send" ? { text: tok() } : {}), ...claim("agent") };
+        const result = (await client.callTool({ name: action === "send" ? "send_to_session" : "interrupt_session", arguments: args })) as { content: { text: string }[] };
+        return { body: JSON.parse(result.content[0].text) };
+      } finally {
+        await client.close();
+        await server.close();
+      }
+    };
+    const ROWS: [string, From, (action: "send" | "interrupt") => Promise<Answer>][] = [
+      ["route, no from", "owner", viaRoute(undefined, {})],
+      ["route, no from, body claims agent", "owner", viaRoute(undefined, claim("agent"))],
+      ["route, no from, query claims agent", "owner", viaRoute(undefined, {}, q("agent"))],
+      ["route, from owner, body and query claim agent", "owner", viaRoute("owner", claim("agent"), q("agent"))],
+      ["routeForTest seam, body claims agent", "owner", async (action) => (await import("../bridge/router.ts")).routeForTest("POST", path(action), { ...(action === "send" ? { text: tok() } : {}), ...claim("agent") }, q("agent"))],
+      [
+        "hub frame: headers, frame fields and body claim agent",
+        "owner",
+        (action) =>
+          hubCall(path(action), { ...(action === "send" ? { text: tok() } : {}), ...claim("agent") }, {
+            headers: { from: ["agent"], "x-tandem-from": ["agent"], "x-from": ["agent"] },
+            raw_query: q("agent"),
+            from: "agent",
+            trusted_surface: true,
+          }),
+      ],
+      ["fleet op, payload claims agent", "owner", (action) => executeLocalOp(action, { sessionId: name, ...(action === "send" ? { text: tok() } : {}), ...claim("agent") } as never)],
+      ["MCP tool, arguments claim agent", "owner", mcp],
+      ["route, from agent", "agent", viaRoute("agent", {})],
+      ["route, from agent, body claims owner", "agent", viaRoute("agent", claim("owner"))],
+      ["route, from agent, query claims owner", "agent", viaRoute("agent", {}, q("owner"))],
+      ...[["Owner"], ["OWNER"], ["owner "], [" owner"], [""], [0], [false], [true], [["owner"]], [{ owner: true }]].map(
+        ([value]) => [`route, from ${JSON.stringify(value)} (not the owner's exact value) with a body claiming owner`, "agent", viaRoute(value, claim("owner"))] as [string, From, (action: "send" | "interrupt") => Promise<Answer>],
+      ),
+    ];
+    for (const [label, who, call] of ROWS) {
+      for (const action of ["send", "interrupt"] as const) {
+        const answer = await call(action);
+        expect(answer.body, `${label}: ${action} body`).toEqual(SEES[who][action].body);
+        if (answer.status !== undefined) expect(answer.status, `${label}: ${action} status`).toBe(SEES[who][action].status);
+      }
+    }
+    expect(calls).toEqual([]);
+  }, 30_000);
+
+  it("fresh reads: the session's own cached idle admits nobody; one changed idle screen restarts the wait", async () => {
+    let screen = "fake>";
+    const cached = recording("r1a18-fake-fresh", () => screen);
+    await cached.session.read();
+    await sleep(400);
+    expect((await cached.session.read()).agentState).toBe("idle");
+    screen = "run it? (y/n)";
+    expect(await gate.admitInput!(cached.session, "owner", "type")).toEqual({ verdict: "refused", state: "waiting_for_approval" });
+    expect(await gate.admitInput!(cached.session, "owner", "interrupt")).toEqual({ verdict: "refused", state: "waiting_for_approval" });
+    expect(await gate.admitInput!(cached.session, "agent", "type")).toEqual({ verdict: "held", state: "waiting_for_approval" });
+
+    let reads = 0;
+    const changing = recording("r1a18-fake-change", () => (++reads <= 2 ? "a\nfake>" : "b\nfake>"));
+    const started = Date.now();
+    expect(await gate.admitInput!(changing.session, "agent", "type")).toEqual({ verdict: "enter", state: "idle" });
+    // Without the restart it would enter on read 3 (500 ms); with it, 300 ms after the change at least.
+    expect(Date.now() - started).toBeGreaterThanOrEqual(790);
+    expect(reads).toBeGreaterThanOrEqual(5);
+    expect(cached.calls.concat(changing.calls)).toEqual([]);
+  }, 10_000);
+
+  it("controls: a per-send model/effort reaches the session only after admission, then before its text", async () => {
+    let screen = fixture("claude-waiting_for_approval-1");
+    const name = "r1a18-fake-controls";
+    const { calls } = recording(name, () => screen, builtin("claude"));
+    const send = (from: From) => sendAs(name, "hello", from, { model: "opus", effort: "high" });
+    expect(await send("owner")).toEqual({ status: 409, body: { error: WAITING, state: "waiting_for_approval" } });
+    expect(await send("agent")).toMatchObject({ status: 200, body: { status: "held", state: "waiting_for_approval" } });
+    screen = fixture("claude-working-real");
+    expect(await send("agent")).toMatchObject({ status: 200, body: { status: "held", state: "working" } });
+    screen = fixture("claude-unknown-1");
+    expect(await send("agent")).toMatchObject({ status: 200, body: { status: "held", state: "unknown" } });
+    expect(calls).toEqual([]);
+    const entered = ['controls:{"model":"opus","effort":"high"}', "send:hello"];
+    screen = fixture("claude-working-real");
+    expect(await send("owner")).toMatchObject({ status: 200, body: { status: "done" } });
+    expect(calls.splice(0)).toEqual(entered);
+    screen = fixture("claude-idle-real");
+    expect(await send("agent")).toMatchObject({ status: 200, body: { status: "done" } });
+    expect(calls).toEqual(entered);
+  }, 20_000);
+
+  it.each([[null], [[]], ["text"], [7], [true]])("malformed body %j on send and interrupt answers 400, never 500, and types nothing", async (body) => {
+    const live = `r1a18-fake-body-${seq++}`;
+    const { calls } = recording(live, () => "fake>");
+    for (const name of [live, "r1a18-not-live"]) {
+      for (const action of ["send", "interrupt"]) {
+        const path = `/sessions/${name}/${action}`;
+        for (const from of [undefined, "agent"] as (From | undefined)[]) {
+          const answer = await route({ method: "POST", path, query: new URLSearchParams(), body: body as never, ...(from ? { from } : {}) }).catch((e) => ({ status: 500, body: String(e) }));
+          expect(answer, `route ${action} ${name} from=${from}`).toEqual({ status: 400, body: { error: "body must be a JSON object" } });
+        }
+        expect(await hubCall(path, body), `hub ${action} ${name}`).toEqual({ status: 400, body: { error: "body must be a JSON object" } });
+      }
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("timing: a screen read that never answers, or answers slowly, cannot hang the gate or route()", async () => {
+    const timed = async <T>(run: () => Promise<T>) => {
+      const started = Date.now();
+      const answer = await run();
+      return { answer, took: Date.now() - started };
+    };
+    const never = recording("r1a18-fake-hang", () => new Promise<string>(() => {}));
+    // A read with no answer in 2000 ms is a screen the session cannot show: unknown.
+    const owner = await timed(() => gate.admitInput!(never.session, "owner", "type"));
+    expect(owner.answer).toEqual({ verdict: "enter", state: "unknown" });
+    expect(owner.took).toBeLessThan(3000);
+    const agent = await timed(() => gate.admitInput!(never.session, "agent", "type"));
+    expect(agent.answer).toEqual({ verdict: "held", state: "unknown" });
+    expect(agent.took).toBeLessThan(3000);
+    const routed = await timed(() => sendAs("r1a18-fake-hang", tok(), "agent"));
+    expect(routed.answer).toMatchObject({ status: 200, body: { status: "held", state: "unknown" } });
+    expect(routed.took).toBeLessThan(3000);
+    const refused = await timed(() => interruptAs("r1a18-fake-hang", "agent"));
+    expect(refused.answer.status).toBe(403);
+    expect(refused.took).toBeLessThan(3000);
+    expect(never.calls).toEqual([]);
+
+    // Idle on the first read, then no answer: held, within one read's limit of the first poll.
+    let k = 0;
+    const stalls = recording("r1a18-fake-stall", () => (++k === 1 ? "fake>" : new Promise<string>(() => {})));
+    const stalled = await timed(() => gate.admitInput!(stalls.session, "agent", "type"));
+    expect(stalled.answer).toEqual({ verdict: "held", state: "unknown" });
+    expect(stalled.took).toBeLessThan(3200);
+
+    // Slow reads of an idle screen that keeps changing: held by debounce_ms + 1000 ms plus one poll and one read.
+    let n = 0;
+    const slow = recording("r1a18-fake-slow", async () => {
+      await sleep(700);
+      return `out ${++n}\nfake>`;
+    });
+    const slowed = await timed(() => gate.admitInput!(slow.session, "agent", "type"));
+    expect(slowed.answer).toEqual({ verdict: "held", state: "idle" });
+    expect(slowed.took).toBeLessThan(300 + 1000 + 250 + 700 + 400);
+    expect(stalls.calls.concat(slow.calls)).toEqual([]);
+  }, 30_000);
 });

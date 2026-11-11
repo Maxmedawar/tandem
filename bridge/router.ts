@@ -200,6 +200,11 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
       audit({ route: `${m} /sessions/:name/${action}`, name, denied: 'relay-owned' })
       return err(409, `session "${name}" is relay-owned; use the relay routes`)
     }
+    // Typed input takes a JSON object for a body: any other value (null, an array, a string, a
+    // number) is refused here, before a handler reads a key of it.
+    if (m === 'POST' && (action === 'send' || action === 'interrupt')) {
+      if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) return err(400, 'body must be a JSON object')
+    }
     // Reads are audited once, live or not, never with text. A send with empty text is the
     // poll mode (it returns the transcript), so it is a read.
     if (m === 'POST' && action === 'send' && !String(req.body?.['text'] ?? '')) {

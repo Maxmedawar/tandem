@@ -31,9 +31,19 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** Screens compare without trailing whitespace, per line and at the end. */
 const settled = (screen: string) => screen.replace(/[ \t]+$/gm, '').trimEnd()
 
+const READ_MS = 2000
+const UNREAD: InputRead = { state: 'unknown', screen: '', debounceMs: 0 }
+
+/** One read. A session with no inputState, a read that fails, or one with no answer in 2000 ms
+ *  is a screen the session cannot show: unknown. So no read can keep the gate waiting. */
 function readInput(session: object): Promise<InputRead> {
   const s = session as { inputState?: () => Promise<InputRead> }
-  return typeof s.inputState === 'function' ? s.inputState() : Promise.resolve({ state: 'unknown', screen: '', debounceMs: 0 })
+  if (typeof s.inputState !== 'function') return Promise.resolve(UNREAD)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<InputRead>((resolve) => {
+    timer = setTimeout(() => resolve(UNREAD), READ_MS)
+  })
+  return Promise.race([s.inputState().catch(() => UNREAD), late]).finally(() => clearTimeout(timer))
 }
 
 /**
@@ -41,7 +51,8 @@ function readInput(session: object): Promise<InputRead> {
  * text: a first read that is not idle is held at once; at idle the screen is read again every
  * 250 ms and the text enters once the same screen has read idle for the file's debounce_ms (the
  * last read is the re-check right before typing). A changed idle screen restarts that wait; a
- * read that is not idle, or debounce_ms + 1000 ms in all, is held. Nothing waits longer.
+ * read that is not idle, or debounce_ms + 1000 ms in all, is held. Nothing waits longer than
+ * that plus one poll and two reads of 2000 ms at most (the first, and the one under way).
  */
 export async function admitInput(session: object, from: InputFrom, action: InputAction): Promise<{ verdict: InputVerdict; state: ReadState }> {
   const start = Date.now()
