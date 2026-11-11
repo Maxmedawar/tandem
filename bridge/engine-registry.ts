@@ -16,6 +16,10 @@
  * access beyond an executable-presence check (injectable, so tests never shell
  * out to a real `which`), no tmux, no network.
  *
+ * `claude` keeps its built-in NAME (here, in fleet routing, on by default) but
+ * runs from its built-in harness file, harnesses/claude.toml, through the one
+ * harness engine (engines/harness-engine.ts).
+ *
  * `claude` is exempt from the executable-presence check: Phase 1 never
  * preflighted it (a missing `claude` binary surfaces at spawn/warmup, exactly
  * as before), and unlike codex — a genuinely new, opt-in engine — adding a real
@@ -23,10 +27,10 @@
  * (including reusing an already-live session) would be both a needless
  * regression risk in production and a source of environment-dependent flake in
  * tests. codex/shell/hermes have no such Phase 1 baseline to preserve.
+ * ponytail: U-R1A-13 drops this exemption.
  */
 import { execFile } from 'node:child_process'
 import {
-  CLAUDE_DESCRIPTOR,
   CODEX_DESCRIPTOR,
   SHELL_DESCRIPTOR,
   type BuiltinEngineId,
@@ -45,15 +49,16 @@ let harnessCache: Map<string, Harness> | undefined
 
 /**
  * The loaded harness files by name (harnesses/SCHEMA.md), read once per process. Each refused
- * file writes one stderr line. A file named claude, codex, shell or hermes is skipped with a
- * stderr line: those four keep their code engines.
+ * file writes one stderr line. The built-in claude file stays (claude runs from it; an owner
+ * claude.toml is refused by the loader). A file named codex, shell or hermes is skipped with a
+ * stderr line: those three keep their code engines until U-R1A-12/13/16.
  */
 export function loadedHarnesses(): Map<string, Harness> {
   if (harnessCache) return harnessCache
   const { harnesses, errors } = loadHarnesses()
   for (const e of errors) process.stderr.write(`[bridge] harness file refused: ${e.file}: ${e.reason}\n`)
   for (const [name, h] of harnesses) {
-    if (!isBuiltinEngine(name)) continue
+    if (!isBuiltinEngine(name) || (name === 'claude' && h.source === 'builtin')) continue
     harnesses.delete(name)
     process.stderr.write(`[bridge] harness file skipped: ${h.file}: "${name}" keeps its built-in engine\n`)
   }
@@ -66,10 +71,9 @@ export function resetHarnessCache(): void {
   harnessCache = undefined
 }
 
-/** Tmux-hosted engines' descriptors, keyed by id. `hermes` has none — it is not
- *  tmux-hosted (see engines/hermes.ts). */
+/** Code engines' tmux descriptors, keyed by id. `claude` runs from its harness
+ *  file instead; `hermes` has none — it is not tmux-hosted (see engines/hermes.ts). */
 const TMUX_DESCRIPTORS: Partial<Record<BuiltinEngineId, EngineDescriptor>> = {
-  claude: CLAUDE_DESCRIPTOR,
   codex: CODEX_DESCRIPTOR,
   shell: SHELL_DESCRIPTOR,
 }
@@ -109,7 +113,7 @@ export function buildEnabledEngines(envValue = process.env.TANDEM_ENABLED_ENGINE
 }
 
 /** buildEnabledEngines plus the loaded harness names TANDEM_ENABLED_ENGINES lists. */
-function enabledEngineIds(envValue = process.env.TANDEM_ENABLED_ENGINES): Set<EngineId> {
+export function enabledEngineIds(envValue = process.env.TANDEM_ENABLED_ENGINES): Set<EngineId> {
   const enabled = new Set<EngineId>(buildEnabledEngines(envValue))
   for (const raw of (envValue ?? '').split(/[,:]/)) {
     const t = raw.trim().toLowerCase()
@@ -137,14 +141,14 @@ export interface ResolveEngineOptions {
 
 export interface EngineResolution {
   readonly id: EngineId
-  /** Present for tmux-hosted engines (claude/codex/shell); absent for hermes. */
+  /** Present for the code tmux engines (codex/shell); absent for hermes and harness engines. */
   readonly descriptor?: EngineDescriptor
-  /** Present for a harness engine (bridge/engines/harness-engine.ts builds its descriptor). */
+  /** Present for a harness engine, claude included (bridge/engines/harness-engine.ts builds its descriptor). */
   readonly harness?: Harness
 }
 
 /**
- * Resolve and validate a caller-supplied engine id (or `undefined` → "claude").
+ * Resolve and validate a caller-supplied engine id (or `undefined` → "claude", its built-in harness file).
  * Order: parse → enabled → executable-available. Throws typed errors on the
  * FIRST failing check and does nothing else — no cwd/tmux/network access, so
  * the router can call this before any side effect (binding — Phase 2
@@ -179,8 +183,14 @@ export async function resolveEngine(
       `engine "${id}" is disabled. Enable it by adding it to TANDEM_ENABLED_ENGINES.`,
     )
   }
+  if (id === 'claude') {
+    // No presence check (see the module doc); a missing claude starts `/usr/bin/env -- claude` and fails at spawn.
+    const claude = loadedHarnesses().get('claude')
+    if (!claude) throw new EngineUnavailableError('engine "claude" is enabled but its built-in harness file harnesses/claude.toml did not load.')
+    return { id, harness: claude }
+  }
   const descriptor = TMUX_DESCRIPTORS[id]
-  if (id !== 'claude' && descriptor?.executable) {
+  if (descriptor?.executable) {
     const detect = opts.detectExecutable ?? detectExecutableOnPath
     const available = await detect(descriptor.executable)
     if (!available) {
@@ -215,7 +225,7 @@ export async function capabilityReport(opts: ResolveEngineOptions = {}): Promise
     let available = false
     if (isEnabled) {
       const descriptor = TMUX_DESCRIPTORS[id]
-      available = id !== 'claude' && descriptor?.executable ? await detect(descriptor.executable) : true
+      available = descriptor?.executable ? await detect(descriptor.executable) : true
     }
     out.push({ engine: id, enabled: isEnabled, available })
   }

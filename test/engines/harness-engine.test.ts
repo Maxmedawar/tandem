@@ -60,7 +60,6 @@ const { dispatchOpenSession } = await import("../../bridge/fleet-dispatch.ts");
 const { createFleetRuntime } = await import("../../bridge/fleet-runtime.ts");
 const { harnessDescriptor } = await import("../../bridge/engines/harness-engine.ts");
 const { loadedHarnesses, resetHarnessCache, resolveEngine } = await import("../../bridge/engine-registry.ts");
-const { CLAUDE_DESCRIPTOR } = await import("../../bridge/drivable.ts");
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const tmux = (...args: string[]) =>
@@ -209,12 +208,12 @@ describe("harness engine: refusals", () => {
     await refused({ engine: "fake-rules", name: "r1a10-dev", device: "other" }, 400, /local/);
   });
 
-  it("an owner claude.toml leaves claude on its built-in engine, once in the enum", async () => {
+  it("an owner claude.toml is refused: claude stays on its built-in harness file, once in the enum", async () => {
     expect((await engineEnum()).filter((e) => e === "claude")).toEqual(["claude"]);
-    expect(loadedHarnesses().has("claude")).toBe(false);
+    expect(loadedHarnesses().get("claude")?.source).toBe("builtin");
     const resolution = await resolveEngine("claude");
-    expect(resolution.descriptor).toBe(CLAUDE_DESCRIPTOR);
-    expect(resolution.harness).toBeUndefined();
+    expect(resolution.harness).toBe(loadedHarnesses().get("claude"));
+    expect(resolution.descriptor).toBeUndefined();
     expect(stderrLines.filter((l) => l.includes(join(OWNER, "claude.toml")))).toHaveLength(1);
   });
 

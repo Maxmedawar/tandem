@@ -1,0 +1,35 @@
+# Claude Code. Screen rules adapted from kbwo/ccmanager src/services/stateDetector/claude.ts (MIT,
+# see test/fixtures/screens/NOTICE); the same patterns as test/fixtures/screens/harnesses/claude.toml.
+# idle is a positive match of the prompt box: a `❯` line between two rule lines. An interrupt marker
+# reads working only below the box's last rule line, at most 2 lines above its top rule, or with no
+# box; one further up is old transcript text. debounce_ms is Claude's stability window (3 x 750 ms).
+name = "claude"
+program = "claude"
+has_prompts = true
+skip_prompts_args = ["--dangerously-skip-permissions"]
+resume = ["--resume", "{id}"]
+fork = ["--resume", "{id}", "--fork-session"]
+account_env = "CLAUDE_CONFIG_DIR"
+history = "~/.claude/projects"
+
+[states]
+waiting_for_approval = [
+  '(?i)(?:do you want|would you like).+\n+[\s\S]*?(?:yes|❯)',
+  '(?i)esc to cancel',
+  '(?i)\d+\.\s*deny\s*\(esc\)',
+]
+working = [
+  '(?i)esc to interrupt[^\n]*\n(?:[^\n]*\n){0,2}─{20,}',
+  '(?i)esc to interrupt[^\n]*(?:\n[^─\n][^\n]*)*\z',
+  '(?i)ctrl\+c to interrupt[^\n]*\n(?:[^\n]*\n){0,2}─{20,}',
+  '(?i)ctrl\+c to interrupt[^\n]*(?:\n[^─\n][^\n]*)*\z',
+  '^[✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆·•⏺▸▹∙⋅○●] \S+ing.*…',
+  '(?i)\([^)]*\d[^)]*tokens\s*\)',
+]
+idle = ['^─{20,}[ \t]*\n❯(?:[ \t\x{A0}][^\n]*)?\n─{20,}']
+debounce_ms = 2250
+
+[keys]
+interrupt = ["Escape", "C-c"]
+approve = "Enter"
+deny = "Escape"

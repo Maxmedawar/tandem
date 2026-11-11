@@ -357,6 +357,13 @@ export function describeMarkerlessReadiness(
   return formatUnreadyMessage(pane, load1, cpuCount, name)
 }
 
+/** The keys that answer Claude's trust-folder dialog "yes, I trust this folder". Claude Code
+ *  2.1.321 highlights "No, exit" first, where a plain Enter would exit; then Down comes first. */
+export function trustAnswerKeys(pane: string): string[] {
+  const selected = pane.split('\n').find((l) => l.trimStart().startsWith('❯')) ?? ''
+  return /\bno\b/i.test(selected) ? ['Down', 'Enter'] : ['Enter']
+}
+
 /** Stability-tracking state threaded through stepStability() across polls. */
 export interface StabilityState {
   stablePolls: number
@@ -396,6 +403,53 @@ export function stepStability(
   const stablePolls = !working && trimmed === prev.lastPane ? prev.stablePolls + 1 : working ? 0 : 1
   const idle = !working && stablePolls >= required
   return { working, idle, state: { stablePolls, lastPane: trimmed } }
+}
+
+/**
+ * The argv tmux runs for `descriptor` (never one command string, decision D7). The real cwd is
+ * allowlist-checked separately (in spawn and router.handleOpen); these flags do not change the
+ * admitted start directory, and the cwd gate is not an OS sandbox: the process keeps the reach of
+ * its OS user. Called first in spawn, so a refused or bad flag fails before any cwd, tmux or file
+ * access instead of launching a misconfigured session.
+ *
+ * No silent option loss (binding — Phase 2 correction C): a non-Claude engine REJECTS
+ * model/effort/bypass rather than quietly ignoring them. Claude's flags follow its argv, whether
+ * that is CLAUDE_DESCRIPTOR's executable (the relay) or the claude harness file's argv.
+ * ponytail: U-R1A-17 moves bypass to the file's skip_prompts_args under `permission_skip`.
+ */
+export function spawnArgv(
+  descriptor: EngineDescriptor,
+  opts: Pick<SpawnOptions, 'model' | 'effort' | 'allowBypass'>,
+): string[] {
+  if (descriptor.id !== 'claude') {
+    if (opts.model !== undefined || opts.effort !== undefined) {
+      throw new Error(`model/effort are Claude-only options; not supported for engine "${descriptor.id}"`)
+    }
+    if (opts.allowBypass !== undefined) {
+      throw new Error(`bypass is a Claude-only option; not supported for engine "${descriptor.id}"`)
+    }
+  }
+  const engineArgv: string[] = []
+  if (descriptor.argv) {
+    // A harness engine: its argv verbatim, never one command string (decision D7).
+    engineArgv.push(...descriptor.argv)
+  } else if (descriptor.executable) {
+    engineArgv.push(descriptor.executable)
+  } else {
+    // Shell engine: the pane's default login shell — SHELL env if set, else a
+    // portable fallback. Never a shell STRING; this is one argv element handed
+    // straight to tmux/execFile, so it can't be reinterpreted.
+    const shellBin = (process.env.SHELL ?? '').trim() || '/bin/sh'
+    engineArgv.push(shellBin, '-l')
+  }
+  if (descriptor.id === 'claude') {
+    warnLegacySkipPermissionsIfSet()
+    const skip = opts.allowBypass ?? bypassPermissionsEnabled()
+    if (skip) engineArgv.push('--dangerously-skip-permissions')
+    if (opts.model !== undefined) engineArgv.push('--model', validateModel(opts.model))
+    if (opts.effort !== undefined) engineArgv.push('--effort', validateEffort(opts.effort))
+  }
+  return engineArgv
 }
 
 export class TerminalSession {
@@ -464,16 +518,8 @@ export class TerminalSession {
     if (!SESSION_NAME_RE.test(name)) {
       throw new Error(`invalid session name: ${name}`)
     }
-    // No silent option loss (binding — Phase 2 correction C): a non-Claude
-    // engine REJECTS model/effort/bypass rather than quietly ignoring them.
-    if (descriptor.id !== 'claude') {
-      if (opts.model !== undefined || opts.effort !== undefined) {
-        throw new Error(`model/effort are Claude-only options; not supported for engine "${descriptor.id}"`)
-      }
-      if (opts.allowBypass !== undefined) {
-        throw new Error(`bypass is a Claude-only option; not supported for engine "${descriptor.id}"`)
-      }
-    }
+    // Flags are refused or validated here, before any cwd, tmux or file access.
+    const engineArgv = spawnArgv(descriptor, opts)
     if (!existsSync(requestedCwd) || !statSync(requestedCwd).isDirectory()) {
       throw new Error(`cwd does not exist or is not a directory: ${requestedCwd}`)
     }
@@ -497,33 +543,6 @@ export class TerminalSession {
     const logPath = join(TRANSCRIPTS_DIR, `${name}.log`)
     // Truncate any stale transcript so the byte cursor starts clean.
     await (await open(logPath, 'w')).close()
-
-    // Build the engine argv. The real cwd was already allowlist-checked above
-    // (and again in router.handleOpen). These flags do not change the admitted
-    // start directory. The cwd gate is not an OS sandbox: the process retains
-    // the filesystem reach of its OS user. Validation (model/effort) runs here,
-    // pre-spawn, so a bad value fails clearly instead of launching a
-    // misconfigured session.
-    const engineArgv: string[] = []
-    if (descriptor.argv) {
-      // A harness engine: its argv verbatim, never one command string (decision D7).
-      engineArgv.push(...descriptor.argv)
-    } else if (descriptor.executable) {
-      engineArgv.push(descriptor.executable)
-      if (descriptor.id === 'claude') {
-        warnLegacySkipPermissionsIfSet()
-        const skip = opts.allowBypass ?? bypassPermissionsEnabled()
-        if (skip) engineArgv.push('--dangerously-skip-permissions')
-        if (opts.model !== undefined) engineArgv.push('--model', validateModel(opts.model))
-        if (opts.effort !== undefined) engineArgv.push('--effort', validateEffort(opts.effort))
-      }
-    } else {
-      // Shell engine: the pane's default login shell — SHELL env if set, else a
-      // portable fallback. Never a shell STRING; this is one argv element handed
-      // straight to tmux/execFile, so it can't be reinterpreted.
-      const shellBin = (process.env.SHELL ?? '').trim() || '/bin/sh'
-      engineArgv.push(shellBin, '-l')
-    }
 
     // Inject text injection-safe — but here the args are all bridge-controlled
     // (constants + validated flags), so this is a normal new-session. The engine
@@ -696,8 +715,11 @@ export class TerminalSession {
       const pane = await this.capture()
       const lower = pane.toLowerCase()
       if (isClaude && !trusted && lower.includes(TRUST_PROMPT_MARKER)) {
-        // Confirm "Yes, I trust this folder" (the highlighted default) with Enter.
-        await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+        // Confirm "Yes, I trust this folder" (Enter, after a Down when "No, exit" is highlighted).
+        for (const [i, key] of trustAnswerKeys(pane).entries()) {
+          if (i > 0) await sleep(150)
+          await tmux(['send-keys', '-t', this.tmuxTarget, key])
+        }
         trusted = true
         await sleep(POLL_MS)
         continue
@@ -971,21 +993,18 @@ export class TerminalSession {
     return out.join('\n').trim()
   }
 
-  /** Interrupt a running turn: Escape (Claude Code's "esc to interrupt"), then
-   *  a C-c as a fallback if the TUI is wedged. Works uniformly for codex/shell
-   *  since Ctrl-C is the standard terminal interrupt signal for any foreground
-   *  process, not a Claude-specific behavior. */
-  async interrupt(): Promise<void> {
-    try {
-      await tmux(['send-keys', '-t', this.tmuxTarget, 'Escape'])
-    } catch {
-      /* fallthrough to C-c */
-    }
-    await sleep(150)
-    try {
-      await tmux(['send-keys', '-t', this.tmuxTarget, 'C-c'])
-    } catch {
-      /* best effort */
+  /** Interrupt a running turn: each key in order, 150 ms apart. The default is
+   *  Escape (Claude Code's "esc to interrupt"), then a C-c as a fallback if the
+   *  TUI is wedged; Ctrl-C is the standard terminal interrupt for any foreground
+   *  process. A harness session passes its file's `keys.interrupt`. */
+  async interrupt(keys: readonly string[] = ['Escape', 'C-c']): Promise<void> {
+    for (const [i, key] of keys.entries()) {
+      if (i > 0) await sleep(150)
+      try {
+        await tmux(['send-keys', '-t', this.tmuxTarget, key])
+      } catch {
+        /* best effort: fall through to the next key */
+      }
     }
   }
 

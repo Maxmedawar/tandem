@@ -34,7 +34,8 @@ export interface TerminalSessionLike {
   send(text: string): Promise<SendResult>
   readSince(cursor: number): Promise<ReadResult>
   applyControls(controls: { model?: string; effort?: string }): Promise<string[]>
-  interrupt(): Promise<void>
+  /** Sends each key in order, 150 ms apart; no keys = Escape, then C-c. */
+  interrupt(keys?: readonly string[]): Promise<void>
   close(): Promise<void>
 }
 

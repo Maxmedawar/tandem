@@ -8,7 +8,8 @@
  *
  * ENGINE-AWARE (Phase 2): a drivable "session" is either a REAL interactive
  * claude/codex/shell TUI in a tmux session "ccm-<name>" (driven by the shared
- * TerminalSession lifecycle via keystroke injection + pane scraping), or an
+ * TerminalSession lifecycle via keystroke injection + pane scraping; claude and
+ * every other harness-file agent through engines/harness-engine.ts), or an
  * attached Hermes writable-agent id (a loopback HTTP gateway, not tmux). We
  * NEVER run `claude -p` / headless and NEVER set ANTHROPIC_API_KEY, so Claude
  * usage stays on the user's interactive subscription. The autonomous capability
@@ -51,7 +52,6 @@ import {
   EngineDisabledError,
   EngineUnavailableError,
 } from './engine-registry.ts'
-import { ClaudeSession } from './engines/claude.ts'
 import { CodexSession } from './engines/codex.ts'
 import { ShellSession } from './engines/shell.ts'
 import { HarnessSession } from './engines/harness-engine.ts'
@@ -351,14 +351,13 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
 
   // Re-adopt a ccm-* session that survived a bridge restart (re-validates
-  // provenance tags + cwd).
+  // provenance tags + cwd). Claude sessions keep the tag `claude`, so live ones
+  // started before claude ran from its harness file are adopted too.
   const adopted = harness
     ? await HarnessSession.attachExisting(harness, name, ALLOWLIST)
-    : engine === 'claude'
-      ? await ClaudeSession.attachExisting(name, ALLOWLIST)
-      : engine === 'codex'
-        ? await CodexSession.attachExisting(name, ALLOWLIST)
-        : await ShellSession.attachExisting(name, ALLOWLIST)
+    : engine === 'codex'
+      ? await CodexSession.attachExisting(name, ALLOWLIST)
+      : await ShellSession.attachExisting(name, ALLOWLIST)
   if (adopted) {
     registerLive(adopted)
     audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, adopted: true })
@@ -366,11 +365,9 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
   const stillExists = harness
     ? await HarnessSession.exists(name)
-    : engine === 'claude'
-      ? await ClaudeSession.exists(name)
-      : engine === 'codex'
-        ? await CodexSession.exists(name)
-        : await ShellSession.exists(name)
+    : engine === 'codex'
+      ? await CodexSession.exists(name)
+      : await ShellSession.exists(name)
   if (stillExists) {
     audit({ route: 'POST /sessions/open', name, engine, denied: 'adopt-provenance-or-cwd' })
     return err(
@@ -381,12 +378,10 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
 
   try {
     const session = harness
-      ? await HarnessSession.spawn(harness, { name, cwd, allowlist: ALLOWLIST })
-      : engine === 'claude'
-        ? await ClaudeSession.spawn({ name, cwd, allowlist: ALLOWLIST, model, effort })
-        : engine === 'codex'
-          ? await CodexSession.spawn({ name, cwd, allowlist: ALLOWLIST })
-          : await ShellSession.spawn({ name, cwd, allowlist: ALLOWLIST })
+      ? await HarnessSession.spawn(harness, { name, cwd, allowlist: ALLOWLIST, model, effort })
+      : engine === 'codex'
+        ? await CodexSession.spawn({ name, cwd, allowlist: ALLOWLIST })
+        : await ShellSession.spawn({ name, cwd, allowlist: ALLOWLIST })
     registerLive(session)
     audit({ route: 'POST /sessions/open', name: session.id, engine, cwd, model, effort, ready: session.ready })
     // Surface readiness: when the TUI did NOT reach its prompt (the classic
