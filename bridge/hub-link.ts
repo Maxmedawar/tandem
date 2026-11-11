@@ -113,6 +113,8 @@ export interface HubLinkConfig {
   url: string
   token: string
   bridgeId: string
+  /** This computer holds the memory store: the dial adds `memory_home=1` so the hub sends memory calls here. */
+  memoryHome?: boolean
 }
 
 const BAD_CONFIG = 'hub link: bad configuration'
@@ -205,7 +207,7 @@ export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): 
     heartbeatMs: HEARTBEAT_MS,
     ...opts.timing,
   }
-  const dialUrl = `${origin}/__tunnel/connect?bridge_id=${encodeURIComponent(config.bridgeId)}`
+  const dialUrl = `${origin}/__tunnel/connect?bridge_id=${encodeURIComponent(config.bridgeId)}${config.memoryHome ? '&memory_home=1' : ''}`
 
   let stopped = false
   let isConnected = false

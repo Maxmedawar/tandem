@@ -12,6 +12,10 @@
  * A path starting `/fabric/` goes to the fabric router instead, with the frame's
  * `trusted_surface` marker (only the hub's /__fabric-rpc route sets it; without it the
  * answer is 403) and this process's fabric store, if one is open (none: 503).
+ *
+ * fabricForward is the other direction, for a computer with no store: its local MCP
+ * servers pass each fabric call over HTTPS to the hub's link route, and the hub sends it
+ * to the memory home. HTTPS, not a frame: the stdio server has no link socket.
  */
 import { routeFabricRpc } from './fabric/rpc-router.ts'
 import type { LocalFabricHost } from './fabric/local-fabric-host.ts'
@@ -41,6 +45,50 @@ function response(requestId: string, status: number, body: unknown): CcmHttpResp
     return response(requestId, 413, { error: 'payload_too_large' })
   }
   return frame
+}
+
+/** A link URL's origin as HTTP: `wss://` becomes `https://`, `ws://` becomes `http://`; nothing else changes. */
+export function hubHttpOrigin(wsOrigin: string): string {
+  return wsOrigin.replace(/^ws(s?):\/\//, 'http$1://')
+}
+
+export interface FabricForward {
+  forward(path: string, body: unknown): Promise<unknown>
+}
+
+const HUB_UNREACHABLE = Object.freeze({
+  error: 'memory_home_offline',
+  message: 'memory home offline: this computer cannot reach the hub',
+})
+
+/**
+ * POSTs `body` to `<hub>/__tunnel/fabric-rpc<path>` with the link token as bearer and
+ * returns the hub's JSON whatever the status. A non-JSON answer is `fabric_unavailable`;
+ * no answer (network error, 120 s) is memory_home_offline. The token is only ever in the header.
+ */
+export function fabricForward(config: { url: string; token: string }): FabricForward {
+  const base = `${hubHttpOrigin(config.url)}/__tunnel/fabric-rpc`
+  return {
+    async forward(path, body) {
+      let text: string
+      try {
+        const answer = await fetch(`${base}${path}`, {
+          method: 'POST',
+          headers: { authorization: `Bearer ${config.token}`, 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(120_000),
+        })
+        text = await answer.text()
+      } catch {
+        return { ...HUB_UNREACHABLE }
+      }
+      try {
+        return JSON.parse(text) as unknown
+      } catch {
+        return { error: 'fabric_unavailable' }
+      }
+    },
+  }
 }
 
 export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: LocalFabricHost): Promise<CcmHttpResponseFrame> {

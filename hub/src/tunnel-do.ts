@@ -11,8 +11,10 @@
  * Routes (Worker forwards here via a stub):
  *   /__tunnel/connect   -> bridge WebSocket upgrade (token already checked by Worker)
  *   /__rpc/<path>       -> forward to the bridge as an HTTP request frame
- *   /__fabric-rpc/fabric/<path> -> the same, marked with trusted_surface (TandemMcp's
- *                          fabric tools only; any other path under it is 404, nothing sent)
+ *   /__fabric-rpc/fabric/<path> -> the same, marked with trusted_surface, always to the
+ *                          memory home (the one socket tagged memory-home; any other path
+ *                          under it is 404, nothing sent). Callers: TandemMcp's fabric tools
+ *                          and the hub link route for fabric calls (index.ts).
  */
 
 import { DurableObject } from 'cloudflare:workers'
@@ -64,6 +66,12 @@ const WS_READY_STATE_OPEN = 1
 
 /** Hibernation tag prefix carrying a socket's bridge_id (survives hibernation). */
 const BRIDGE_TAG_PREFIX = 'bid:'
+/** Hibernation tag of a socket whose bridge holds the memory store (dialled with memory_home=1). */
+const MEMORY_HOME_TAG = 'memory-home'
+const MEMORY_HOME_OFFLINE = {
+  error: 'memory_home_offline',
+  message: 'memory home offline: the computer that holds memory is not connected to the hub',
+}
 
 const HOP_BY_HOP = new Set<string>([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -74,6 +82,9 @@ interface PendingRequest {
   resolve: (response: Response) => void
   timeoutTimer: ReturnType<typeof setTimeout>
   settled: boolean
+  /** A fabric call: the home socket it was sent on. Losing that one (closed, send failed)
+   *  answers memory_home_offline; another computer's socket closing leaves the call waiting. */
+  home?: WebSocket
 }
 
 export class TunnelDO extends DurableObject<Env> {
@@ -89,7 +100,7 @@ export class TunnelDO extends DurableObject<Env> {
     if (url.pathname === '/__tunnel/connect') return this.handleTunnelUpgrade(request, url)
     if (url.pathname.startsWith('/__fabric-rpc/')) {
       if (!url.pathname.startsWith('/__fabric-rpc/fabric/')) return new Response('not found', { status: 404 })
-      return this.handleRpc(request, url, '/__fabric-rpc', FABRIC_MCP_TRUST)
+      return this.handleFabricRpc(request, url)
     }
     if (url.pathname.startsWith('/__rpc/')) return this.handleRpc(request, url, '/__rpc')
     // Read-only: which machines are connected. Backs MCP default resolution +
@@ -145,8 +156,11 @@ export class TunnelDO extends DurableObject<Env> {
     }
 
     // Tag the socket with its bridge_id so the id survives hibernation; RPCs are
-    // routed by reading this tag back (getSocketFor / listConnectedBridgeIds).
-    this.ctx.acceptWebSocket(server, [CCM_TUNNEL_SUBPROTOCOL, `${BRIDGE_TAG_PREFIX}${bridgeId}`])
+    // routed by reading this tag back (getSocketFor / listConnectedBridgeIds). A bridge
+    // with the memory store also gets the memory-home tag (handleFabricRpc).
+    const tags = [CCM_TUNNEL_SUBPROTOCOL, `${BRIDGE_TAG_PREFIX}${bridgeId}`]
+    if (url.searchParams.get('memory_home') === '1') tags.push(MEMORY_HOME_TAG)
+    this.ctx.acceptWebSocket(server, tags)
 
     const ack: CcmRegisterFrame = { type: CCM_FRAME_TYPES.register }
     try { server.send(serializeFrame(ack)) } catch { /* close handler cleans up */ }
@@ -197,24 +211,37 @@ export class TunnelDO extends DurableObject<Env> {
     }
   }
 
-  async webSocketClose(): Promise<void> {
-    this.failAllPending(503, 'bridge_offline')
+  async webSocketClose(ws: WebSocket): Promise<void> {
+    this.failAllPending(503, 'bridge_offline', ws)
   }
 
-  async webSocketError(): Promise<void> {
-    this.failAllPending(503, 'bridge_offline')
+  async webSocketError(ws: WebSocket): Promise<void> {
+    this.failAllPending(503, 'bridge_offline', ws)
   }
 
   /* ---- MCP side: forward an RPC to the bridge ---- */
 
-  private async handleRpc(
-    request: Request,
-    url: URL,
-    prefix: '/__rpc' | '/__fabric-rpc',
-    trustedSurface?: typeof FABRIC_MCP_TRUST,
-  ): Promise<Response> {
-    const path = url.pathname.slice(prefix.length) || '/'
+  /**
+   * A fabric call goes to the memory home whatever machine header it carries: the one
+   * bridge id among the open memory-home sockets. None: 503 memory_home_offline. Two or
+   * more ids: 409 memory_home_conflict and nothing is sent. Same id twice cannot happen
+   * for long (a redial evicts the older socket); the newest open one is used.
+   */
+  private async handleFabricRpc(request: Request, url: URL): Promise<Response> {
+    const homes = this.ctx.getWebSockets(MEMORY_HOME_TAG).filter((ws) => ws.readyState === WS_READY_STATE_OPEN)
+    const ids = [...new Set(homes.map((ws) => this.bridgeIdOf(ws)))].sort()
+    if (ids.length === 0) return json(MEMORY_HOME_OFFLINE, 503)
+    if (ids.length > 1) {
+      return json({
+        error: 'memory_home_conflict',
+        machines: ids,
+        message: `more than one computer holds a memory store (${ids.join(', ')}); turn the store off on all but one`,
+      }, 409)
+    }
+    return this.forward(request, url, '/__fabric-rpc', homes[homes.length - 1], FABRIC_MCP_TRUST)
+  }
 
+  private async handleRpc(request: Request, url: URL, prefix: '/__rpc'): Promise<Response> {
     // Optional target machine. Header absent -> undefined -> unchanged single-socket
     // behavior (first open socket). Present -> sanitize so it matches the stored
     // (sanitized) bid: tag.
@@ -233,6 +260,18 @@ export class TunnelDO extends DurableObject<Env> {
       }
       return json({ error: 'bridge_offline' }, 503)
     }
+    return this.forward(request, url, prefix, socket)
+  }
+
+  /** Frame the request as tunnel_http_request, send it on `socket`, await the answer. */
+  private async forward(
+    request: Request,
+    url: URL,
+    prefix: '/__rpc' | '/__fabric-rpc',
+    socket: WebSocket,
+    trustedSurface?: typeof FABRIC_MCP_TRUST,
+  ): Promise<Response> {
+    const path = url.pathname.slice(prefix.length) || '/'
     const requestId = randomRequestId()
     const buf = await request.arrayBuffer()
     if (buf.byteLength > WS_MAX_FRAME_BYTES) return json({ error: 'payload_too_large' }, 413)
@@ -255,7 +294,7 @@ export class TunnelDO extends DurableObject<Env> {
       return json({ error: 'payload_too_large' }, 413)
     }
 
-    const responsePromise = this.awaitResponse(requestId)
+    const responsePromise = this.awaitResponse(requestId, trustedSurface === undefined ? undefined : socket)
     try {
       socket.send(serialized)
     } catch {
@@ -298,7 +337,7 @@ export class TunnelDO extends DurableObject<Env> {
     return dedupeConnectedIds(this.listSockets().infos)
   }
 
-  private awaitResponse(requestId: string): Promise<Response> {
+  private awaitResponse(requestId: string, home?: WebSocket): Promise<Response> {
     return new Promise<Response>((resolve) => {
       const timeoutTimer = setTimeout(() => {
         const p = this.pending.get(requestId)
@@ -307,7 +346,7 @@ export class TunnelDO extends DurableObject<Env> {
         this.pending.delete(requestId)
         resolve(json({ error: 'gateway_timeout' }, 504))
       }, RPC_TIMEOUT_MS)
-      this.pending.set(requestId, { resolve, timeoutTimer, settled: false })
+      this.pending.set(requestId, { resolve, timeoutTimer, settled: false, home })
     })
   }
 
@@ -328,21 +367,27 @@ export class TunnelDO extends DurableObject<Env> {
     p.settled = true
     clearTimeout(p.timeoutTimer)
     this.pending.delete(requestId)
-    p.resolve(json({ error: code }, status))
+    p.resolve(failure(p, status, code))
   }
 
-  private failAllPending(status: number, code: string): void {
+  /** `closed` went away: every /__rpc call fails as before (U-R1A-33 owns that), a fabric call only if `closed` was its home. */
+  private failAllPending(status: number, code: string, closed: WebSocket): void {
     for (const [id, p] of this.pending) {
-      if (p.settled) continue
+      if (p.settled || (p.home && p.home !== closed)) continue
       p.settled = true
       clearTimeout(p.timeoutTimer)
-      p.resolve(json({ error: code }, status))
+      p.resolve(failure(p, status, code))
       this.pending.delete(id)
     }
   }
 }
 
 /* ---- helpers ---- */
+
+/** A fabric call that lost its home (503) says so; every other failure keeps its code. */
+function failure(p: PendingRequest, status: number, code: string): Response {
+  return p.home && status === 503 ? json(MEMORY_HOME_OFFLINE, 503) : json({ error: code }, status)
+}
 
 function json(body: unknown, status: number): Response {
   return new Response(JSON.stringify(body), {

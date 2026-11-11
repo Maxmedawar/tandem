@@ -6,6 +6,7 @@
  */
 import { fileURLToPath } from "node:url";
 import { loadProtectedRuntimeConfigFromEnv, readProtectedSecretFile } from "./runtime-config.ts";
+import type { FabricForward } from "../bridge/hub-rpc.ts";
 
 try {
   const loadedProtectedConfig = await loadProtectedRuntimeConfigFromEnv();
@@ -53,16 +54,23 @@ const { startFabric } = await import("../bridge/fabric/local-fabric-host.ts");
 const fabric = await startFabric();
 
 // The link module (and the hub wire code it imports) loads only when the link is
-// configured, so with the URL unset nothing new is loaded or started.
+// configured, so with the URL unset nothing new is loaded or started. With the store open
+// this computer dials as the memory home; without it, its MCP server passes the fabric
+// tools' calls to the hub, which sends them to the home.
 let startConfiguredHubLink: (() => { close(): Promise<void> }) | undefined;
+let hubForward: FabricForward | undefined;
 if (process.env.TANDEM_HUB_LINK_URL) {
   try {
     const { hubLinkConfigFromEnv, startHubLink } = await import("../bridge/hub-link.ts");
-    const { handleHubRequest } = await import("../bridge/hub-rpc.ts");
+    const { handleHubRequest, fabricForward } = await import("../bridge/hub-rpc.ts");
     const hubLinkConfig = hubLinkConfigFromEnv(process.env);
     // The config holds the secret now. Out of the environment, so no session this process starts inherits it.
     delete process.env.TANDEM_HUB_LINK_TOKEN;
-    if (hubLinkConfig) startConfiguredHubLink = () => startHubLink(hubLinkConfig, { handleRequest: (frame) => handleHubRequest(frame, fabric) });
+    if (hubLinkConfig) {
+      startConfiguredHubLink = () =>
+        startHubLink({ ...hubLinkConfig, memoryHome: fabric !== undefined }, { handleRequest: (frame) => handleHubRequest(frame, fabric) });
+      if (!fabric) hubForward = fabricForward(hubLinkConfig);
+    }
   } catch {
     console.error("tandem will not start: hub link configuration is invalid");
     process.exit(1);
@@ -85,7 +93,7 @@ try {
   const { loadOAuthConfigFromEnv } = await import("./auth-config.ts");
   const config = loadOAuthConfigFromEnv();
   const { startOAuthServer } = await import("./public-server.ts");
-  publicHandle = await startOAuthServer({ host: publicHost, port: publicPort, config, fleet: fleetRuntime, fabric });
+  publicHandle = await startOAuthServer({ host: publicHost, port: publicPort, config, fleet: fleetRuntime, fabric: fabric ?? hubForward });
 
   if (fleetToken) {
     const { startPrivateFleetServer } = await import("../bridge/fleet-private-server.ts");

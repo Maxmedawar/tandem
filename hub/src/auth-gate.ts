@@ -29,7 +29,7 @@ import type { Env } from './types'
 import { addressKey, clearLogin, reserveLogin } from './login-throttle'
 
 /** Stable identity for the single human (the owner) using this personal connector. */
-const SINGLE_USER_ID = 'owner'
+export const SINGLE_USER_ID = 'owner'
 
 /** A shorter TANDEM_HUB_PASSWORD is treated like a missing one: the gate stays shut. */
 const MIN_PASSWORD_LENGTH = 24

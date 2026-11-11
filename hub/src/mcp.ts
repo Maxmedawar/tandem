@@ -380,14 +380,16 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
 
     /* ---- capability #4: rooms, memory and projects (the bridge's fabric store) ---- */
 
-    // The hub has no fabric setting: the tools are listed when the bridge answers the
-    // readiness probe (/fabric/_ready), which runs once per MCP session against the only
-    // connected machine or the configured one. The owner comes from the OAuth props only.
+    // Memory has one home computer (the bridge that opened the store); the TunnelDO sends
+    // every fabric call there. The tools are listed on every session with no readiness
+    // probe, so a session opened while the home is offline still lists them and each call
+    // says why. The owner comes from the OAuth props only.
     try {
       await configureFabricTools(this.server as unknown as FabricToolServer, {
         enabled: '1',
         oauthSubject: this.props!.userId, // ! keeps the throw-then-fail-closed path if props are absent
-        rpc: (path, body, machine) => this.rpc(path, 'POST', body, machine, true),
+        readiness: false,
+        rpc: (path, body) => this.fabricRpc(path, body),
       })
     } catch {
       // A hashing or registration failure leaves the fabric tools out and keeps the session tools.
@@ -405,15 +407,13 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
     method: RpcMethod,
     body?: unknown,
     machine?: string,
-    fabric = false,
   ): Promise<unknown> {
     // Decide which Mac this RPC targets BEFORE sending. Explicit machine -> let
     // the DO route (and reject with a rich body if offline). No machine ->
     // consult /__status and apply the default rule; a none/ambiguous outcome is
-    // returned as the tool result without sending any RPC. A fabric call gets
-    // one generic answer for every way the bridge cannot be reached.
+    // returned as the tool result without sending any RPC.
     const resolved = await this.resolveTarget(machine)
-    if ('error' in resolved) return fabric ? { error: 'fabric_unavailable' } : resolved.error
+    if ('error' in resolved) return resolved.error
 
     const stub = this.env.TUNNEL.get(this.env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME))
 
@@ -430,28 +430,43 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
     if (resolved.header) headers['x-ccm-bridge-id'] = resolved.header
     init.headers = headers
 
-    const prefix = fabric ? '/__fabric-rpc' : '/__rpc'
-    const res = await stub.fetch(`https://do${prefix}${path}`, init)
+    const res = await stub.fetch(`https://do/__rpc${path}`, init)
     const text = await res.text()
     let parsed: unknown
     try {
       parsed = text.length > 0 ? JSON.parse(text) : {}
     } catch {
       // Non-JSON (e.g. an upstream error body) — surface it verbatim.
-      parsed = fabric
-        ? { error: 'fabric_unavailable' }
-        : { error: 'bad_bridge_response', status: res.status, body: text }
+      parsed = { error: 'bad_bridge_response', status: res.status, body: text }
     }
     // UX: turn the DO's {error:'bridge_offline', requested, connected} into a
     // readable message naming the unknown machine and listing what IS connected.
     if (isOfflineError(parsed)) {
-      if (fabric) return { error: 'fabric_unavailable' }
       return {
         ...parsed,
         message: formatOfflineMessage(parsed.requested ?? machine ?? '', parsed.connected ?? []),
       }
     }
     return parsed
+  }
+
+  /**
+   * A fabric call: POST to the DO's /__fabric-rpc<path> with no machine header (the DO sends
+   * it to the memory home) and return the DO's JSON as it is: the home's answer,
+   * memory_home_offline, memory_home_conflict or gateway_timeout. Non-JSON is fabric_unavailable.
+   */
+  private async fabricRpc(path: string, body: unknown): Promise<unknown> {
+    const stub = this.env.TUNNEL.get(this.env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME))
+    const res = await stub.fetch(`https://do/__fabric-rpc${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    try {
+      return JSON.parse(await res.text()) as unknown
+    } catch {
+      return { error: 'fabric_unavailable' }
+    }
   }
 
   /** The operator default machine, sanitized to match the stored bid: ids. Falls
