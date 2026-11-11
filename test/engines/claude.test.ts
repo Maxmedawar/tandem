@@ -222,7 +222,7 @@ describe("claude: spawn flags (injected spawn function)", () => {
       ["older numbered", ["1. Yes, I trust this folder", "2. No, exit"], 0, ["Enter"]],
       ["older numbered, No highlighted", ["1. Yes, I trust this folder", "2. No, exit"], 1, ["Up", "Enter"]],
       ["three options", ["No, exit", "Not now", "Yes, I trust this folder"], 0, ["Down", "Down", "Enter"]],
-    ])("%s: the polls send %j and Enter lands on Yes", (_label, options, start, want) => {
+    ])("%s: options %j, one key per poll, Enter only on Yes", (_label, options, start, want) => {
       let at = start as number;
       const sent: string[] = [];
       for (let poll = 0; poll < 6 && sent.at(-1) !== "Enter"; poll++) {
