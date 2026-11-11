@@ -37,6 +37,7 @@ import {
   dedupeConnectedIds,
   type SocketInfo,
 } from './tunnel-routing'
+import { HubQueue, type PutResult, type QueuedCopy, type QueueMessage } from './queue'
 import type { Env } from './types'
 
 // Re-exported so tests and other modules can reach the pure size policy via the
@@ -89,6 +90,28 @@ export class TunnelDO extends DurableObject<Env> {
     // the public Worker), so no auth needed.
     if (url.pathname === '/__status') return json({ connected: this.listConnectedBridgeIds() }, 200)
     return new Response('not found', { status: 404 })
+  }
+
+  /* ---- Durable queue per receiving computer (./queue) ---- */
+  // ponytail: no caller until U-R1A-33 (mail across computers). Durable Object RPC
+  // only: no route, frame type or MCP tool reaches these.
+
+  private queue?: HubQueue
+
+  private hubQueue(): HubQueue {
+    return (this.queue ??= new HubQueue(this.ctx.storage.sql, Date.now))
+  }
+
+  queuePut(msg: QueueMessage): PutResult[] {
+    return this.hubQueue().put(msg)
+  }
+
+  queueTake(to: string, afterSeq?: number, limit?: number): QueuedCopy[] {
+    return this.hubQueue().take(to, afterSeq, limit)
+  }
+
+  queueAck(to: string, uptoSeq: number): void {
+    this.hubQueue().ack(to, uptoSeq)
   }
 
   /* ---- Mac side: accept the bridge's outbound WebSocket ---- */
