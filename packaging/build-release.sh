@@ -324,6 +324,8 @@ xattr -cr "$stage" 2>/dev/null || true
 ( cd "$out_dir" && COPYFILE_DISABLE=1 tar --no-mac-metadata \
     -czf "tandem-$version-$platform.tar.gz" "tandem-$version-$platform" 2>/dev/null ||
   COPYFILE_DISABLE=1 tar -czf "tandem-$version-$platform.tar.gz" "tandem-$version-$platform" )
-shasum -a 256 "$out_dir/tandem-$version-$platform.tar.gz" > "$out_dir/tandem-$version-$platform.tar.gz.sha256"
+# Named by the archive alone: the digest file is published, and the build
+# machine's output path is not part of the release.
+( cd "$out_dir" && shasum -a 256 "tandem-$version-$platform.tar.gz" > "tandem-$version-$platform.tar.gz.sha256" )
 
 echo "built $out_dir/tandem-$version-$platform.tar.gz"

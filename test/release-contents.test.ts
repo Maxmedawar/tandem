@@ -213,6 +213,9 @@ describe('a published release', () => {
     const actual = execFileSync('shasum', ['-a', '256', join(releaseDir, archives[0]!)], { encoding: 'utf8' })
       .split(/\s+/)[0]
     expect(actual).toBe(published)
+    // The digest file names the archive alone, so it verifies wherever both
+    // are put and carries no path from the build machine.
+    expect(readFileSync(digestFile, 'utf8')).toBe(`${published}  ${archives[0]!}\n`)
   })
 })
 
