@@ -1,0 +1,12 @@
+  __( O)>  ● new session · anthropic claude-sonnet-4-6
+   \____)    20261111_101500 · /tmp/work
+
+> list files
+─── shell | developer ──────
+command: ls
+
+◆  Do you allow this tool call?
+│  ● Allow (Allow the tool call once)
+│  ○ Deny
+│  ○ Cancel
+└

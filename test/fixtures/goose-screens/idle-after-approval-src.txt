@@ -1,0 +1,13 @@
+  __( O)>  ● new session · anthropic claude-sonnet-4-6
+   \____)    20261111_101500 · /tmp/work
+
+> list files
+─── shell | developer ──────
+command: ls
+
+◇  Goose would like to call the above tool, do you allow?
+│  Allow
+a.txt  b.txt
+There are two files.
+
+> Enter to send · Ctrl+J newline

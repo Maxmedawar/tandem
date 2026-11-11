@@ -1,0 +1,6 @@
+Help improve goose
+Would you like to help improve goose by sharing anonymous usage data?
+
+◆  Share anonymous usage data to help improve goose?
+│  ● Yes / ○ No
+└
