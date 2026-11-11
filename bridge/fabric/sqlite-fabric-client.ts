@@ -1324,8 +1324,11 @@ export class SQLiteFabricClient implements FabricClient {
     await this.reconcileProject(ctx.ownerId, project.projectId, {
       untilSequence: published.sequence,
       finalize: () => {
+        // Counted only by the close-out that records the key: a second publish the bus answered
+        // with the same sequence (a retry while the first was in flight) is a duplicate and wakes nobody.
+        const fresh = !this.idempotency(ctx, project.projectId, 'room.post', prepared.idempotencyKey, prepared.now)
         event = this.finishRoomPost(ctx, project, prepared, published.sequence)
-        onFresh(this.advanceAgentRun(ctx, event))
+        if (fresh) onFresh(this.advanceAgentRun(ctx, event))
       },
     })
     if (!event) throw new FabricStorageError()

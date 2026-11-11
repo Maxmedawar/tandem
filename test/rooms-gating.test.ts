@@ -222,6 +222,73 @@ describe('(34) (c) the bus path counts the same way', () => {
   })
 })
 
+describe('(34) (audit) a bus post retried while the first is in flight', () => {
+  it('(34) (audit) two posts with one idempotencyKey at once, a bus that dedupes them: one event, one wake, run 1', async () => {
+    const bus = new FakeRoomBus()
+    // A bus that answers a second publish of one message id with the first one's sequence (as fabricd does).
+    const inflight = new Map<string, Promise<Json>>()
+    const publish = bus.publish.bind(bus)
+    ;(bus as Json).publish = (input: Json) => {
+      if (!inflight.has(input.messageId)) inflight.set(input.messageId, publish(input))
+      return inflight.get(input.messageId)!.then((r: Json) => ({ ...r }))
+    }
+    const f = await fabric({ bus })
+    const input = { room: 'general', type: 'message', body: '@b twice', idempotencyKey: 'same' }
+    const [x, y] = await Promise.all([f.client.postRoomEvent(f.agent('a'), input), f.client.postRoomEvent(f.agent('a'), input)])
+    expect(x.id).toBe(y.id)
+    expect(f.wakes).toEqual([{ names: ['b'], room: 'general', eventId: x.id, projectId: f.project.projectId }])
+    expect(runOf(f.databasePath, f.project.projectId, 'general')).toBe(1)
+    f.client.close()
+  })
+
+  it('(34) (audit) the first publish stored but its ack lost: the post fails and wakes nobody; the retry wakes once, run 1', async () => {
+    let lose = true
+    const f = await fabric({ bus: new FakeRoomBus({ loseAck: () => { const l = lose; lose = false; return l } }) })
+    const input = { room: 'general', type: 'message', body: '@b lost', idempotencyKey: 'lost' }
+    await expect(f.client.postRoomEvent(f.agent('a'), input)).rejects.toThrow()
+    expect(f.wakes).toEqual([])
+    const e = await f.client.postRoomEvent(f.agent('a'), input)
+    expect(f.wakes).toEqual([{ names: ['b'], room: 'general', eventId: e.id, projectId: f.project.projectId }])
+    expect(runOf(f.databasePath, f.project.projectId, 'general')).toBe(1)
+    f.client.close()
+  })
+})
+
+describe('(34) (audit) off-by-one, hostile labels, lookalike names', () => {
+  it('(34) (audit) after an owner post, agent posts 1..8 wake 1,1,1,1,0,0,0,0', async () => {
+    const f = await fabric()
+    await f.post(f.owner, '@a go')
+    const woke: number[] = []
+    for (let i = 1; i <= 8; i++) {
+      const before = f.wakes.length
+      await f.post(f.agent(i % 2 ? 'a' : 'b'), `@x r${i}`)
+      woke.push(f.wakes.length - before)
+    }
+    expect(woke).toEqual([1, 1, 1, 1, 0, 0, 0, 0])
+    expect(runOf(f.databasePath, f.project.projectId, 'general')).toBe(8)
+    f.client.close()
+  })
+
+  it('(34) (audit) a room name with a newline, C1, bidi, a tag character, a zero width or over 128 characters -> unnamed', () => {
+    const box = boxAt()
+    const rooms = ['gen\neral', 'gen\u0085eral', 'gen\u202eeral', 'gen\u{E0041}eral', 'gen\u200beral', 'x'.repeat(129), 'g\u00e9n\u00e9ral']
+    for (const room of rooms) box.wake('a', room, 'evt-1')
+    expect(box.read('a', 20).map((m) => [m.from, m.text])).toEqual(rooms.map(() => ['room:unnamed', LINE('unnamed', 'evt-1')]))
+    box.close()
+  })
+
+  it('(34) (audit) fullwidth @, a Cyrillic or tag character first: no mention; a lookalike stops the name where ASCII stops', () => {
+    expect(mentionsIn('\uFF20alice')).toEqual([])
+    expect(mentionsIn('@\u0430lice')).toEqual([])
+    expect(mentionsIn('@\u{E0061}lice')).toEqual([])
+    expect(mentionsIn('@alic\u0435 @bob\u200b @carol\u0301')).toEqual(['alic', 'bob', 'carol'])
+    expect(mentionsIn('@a/b @c\nd')).toEqual(['a', 'c'])
+    const t = performance.now()
+    for (const big of ['@'.repeat(1_000_000), 'a.'.repeat(500_000), ' @a'.repeat(333_333), (' @' + 'a'.repeat(63) + ':').repeat(15_000)]) mentionsIn(big)
+    expect(performance.now() - t).toBeLessThan(2_000)
+  })
+})
+
 describe('(34) (d) the run is per room and per project', () => {
   it('(34) (d) 5 agent posts in r1 do not stop a wake in r2 or in another project\'s r1', async () => {
     const f = await fabric()
