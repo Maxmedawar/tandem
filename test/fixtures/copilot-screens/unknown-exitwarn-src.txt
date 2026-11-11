@@ -1,0 +1,6 @@
+● Done.
+
+┃ ❯ 
+
+ctrl+c again to exit CLI · esc cancel
+~/work  main  claude-sonnet-4.5

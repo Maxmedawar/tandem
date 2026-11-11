@@ -1,0 +1,29 @@
+GitHub Copilot CLI screens in this folder are plain-text (no colour) for harnesses/copilot.toml.
+
+Every *-src.txt file here is CONSTRUCTED, not a capture. Each is built from short UI strings in
+GitHub Copilot CLI 1.0.109 for darwin/arm64 (npm `@github/copilot` 1.0.109, tarball sha256
+9565e94019b8c24ca4b4f6fc7dd3231b3d4ae509ec660b7e643d0b93a5d3b230, and
+`@github/copilot-darwin-arm64` 1.0.109, tarball sha256
+d00563d5481e8a275b41f78eeb71e19a90309a908255575293bf55e9778cc37a; its embedded cli-main.js,
+sha256 44a03c6501820d7a1e8bc8ad46fa060f8d9a9257ec81cbb0f1f15b289bc801d1), read as text only,
+never run. Licence: the GitHub Copilot CLI License (proprietary, GitHub). Only short UI strings
+are transcribed; no code is copied.
+
+idle-src.txt: a reply line, the prompt row (rail `┃`, glyph `❯ `, nothing typed), the hint row
+`/ commands · ? help` drawn only under an empty prompt, and a status line.
+idle-typed-src.txt: idle-src.txt with text typed in the prompt row and no hint row.
+working-src.txt: idle-src.txt with the busy row `◐ Thinking  ctrl+c interrupt` above the prompt.
+unknown-exitwarn-src.txt: idle-src.txt with the hint row replaced by the exit warning after one
+Ctrl+C at an empty prompt.
+waiting_for_approval-shell-src.txt, waiting_for_approval-edit-src.txt: a command and a file edit
+approval in a round-border box (`╭─╮`, `│`, `╰─╯`), first row `❯ 1. Yes` selected, the reject row
+`No, and tell Copilot what to do differently (Esc to stop)` last. The box is 60 columns; rows
+longer than that run past its right edge here.
+waiting_for_approval-url-src.txt: a URL access approval (`Do you want to allow this access?`,
+reject row `Something else, and tell Copilot what to do differently (Esc to stop)`).
+waiting_for_approval-plan-src.txt: the plan approval (`Accept plan and continue in ... execution
+mode` rows).
+unknown-trust-src.txt: the folder-trust menu (`Confirm folder trust`) in a round-border box.
+unknown-login-src.txt: the sign-in account picker (`What account do you want to log into?`).
+
+None of these is a real screen. A real screen added here by a live run is named *-real.txt.

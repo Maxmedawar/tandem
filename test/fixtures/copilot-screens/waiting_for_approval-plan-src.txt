@@ -1,0 +1,4 @@
+Copilot finished planning. Approve the plan?
+❯ 1. Accept plan and continue in Interactive execution mode
+  2. Accept plan and continue in Autopilot execution mode
+  3. No (Esc)

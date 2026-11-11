@@ -1,0 +1,7 @@
+● Done.
+
+◐ Thinking  ctrl+c interrupt
+┃ ❯ 
+
+/ commands · ? help
+~/work  main  claude-sonnet-4.5
