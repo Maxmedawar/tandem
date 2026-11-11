@@ -12,7 +12,7 @@
  * reads gives no second line.
  */
 import { audit } from './audit.ts'
-import { admitInput } from './input-gate.ts'
+import { admitInput, readInput } from './input-gate.ts'
 import { MailError, type Mailbox } from './mailbox.ts'
 import { getLive, liveSessionNames } from './sessions.ts'
 
@@ -35,6 +35,14 @@ export async function noticePass(box: Mailbox): Promise<{ typed: string[]; held:
       if (typeof cls !== 'function' || cls.call(session) === 'none') continue
       const p = box.pending(name)
       if (p.fyi + p.ask + p.interrupt === 0) continue
+      // Interrupt mail: the session's own interrupt key, once per newest Interrupt message, only on
+      // a working screen (an approval or unknown screen gets no key: it could answer a prompt). The
+      // line follows in a later pass, once the gate reads idle.
+      if (p.interrupt > 0 && (await readInput(session)).state === 'working' && box.interruptFor(name)) {
+        audit({ event: 'mail.interrupt', name, engine: session.engine })
+        await session.interrupt()
+        continue
+      }
       const { verdict } = await admitInput(session, 'agent', 'type')
       if (verdict !== 'enter') {
         held.push(name)

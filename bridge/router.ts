@@ -74,6 +74,8 @@ import {
   registerLive,
   unregisterLive,
   listSessions,
+  liveSessionNames,
+  listLiveTmuxSessions,
 } from './sessions.ts'
 import * as relay from './relay.ts'
 import { emitCompletion, summarize } from './events.ts'
@@ -267,21 +269,24 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
 
   // One open per name at a time: every open path checks the name (live, tmux) and registers it
   // only after an await, so a second open of the same name waits for the first and then sees
-  // what it registered (reused, or 409 for another engine).
-  const earlier = opening.get(name)
+  // what it registered (reused, or 409 for another engine). The key ignores case, so two opens
+  // whose names differ only in case also run one after the other: the second meets openNamed's
+  // name check with the first one registered (exactly one wins).
+  const key = name.toLowerCase()
+  const earlier = opening.get(key)
   const mine = (async () => {
     await earlier?.catch(() => {})
     return openNamed(name, req)
   })()
-  opening.set(name, mine)
+  opening.set(key, mine)
   try {
     return await mine
   } finally {
-    if (opening.get(name) === mine) opening.delete(name)
+    if (opening.get(key) === mine) opening.delete(key)
   }
 }
 
-/** The opens in flight by session name (handleOpen). */
+/** The opens in flight by session name in lower case (handleOpen). */
 const opening = new Map<string, Promise<RpcResult>>()
 
 async function openNamed(name: string, req: RpcRequest): Promise<RpcResult> {
@@ -296,6 +301,20 @@ async function openNamed(name: string, req: RpcRequest): Promise<RpcResult> {
     ;({ id: engine, harness } = await resolveEngine(rawEngine))
   } catch (e) {
     return engineError(e)
+  }
+
+  // A new name equal to an open one ignoring case would share its delivery and transcript files
+  // on a case-insensitive disk. Read after the engine is resolved (a refused engine runs no tmux)
+  // and only for a name that is not open itself: a session that already exists is reused or
+  // adopted below as before, also when an earlier version left two that differ only in case.
+  if (!getLive(name)) {
+    const tmuxNames = (await listLiveTmuxSessions().catch(() => [])).map((s) => s.name)
+    const lower = name.toLowerCase()
+    const other = tmuxNames.includes(name) ? undefined : [...liveSessionNames(), ...tmuxNames].find((n) => n.toLowerCase() === lower)
+    if (other !== undefined) {
+      audit({ route: 'POST /sessions/open', name, denied: 'name-case' })
+      return err(409, `session name "${name}" differs only in case from session "${other}"; use another name`)
+    }
   }
 
   // An engine mismatch on name reuse is rejected before any further work,

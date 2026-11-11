@@ -7,7 +7,7 @@
  * Gates (enabled, `shell` for a shell program, program found) live in engine-registry.ts;
  * model/effort/bypass stay Claude-only and are refused, never ignored.
  */
-import { installHook, removeHook, turnState } from '../delivery-hooks.ts'
+import { clearTurn, installHook, removeHook, turnState } from '../delivery-hooks.ts'
 import type { EngineDescriptor, ReadOptions, ReadResult } from '../drivable.ts'
 import { createStateReader, isPromptEmpty, readScreen, type ReadState } from '../harness-detect.ts'
 import type { Harness } from '../harness-registry.ts'
@@ -74,9 +74,10 @@ export class HarnessSession extends TerminalAdapterSession {
     this.interruptKeys = typeof keys === 'string' ? [keys] : keys
   }
 
-  /** The file's `keys.interrupt` when set, else the terminal's default (Escape, then C-c). */
-  interrupt(): Promise<void> {
-    return this.screenSource.interrupt(this.interruptKeys)
+  /** The file's `keys.interrupt` when set, else the terminal's default (Escape, then C-c); a hook agent's turn file then goes. */
+  async interrupt(): Promise<void> {
+    await this.screenSource.interrupt(this.interruptKeys)
+    if (this.harness.delivery === 'hook') clearTurn(this.id)
   }
 
   /**
