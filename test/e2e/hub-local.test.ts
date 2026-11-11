@@ -156,7 +156,8 @@ async function stopBridge(bridge: Bridge | undefined): Promise<void> {
     await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))])
   }
   spawnSync('tmux', ['-S', socketOf(bridge), 'kill-server'], { stdio: 'ignore' })
-  rmSync(bridge.base, { recursive: true, force: true })
+  // Retries: a shell killed just now may still be writing its history file into this folder.
+  rmSync(bridge.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
 }
 
 function socketOf(bridge: Bridge): string {
@@ -259,11 +260,17 @@ describe.skipIf(Boolean(missing))(title, () => {
 
   afterAll(async () => {
     await client?.close().catch(() => {})
-    await Promise.all([stopBridge(bridges.alpha), stopBridge(bridges.beta)])
-    if (wrangler?.pid && wrangler.exitCode === null) {
-      try { process.kill(-wrangler.pid, 'SIGTERM') } catch { /* already gone */ }
+    try {
+      await Promise.all([stopBridge(bridges.alpha), stopBridge(bridges.beta)])
+    } finally {
+      // Always: a failed bridge cleanup must not leave the hub process running.
+      if (wrangler?.pid && wrangler.exitCode === null && wrangler.signalCode === null) {
+        const exited = once(wrangler, 'exit')
+        try { process.kill(-wrangler.pid, 'SIGTERM') } catch { /* already gone */ }
+        await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))])
+      }
+      if (persist) rmSync(persist, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
     }
-    if (persist) rmSync(persist, { recursive: true, force: true })
   }, 30_000)
 
   it('/mcp without a token gives 401', async () => {
