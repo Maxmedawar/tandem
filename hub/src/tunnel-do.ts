@@ -99,15 +99,15 @@ export class TunnelDO extends DurableObject<Env> {
   private queue?: HubQueue
 
   private hubQueue(): HubQueue {
-    return (this.queue ??= new HubQueue(this.ctx.storage.sql, Date.now))
+    return (this.queue ??= new HubQueue(this.ctx.storage.sql, Date.now, (fn) => this.ctx.storage.transactionSync(fn)))
   }
 
   queuePut(msg: QueueMessage): PutResult[] {
     return this.hubQueue().put(msg)
   }
 
-  queueTake(to: string, afterSeq?: number, limit?: number): QueuedCopy[] {
-    return this.hubQueue().take(to, afterSeq, limit)
+  queueTake(to: string, afterSeq?: number, limit?: number, maxBytes?: number): QueuedCopy[] {
+    return this.hubQueue().take(to, afterSeq, limit, maxBytes)
   }
 
   queueAck(to: string, uptoSeq: number): void {
