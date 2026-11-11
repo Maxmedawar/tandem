@@ -22,9 +22,10 @@ waiting_for_approval = [
 ]
 # grok 1.0.77 mid-turn (grok-working-real*.txt): a spinner line and `Ctrl+c:cancel` in the footer.
 working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ', 'Ctrl\+c:cancel']
-# grok 1.0.77's composer box above its bottom border: empty when ready (grok-idle-real.txt), or
-# holding the prompt grok puts back after Ctrl+C cancels a turn (grok-idle-real2.txt).
-idle = ['^\s*│ ❯[^\n]*│\s*\n\s*╰─[^\n]*╯\s*$']
+# grok 1.0.77's composer: a one-row ❯ box with at most 3 footer lines below it, at the bottom of the
+# screen; empty when ready (grok-idle-real.txt), or holding the prompt grok puts back after Ctrl+C
+# cancels a turn (grok-idle-real2.txt). A ❯ box higher up, or with more rows, is not the composer.
+idle = ['^[ \t]*╭─[^\n]*╮[ \t]*\n[ \t]*│ ❯[^\n]*│[ \t]*\n[ \t]*╰─[^\n]*╯[ \t]*(?:\n[^\n]*){0,3}\z']
 
 [keys]
 interrupt = ["Escape", "C-c"]

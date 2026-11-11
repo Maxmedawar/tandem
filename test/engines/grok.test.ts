@@ -155,10 +155,26 @@ describe("grok: the built-in harness file", () => {
     expect(readScreen(builtinGrok(), readFileSync(join(SCREENS, file), "utf8"))).toBe(state);
   });
 
-  it("never idle: every waiting_for_approval and unknown fixture of every agent, and the recorded trust menu", () => {
-    const files = readdirSync(SCREENS).filter((f) => /-(waiting_for_approval|unknown)-[a-z0-9]+\.txt$/.test(f));
-    files.push("../dialogs/grok-trust-real.txt");
+  it("never idle: every screen fixture but grok's own idle ones, of every agent, and every dialog fixture", () => {
+    const files = readdirSync(SCREENS).filter((f) => f.endsWith(".txt") && !f.startsWith("grok-idle-"));
+    const dialogs = join(SCREENS, "../dialogs");
+    files.push(...readdirSync(dialogs).filter((f) => f.endsWith(".txt")).map((f) => join("../dialogs", f)));
+    expect(files.length).toBeGreaterThan(40);
     for (const f of files) expect(readScreen(builtinGrok(), readFileSync(join(SCREENS, f), "utf8")), f).not.toBe("idle");
+  });
+
+  it("never idle: a box with a ❯ row that is not grok's composer at the bottom of the screen", () => {
+    const real = readFileSync(join(SCREENS, "grok-idle-real2.txt"), "utf8").split("\n");
+    const output = ["  ╭──────────────────╮", "  │ ❯ ls -la         │", "  ╰──────────────────╯"];
+    // The agent's own output holds a one-row ❯ box; an unrecognised menu has replaced the composer.
+    const outputThenMenu = [...real.slice(0, 30), ...output, "", "  Keep this change?", "    Yes", "  ❯ No"].join("\n");
+    // An approval drawn inside a box at the bottom, its selected option the box's last row.
+    const boxedApproval = [...real.slice(0, 30), "  ╭──────────────────╮", "  │ Allow ls -la?    │", "  │   Yes            │", "  │ ❯ No             │", "  ╰──────────────────╯", "", "  Enter:confirm"].join("\n");
+    // Grok's ready composer with the same one-row ❯ box in its output further up still reads idle.
+    const outputThenComposer = [...real.slice(0, 30), ...output, ...real.slice(30)].join("\n");
+    expect(readScreen(builtinGrok(), outputThenMenu)).not.toBe("idle");
+    expect(readScreen(builtinGrok(), boxedApproval)).not.toBe("idle");
+    expect(readScreen(builtinGrok(), outputThenComposer)).toBe("idle");
   });
 
   it("an owner grok.toml is refused and the built-in stays", () => {
