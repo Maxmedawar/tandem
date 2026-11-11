@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, beforeAll, afterAll, beforeEach, vi } from "vitest";
 import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync, spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import {
@@ -1079,4 +1079,329 @@ describe.skipIf(!REAL_TMUX)("U-R1A-19: Tandem's own tmux socket", () => {
       expect(pasteHint(shell, hint, testEnv.tmuxTmp)).toBe("ccm-r1a19-q");
     });
   }
+
+  // ---- U-R1A-19-R1 audit (independent auditor): one table per attack --------------------------
+  describe("U-R1A-19-R1 audit", () => {
+    const newHome = (label = "r-") => mkdtempSync(join(testEnv.tmuxTmp, label));
+    /** A stand-in exec that records argv and succeeds: proves whether the runner reached tmux at all. */
+    const recorder = (calls: string[][]): TmuxExec => (argv, _opts, cb) => { calls.push(argv); cb(null, "", ""); };
+    /** The real tmux through the runner's seam, counting calls. */
+    const counting = (count: { n: number }): TmuxExec => (argv, opts, cb) => {
+      count.n++;
+      execFile(REAL_TMUX, argv, opts, (e, so, se) => cb(e as (Error & { code?: unknown }) | null, String(so), String(se)));
+    };
+    const listed = async () => (await import("../bridge/sessions.ts")).listLiveTmuxSessions({ ownerIdProvider: owner });
+    const tagged = (name: string, cwd: string, engine: string, ownerTag: string) => {
+      expect(raw(tandemSock, ["new-session", "-d", "-s", `ccm-${name}`, "-c", cwd, "sleep", "600"]).status).toBe(0);
+      expect(raw(tandemSock, ["set-option", "-t", `=ccm-${name}:`, "@tandem_engine", engine]).status).toBe(0);
+      expect(raw(tandemSock, ["set-option", "-t", `=ccm-${name}:`, "@tandem_owner", ownerTag]).status).toBe(0);
+    };
+
+    const mode = (m: number) => (th: string) => { mkdirSync(join(th, "tmux")); chmodSync(join(th, "tmux"), m); };
+    const folderRows: [string, (th: string) => void, RegExp | null][] = [
+      ["tmux/ 0770", mode(0o770), /group\/world/],
+      ["tmux/ 0750", mode(0o750), /group\/world/],
+      ["tmux/ 0701", mode(0o701), /group\/world/],
+      ["tmux/ 0777", mode(0o777), /group\/world/],
+      ["tmux/ 0755", mode(0o755), /group\/world/],
+      ["tmux/ a symlink to a 0700 folder", (th) => { mkdirSync(join(th, "real"), { mode: 0o700 }); symlinkSync(join(th, "real"), join(th, "tmux")); }, /a symlink/],
+      ["tmux/ a dangling symlink", (th) => symlinkSync(join(th, "gone"), join(th, "tmux")), /a symlink/],
+      ["tmux/ a regular file", (th) => writeFileSync(join(th, "tmux"), ""), /not a folder/],
+      ["tmux/ already 0700", mode(0o700), null],
+      ["tmux/ missing", () => {}, null],
+    ];
+    it.each(folderRows)("1) socket folder, %s", async (_label, setup, refused) => {
+      const th = newHome();
+      setup(th);
+      const before = snapshot(th);
+      const calls: string[][] = [];
+      await withTandemHome(th, async () => {
+        if (refused) {
+          const err = await runTmux(["list-sessions"], recorder(calls)).catch((e) => e as Error);
+          expect(String(err)).toMatch(refused);
+          expect(String(err)).toContain(join(th, "tmux"));
+          expect(calls).toEqual([]);
+          expect(snapshot(th)).toEqual(before);
+        } else {
+          await runTmux(["list-sessions"], recorder(calls));
+          expect(calls).toEqual([["-S", join(th, "tmux", "tandem"), "list-sessions"]]);
+          expect(snapshot(th)).toEqual(["tmux d 700"]);
+        }
+      });
+    });
+
+    it("1) socket folder: a missing TANDEM_HOME is made 0700 with tmux/ 0700; a folder of another user is refused", async () => {
+      const th = join(newHome(), "new home");
+      const calls: string[][] = [];
+      await withTandemHome(th, () => runTmux(["list-sessions"], recorder(calls)));
+      expect(lstatSync(th).mode & 0o777).toBe(0o700);
+      expect(lstatSync(join(th, "tmux")).mode & 0o777).toBe(0o700);
+      expect(calls).toHaveLength(1);
+      const spy = vi.spyOn(process, "getuid").mockReturnValue(uid + 1);
+      try {
+        await withTandemHome(th, async () => {
+          await expect(runTmux(["list-sessions"], recorder(calls))).rejects.toThrow(/not owned by this user/);
+        });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(calls).toHaveLength(1);
+    });
+
+    it("1) socket folder: behind a symlinked TANDEM_HOME the real tmux/ is still checked", async () => {
+      const real = newHome();
+      const link = `${real}-link`;
+      symlinkSync(real, link);
+      const calls: string[][] = [];
+      await withTandemHome(link, async () => {
+        await runTmux(["list-sessions"], recorder(calls));
+        expect(calls).toEqual([["-S", join(link, "tmux", "tandem"), "list-sessions"]]);
+        expect(lstatSync(join(real, "tmux")).mode & 0o777).toBe(0o700);
+        chmodSync(join(real, "tmux"), 0o755);
+        await expect(runTmux(["list-sessions"], recorder(calls))).rejects.toThrow(/group\/world/);
+        expect(lstatSync(join(real, "tmux")).mode & 0o777).toBe(0o755);
+      });
+      expect(calls).toHaveLength(1);
+    });
+
+    it("1) socket path: `..`, a space and unicode resolve and work with real tmux; exactly 100 bytes works, 101 is refused", async () => {
+      const base = newHome();
+      const odd = join(base, "sp ace-ü");
+      expect(tmuxSocketPath(join(base, "a", "..", "sp ace-ü"))).toBe(join(odd, "tmux", "tandem"));
+      const fixed = Buffer.byteLength(join(base, "x", "tmux", "tandem")) - 1;
+      expect(fixed).toBeLessThan(100);
+      const at100 = join(base, "p".repeat(100 - fixed));
+      expect(Buffer.byteLength(tmuxSocketPath(at100))).toBe(100);
+      expect(() => tmuxSocketPath(`${at100}p`)).toThrow(/tmux socket path too long/);
+      // Bytes, not characters: the same count of 2-byte letters is over.
+      expect(() => tmuxSocketPath(join(base, "ü".repeat(100 - fixed)))).toThrow(/tmux socket path too long/);
+      for (const [th, name] of [[join(base, "a", "..", "sp ace-ü"), "r1a19-odd"], [at100, "r1a19-len"]] as const) {
+        const sock = tmuxSocketPath(th);
+        try {
+          await withTandemHome(th, () => shellSpawn(name));
+          expect(raw(sock, ["has-session", "-t", `=ccm-${name}`]).status).toBe(0);
+          expect(statSync(sock).mode & 0o077).toBe(0);
+        } finally {
+          await killServer(sock);
+        }
+      }
+    }, 60_000);
+
+    it("1) socket file: a stale socket (its server killed) lists nothing and a spawn starts a working server on it", async () => {
+      const th = newHome();
+      const sock = join(th, "tmux", "tandem");
+      mkdirSync(join(th, "tmux"), { mode: 0o700 });
+      expect(raw(sock, ["new-session", "-d", "-s", "r1a19-old", "sleep", "600"]).status).toBe(0);
+      // This test's own server, the one it started on its own socket one line up.
+      process.kill(Number(raw(sock, ["display-message", "-p", "#{pid}"]).stdout.trim()), "SIGKILL");
+      const deadline = Date.now() + 5_000;
+      while (raw(sock, ["list-sessions"]).status === 0 && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+      expect(existsSync(sock)).toBe(true);
+      try {
+        await withTandemHome(th, async () => {
+          expect(await listed()).toEqual([]);
+          await shellSpawn("r1a19-stale");
+        });
+        expect(raw(sock, ["has-session", "-t", "=ccm-r1a19-stale"]).status).toBe(0);
+      } finally {
+        await killServer(sock);
+      }
+    }, 30_000);
+
+    it("1) socket folder: eight bridges starting at once end with one 0700 folder and no refusal", async () => {
+      const th = join(newHome(), "fresh");
+      const url = new URL("../bridge/terminal-session.ts", import.meta.url).href;
+      const script = `import(${JSON.stringify(url)}).then((m) => m.tmux(["list-sessions"])).then(() => console.log("ran"), (e) => console.log(/refused|EEXIST|ENOENT: /.test(String(e)) ? String(e) : "ran"))`;
+      const kids = await Promise.all(
+        Array.from({ length: 8 }, () => new Promise<string>((done) => {
+          execFile(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], { env: cleanEnv({ TANDEM_HOME: th }) }, (_e, out, err) => done(String(out).trim() || String(err)));
+        })),
+      );
+      expect(kids).toEqual(Array(8).fill("ran"));
+      expect(snapshot(th).filter((l) => !l.endsWith(" s 600") && !l.startsWith("tmux/tandem "))).toEqual(["tmux d 700"]);
+    }, 60_000);
+
+    it("2) isolation: with TMUX naming the default server, a tagged same-name session there is never listed, adopted, typed into or closed", async () => {
+      expect(raw("", ["new-session", "-d", "-s", "ccm-r1a19-iso", "-c", WORK, "cat"]).status).toBe(0);
+      raw("", ["set-option", "-t", "=ccm-r1a19-iso:", "@tandem_engine", "shell"]);
+      raw("", ["set-option", "-t", "=ccm-r1a19-iso:", "@tandem_owner", OWNER]);
+      const state = () => raw("", ["display-message", "-p", "-t", "=ccm-r1a19-iso:", "#{session_name} #{@tandem_engine} #{@tandem_owner} #{session_activity} #{history_size}"]).stdout +
+        raw("", ["capture-pane", "-p", "-t", "=ccm-r1a19-iso:"]).stdout;
+      const before = state();
+      expect(before).toContain(`ccm-r1a19-iso shell ${OWNER}`);
+      const saved = { TMUX: process.env.TMUX, TMUX_PANE: process.env.TMUX_PANE };
+      process.env.TMUX = `${defaultSock},${process.pid},0`;
+      process.env.TMUX_PANE = "%0";
+      try {
+        expect((await listed()).map((s) => s.name)).not.toContain("r1a19-iso");
+        expect(await TerminalSession.exists("r1a19-iso")).toBe(false);
+        expect(await TerminalSession.attachExisting("r1a19-iso", [WORK], SHELL_DESCRIPTOR, owner)).toBeUndefined();
+        const mine = await shellSpawn("r1a19-iso");
+        expect(raw(tandemSock, ["has-session", "-t", "=ccm-r1a19-iso"]).status).toBe(0);
+        await mine.send("echo r1a19-typed");
+        await mine.interrupt();
+        await mine.close();
+        expect(raw(tandemSock, ["has-session", "-t", "=ccm-r1a19-iso"]).status).not.toBe(0);
+      } finally {
+        for (const [k, v] of Object.entries(saved)) {
+          if (v === undefined) delete process.env[k];
+          else process.env[k] = v;
+        }
+      }
+      expect(raw("", ["has-session", "-t", "=ccm-r1a19-iso"]).status).toBe(0);
+      expect(state()).toBe(before);
+      await killServer(defaultSock);
+    }, 60_000);
+
+    it("3) secrets: all three leave a running Tandem server before a new session and reach no pane, argv, error or attach hint", async () => {
+      const th = newHome();
+      const sock = join(th, "tmux", "tandem");
+      mkdirSync(join(th, "tmux"), { mode: 0o700 });
+      // Invented values, built here so no literal in this file looks like a real one.
+      const secrets: Record<string, string> = Object.fromEntries(
+        ["TANDEM_OWNER_PASSWORD", "TANDEM_HUB_LINK_TOKEN", "TANDEM_FLEET_TOKEN"].map((k) => [k, `r1a19-${k.toLowerCase()}-value`]),
+      );
+      expect(raw(sock, ["new-session", "-d", "-s", "r1a19-pre3", "sleep", "600"], secrets).status).toBe(0);
+      for (const v of Object.values(secrets)) expect(raw(sock, ["show-environment", "-g"]).stdout).toContain(`=${v}`);
+      for (const [k, v] of Object.entries(secrets)) vi.stubEnv(k, v);
+      const seen: { argv: string[]; env: NodeJS.ProcessEnv }[] = [];
+      const spy: TmuxExec = (argv, opts, cb) => {
+        seen.push({ argv, env: opts.env });
+        execFile(REAL_TMUX, argv, opts, (e, so, se) => cb(e as (Error & { code?: unknown }) | null, String(so), String(se)));
+      };
+      try {
+        await withTandemHome(th, async () => {
+          await shellSpawn("r1a19-sec");
+          const err = (await runTmux(["no-such-command-r1a19"], spy).catch((e) => e)) as Error;
+          expect(err).toBeInstanceOf(Error);
+          const dup = (await runTmux(["new-session", "-d", "-s", "ccm-r1a19-sec"], spy).catch((e) => e)) as Error;
+          expect(String(dup)).toMatch(/duplicate session/);
+          const hint = new Ctor("r1a19-sec", WORK, join(th, "s.log"), SHELL_DESCRIPTOR).attachHint();
+          const text = [String(err), err.stack, JSON.stringify(err), String(dup), dup.stack, hint, JSON.stringify(seen.map((s) => s.argv))].join("\n");
+          for (const v of Object.values(secrets)) expect(text).not.toContain(v);
+          for (const call of seen) for (const k of Object.keys(secrets)) expect(call.env[k]).toBeUndefined();
+        });
+        const globals = raw(sock, ["show-environment", "-g"]).stdout;
+        for (const [k, v] of Object.entries(secrets)) {
+          expect(globals).not.toContain(v);
+          expect(globalNames(sock)).not.toContain(k);
+          expect(await paneValue(sock, "r1a19-sec", k)).toBe("");
+          expect(process.env[k]).toBe(v);
+        }
+      } finally {
+        vi.unstubAllEnvs();
+        await killServer(sock);
+      }
+    }, 60_000);
+
+    const spawnError = (code: string) => Object.assign(new Error(`spawn tmux ${code}`), { code });
+    it.each(["EAGAIN", "ENOMEM", "EMFILE", "ENFILE"])("4) runner: %s is retried 3 times, waiting 50, 100 then 150 ms", async (code) => {
+      let n = 0;
+      const exec: TmuxExec = (_argv, _opts, cb) => { n++; cb(spawnError(code), "", ""); };
+      const timers = vi.spyOn(globalThis, "setTimeout");
+      let waits: unknown[];
+      try {
+        await expect(runTmux(["new-session", "-d", "-s", "ccm-r1a19-never"], exec)).rejects.toThrow(code);
+      } finally {
+        waits = timers.mock.calls.map((c) => c[1]);
+        timers.mockRestore();
+      }
+      expect(n).toBe(4);
+      expect(waits).toEqual([50, 100, 150]);
+    });
+    it.each(["ENOENT", "EACCES", "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"])("4) runner: %s is not retried", async (code) => {
+      let n = 0;
+      const exec: TmuxExec = (_argv, _opts, cb) => { n++; cb(spawnError(code), "", ""); };
+      await expect(runTmux(["new-session", "-d", "-s", "ccm-r1a19-never"], exec)).rejects.toThrow(code);
+      expect(n).toBe(1);
+    });
+    it("4) runner: a real new-session that exits non-zero runs once; shell text in argv reaches tmux as text", async () => {
+      const th = newHome();
+      const sock = join(th, "tmux", "tandem");
+      const count = { n: 0 };
+      const marker = join(th, "pwned");
+      try {
+        await withTandemHome(th, async () => {
+          await runTmux(["new-session", "-d", "-s", "ccm-r1a19-dup", "sleep", "600"], counting(count));
+          count.n = 0;
+          await expect(runTmux(["new-session", "-d", "-s", "ccm-r1a19-dup", "sleep", "600"], counting(count))).rejects.toThrow(/duplicate session/);
+          expect(count.n).toBe(1);
+          const text = `$(touch ${marker}); \`touch ${marker}\` | touch ${marker} > ${marker}`;
+          expect(await runTmux(["display-message", "-p", "-t", "=ccm-r1a19-dup:", text])).toBe(`${text}\n`);
+        });
+        expect(existsSync(marker)).toBe(false);
+        expect(raw(sock, ["list-sessions", "-F", "#{session_name}"]).stdout).toBe("ccm-r1a19-dup\n");
+      } finally {
+        await killServer(sock);
+      }
+    }, 30_000);
+
+    it("5) separator: a tag holding a tab, newline, `_`, unicode or the separator is never adopted or listed; a name cannot stand in for a tag", async () => {
+      const rows: [string, string, string][] = [
+        ["t0", "shell\tx", OWNER],
+        ["t1", "shell\nx", OWNER],
+        ["t2", "shell\n", OWNER],
+        ["t3", "shell_", OWNER],
+        ["t4", "shéll", OWNER],
+        ["t5", `shell|:|${OWNER}`, ""],
+        ["t6", "", `shell|:|${OWNER}`],
+        ["t7", "shell|:", `|${OWNER}`],
+        ["t8", "shell", `${OWNER}\n`],
+        ["t9", "shell", `${OWNER}\t`],
+        ["t10", "shell", `${OWNER}|:|`],
+        ["t11", "shell", `x\n${OWNER}`],
+      ];
+      for (const [n, engine, ownerTag] of rows) tagged(`r1a19-${n}`, WORK, engine, ownerTag);
+      tagged("r1a19-good", WORK, "shell", OWNER);
+      // Names that mimic tags: the separator cannot survive in a name, and a name is never a tag.
+      raw(tandemSock, ["new-session", "-d", "-s", `ccm-shell|:|${OWNER}`, "-c", WORK, "sleep", "600"]);
+      raw(tandemSock, ["new-session", "-d", "-s", "ccm-shell", "-c", WORK, "sleep", "600"]);
+      const names = (await listed()).map((s) => s.name);
+      expect(names).toContain("r1a19-good");
+      for (const [n] of rows) {
+        expect(names, n).not.toContain(`r1a19-${n}`);
+        expect(await TerminalSession.attachExisting(`r1a19-${n}`, [WORK], SHELL_DESCRIPTOR, owner), n).toBeUndefined();
+      }
+      expect(names.filter((n) => n.startsWith("shell"))).toEqual([]);
+      expect(await TerminalSession.attachExisting("shell", [WORK], SHELL_DESCRIPTOR, owner)).toBeUndefined();
+      // A real shell session is not adopted as another engine.
+      expect(await TerminalSession.attachExisting("r1a19-good", [WORK], CODEX_DESCRIPTOR, owner)).toBeUndefined();
+      expect(await TerminalSession.attachExisting("r1a19-good", [WORK], CLAUDE_DESCRIPTOR, owner)).toBeUndefined();
+      expect((await TerminalSession.attachExisting("r1a19-good", [WORK], SHELL_DESCRIPTOR, owner))?.name).toBe("r1a19-good");
+    }, 60_000);
+
+    it("5) separator: a folder name holding a newline cannot forge a row for another session", async () => {
+      const outside = join(testEnv.tmuxTmp, "outside");
+      mkdirSync(outside);
+      tagged("r1a19-vic", outside, "shell", OWNER);
+      const forged = join(WORK, `x\nccm-r1a19-vic|:|123|:|${realpathSync(WORK)}`);
+      mkdirSync(forged, { recursive: true });
+      tagged("r1a19-evil", forged, "shell", OWNER);
+      const rows = await listed();
+      expect(rows.filter((s) => s.name === "r1a19-vic").map((s) => s.cwd)).toEqual([realpathSync(outside)]);
+      expect(rows.filter((s) => s.name === "r1a19-evil")).toHaveLength(1);
+    }, 30_000);
+
+    const hostile = ["sp ace", "it's", "$(touch PWNED)", "`touch PWNED`", "$HOME", "a;touch PWNED;b", "nl\nx", 'dq"x', "back\\slash", "*", "~", "a&b|c>PWNED", "-o x"];
+    for (const shell of HINT_SHELLS) {
+      it.skipIf(!existsSync(shell))(`6) attach hint: hostile socket paths reach tmux as one exact argument when pasted into ${shell}`, () => {
+        const dir = newHome("h-");
+        const shim = join(dir, "shim");
+        writeFileSync(shim, "#!/bin/sh\nprintf '%s\\037' \"$@\"\n", { mode: 0o700 });
+        const saved = process.env.TANDEM_HOME;
+        try {
+          for (const h of hostile) {
+            const th = join(testEnv.tmuxTmp, h);
+            process.env.TANDEM_HOME = th;
+            const hint = new Ctor("r1a19-h", WORK, join(dir, "h.log"), SHELL_DESCRIPTOR).attachHint();
+            const out = execFileSync(shell, ["-c", shq(shim) + hint.slice("tmux".length)], { cwd: dir, encoding: "utf8" });
+            expect(out.split("\x1f").slice(0, -1), `${shell}: ${hint}`).toEqual(["-S", join(th, "tmux", "tandem"), "attach", "-t", "=ccm-r1a19-h"]);
+          }
+        } finally {
+          process.env.TANDEM_HOME = saved;
+        }
+        expect(readdirSync(dir)).toEqual(["shim"]);
+      });
+    }
+  });
 });

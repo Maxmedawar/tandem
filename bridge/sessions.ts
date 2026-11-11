@@ -172,7 +172,8 @@ export async function listLiveTmuxSessions(
   const provenanceReader = deps.provenanceReader ?? readSessionProvenance
   let raw: string
   try {
-    raw = await tmuxFn(['list-sessions', '-F', ['#{session_name}', '#{session_created}', '#{pane_current_path}'].join(TMUX_FIELD_SEP)])
+    // A newline inside a folder name becomes `_` (tmux substitutes it), so a cwd cannot start a second row.
+    raw = await tmuxFn(['list-sessions', '-F', ['#{session_name}', '#{session_created}', '#{s/\n/_/:pane_current_path}'].join(TMUX_FIELD_SEP)])
   } catch {
     return [] // tmux absent or no server running
   }
