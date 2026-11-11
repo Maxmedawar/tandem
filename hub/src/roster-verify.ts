@@ -5,7 +5,7 @@
  * prev = SHA-256 of the entry text before, ts never going back), each signer an earlier entry's
  * key, no id or key twice, every Ed25519 signature; at most 100 entries and 131,072 bytes; a
  * small-order key refused as ./devices.ts refuses it. Roster acceptance is unchanged: the store
- * (./roster-store.ts) still keeps any extension, and every computer still checks it itself.
+ * (./roster-store.ts) now refuses an upload that fails this check before keeping it (U-R1A-31C-2), and every computer still checks it itself.
  *
  * Pure: WebCrypto only, no Workers runtime, no node: module, no bridge code.
  */
