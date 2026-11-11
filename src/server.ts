@@ -62,6 +62,8 @@ let hubForward: FabricForward | undefined;
 // Mail between computers (bridge/hub-mail.ts): carried by this process only, with the link settings.
 let mailBox: import("../bridge/mailbox.ts").Mailbox | undefined;
 let stopMail: (() => void) | undefined;
+// Presence between computers (bridge/hub-presence.ts): pushed and read by this process only, with the link settings.
+let stopPresence: (() => void) | undefined;
 if (process.env.TANDEM_HUB_LINK_URL) {
   try {
     const { hubLinkConfigFromEnv, startHubLink } = await import("../bridge/hub-link.ts");
@@ -86,6 +88,13 @@ if (process.env.TANDEM_HUB_LINK_URL) {
         }
         mailBox = undefined;
         console.error("mail: store unavailable; mail between computers is off");
+      }
+      try {
+        const { createPresence } = await import("../bridge/presence.ts");
+        const { hubPresence } = await import("../bridge/hub-presence.ts");
+        stopPresence = hubPresence(hubLinkConfig, { presence: createPresence() }).start();
+      } catch {
+        console.error("presence: hub sync is off");
       }
     }
   } catch {
@@ -164,6 +173,11 @@ async function shutdown(signal: string): Promise<void> {
   try {
     stopMail?.();
     mailBox?.close();
+  } catch {
+    /* exiting anyway */
+  }
+  try {
+    stopPresence?.();
   } catch {
     /* exiting anyway */
   }
