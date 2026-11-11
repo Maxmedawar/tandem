@@ -13,8 +13,18 @@
 # replaces the input bar, so each approval pattern also requires no `❯` after it (`[^❯]*\z`): reply
 # text that quotes these phrases sits above the input bar and stays idle; approve is `y`,
 # deny is `n`. interrupt is one Escape; two Escapes restore a checkpoint. account_env is
-# CLINE_DIR. No dialog row: Cline has no trust menu, and its onboarding and hub update menus are
-# not dialogs Tandem may answer. delivery is `notice`: Cline's hooks live in its own folders,
+# CLINE_DIR. Pop-ups (director ruling R1): the hub update dialogs (`Cline Hub was updated`,
+# `Cline Hub update required`) and the startup notices (`Try ClinePass`, `Introducing Cline Desktop`)
+# are drawn centred over a see-through backdrop, so the chat's input bar stays visible below them and
+# Enter would update Cline, replace the shared hub or open a browser. Each reads waiting_for_approval
+# (typing held, the owner alerted) when its title and, within 24 lines below, its full `Press Enter to`
+# footer both show; a reply that quotes a footer reads idle. The `[^❯]*\z` guard cannot be used here
+# because the input bar is below the pop-up. y and n do nothing in the hub dialogs: the owner answers
+# there. debounce_ms 5000 (ruling R2): a long reply or reasoning pushes its only spinner out of the
+# 40-line window, so idle must hold through a 4 s model pause. KNOWN LIMIT: a pause longer than 5 s
+# in such a reply still reads idle until the hook-delivery turn-end signal (U-R1A-26/27) is used.
+# No dialog row: Cline has no trust menu, and its onboarding and hub update menus are not dialogs
+# Tandem may answer. delivery is `notice`: Cline's hooks live in its own folders,
 # which Tandem never writes.
 name = "cline"
 program = "cline"
@@ -27,8 +37,14 @@ history = "~/.cline/data/sessions"
 delivery = "notice"
 
 [states]
-waiting_for_approval = ['Cline needs permission[^❯]*\z', 'Approve tool call\?[^❯]*\z', '\[y\] [Aa]pprove +\[n\] [Dd]eny[^❯]*\z']
+waiting_for_approval = [
+  'Cline needs permission[^❯]*\z', 'Approve tool call\?[^❯]*\z', '\[y\] [Aa]pprove +\[n\] [Dd]eny[^❯]*\z',
+  'Cline Hub was updated[^\n]*(?:\n[^\n]*){1,24}?Press Enter to update and restart, Esc to dismiss',
+  'Cline Hub update required[^\n]*(?:\n[^\n]*){1,24}?Press Enter to update now, Esc to keep the Hub running',
+  '(?:Try ClinePass|Introducing Cline Desktop)[^\n]*(?:\n[^\n]*){1,24}?Press Enter to open, any other key to close',
+]
 working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to cancel\)', '(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ']
+debounce_ms = 5000
 idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)']
 
 [keys]

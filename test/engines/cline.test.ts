@@ -134,10 +134,15 @@ describe("cline: the built-in harness file", () => {
       "Cline needs permission[^❯]*\\z",
       "Approve tool call\\?[^❯]*\\z",
       "\\[y\\] [Aa]pprove +\\[n\\] [Dd]eny[^❯]*\\z",
+      "Cline Hub was updated[^\\n]*(?:\\n[^\\n]*){1,24}?Press Enter to update and restart, Esc to dismiss",
+      "Cline Hub update required[^\\n]*(?:\\n[^\\n]*){1,24}?Press Enter to update now, Esc to keep the Hub running",
+      "(?:Try ClinePass|Introducing Cline Desktop)[^\\n]*(?:\\n[^\\n]*){1,24}?Press Enter to open, any other key to close",
     ]);
     expect(h.states?.working).toEqual(["(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\\.\\.\\. \\(esc to cancel\\)", "(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] "]);
     expect(h.states?.idle).toEqual(["❯ +(?:What can I do for you\\?|Ask anything\\.\\.\\.|Plan something\\.\\.\\.)"]);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
+    // Ruling R2: a 4 s model pause with the spinner scrolled out of view must not read idle.
+    expect(h.states?.debounce_ms).toBe(5000);
     expect(h.hook).toBeUndefined();
     expect(h.adapter).toBeUndefined();
     expect(h.logo).toBeUndefined();
@@ -233,6 +238,47 @@ describe("cline: the built-in harness file", () => {
     ["a box cut short with its buttons hidden", "* x\n\n Cline needs permission\n\n Approve tool call?\n\n mcp__srv__tool\n\n   {\n     \"a\": 1,\n ○ Plan ● Act (Tab)\n"],
   ])("%s reads waiting_for_approval", (_label, text) => {
     expect(readScreen(builtinCline(), text)).toBe("waiting_for_approval");
+  });
+
+  // Ruling R1: Cline's pop-ups (hub update, startup notices) are drawn centred over a see-through
+  // backdrop, so the chat's input bar stays on screen below them. Each reads waiting_for_approval
+  // (typing blocked, the owner alerted); its title and its full footer must both show, so a reply
+  // that quotes a footer reads idle.
+  const CHAT = [
+    "❯ hello", "", "* Hello! How can I help?", "",
+    ...Array.from({ length: 30 }, () => ""),
+    "─".repeat(80), "❯ Ask anything...", "─".repeat(80),
+    " ███░░░░ (1,024) $0.01   ○ Plan ● Act (Tab)", " Auto-approve all disabled (Shift+Tab)",
+  ];
+  /** The pop-up's lines drawn 60 columns wide from column 70, rows 12 on, over `base`. */
+  const over = (base: string[], box: string[]) =>
+    base.map((l, i) => (i >= 12 && i < 12 + box.length ? l.padEnd(70) + `  ${box[i - 12]}`.padEnd(60) : l)).join("\n") + "\n";
+  const POPUPS: [string, string[]][] = [
+    ["Cline Hub was updated", ["", "Cline Hub was updated", "", "Another Cline installation updated the shared Cline Hub", "(core 1.2.3) to a version this CLI cannot talk to.", "Update and restart Cline to reconnect to the running Hub.", "", " Update and restart ", "", "Press Enter to update and restart, Esc to dismiss", ""]],
+    ["Cline Hub update required", ["", "Cline Hub update required", "", "This CLI needs a newer Cline Hub, but the running one is", "still serving 2 active sessions.", "Updating stops that Hub and interrupts its sessions.", "", " Update Now ", "", "Press Enter to update now, Esc to keep the Hub running", ""]],
+    ["Try ClinePass", ["", "Try ClinePass", "", "ClinePass is a $9.99/month subscription plan to get access", "to the latest open-weight coding models with enough quota", "for day-to-day work, at a much lower cost than paying API", "costs directly.", "", "https://cline.bot/pass", "", " Open ClinePass ", "", "Press Enter to open, any other key to close", ""]],
+    ["Introducing Cline Desktop", ["", "Introducing Cline Desktop", "", "A native app for working with open weights models. Use it", "with ClinePass and our free models, or BYOK.", "- Import tasks from Claude Code and Codex", "- Run Cline on a regular schedule", "- Use web search tool and voice input", "- Browse Marketplace for plugins, MCPs, and skills", "Available for macOS and Windows.", "", "https://cline.bot/desktop", "", " Get Cline Desktop ", "", "Opening in your browser...", "", "Press Enter to open, any other key to close", ""]],
+  ];
+  it.each(POPUPS)("the %s pop-up over a visible chat reads waiting_for_approval", (_title, box) => {
+    const text = over(CHAT, box);
+    expect(text).toContain("❯ Ask anything...");
+    expect(readScreen(builtinCline(), text)).toBe("waiting_for_approval");
+  });
+
+  it("a startup notice over the centred home view reads waiting_for_approval", () => {
+    const home = screen(join(CLN_SCREENS, "idle-home-src.txt")).split("\n");
+    const base = [...Array.from({ length: 10 }, () => ""), ...home, ...Array.from({ length: 10 }, () => "")];
+    expect(readScreen(builtinCline(), over(base, POPUPS[2]![1]))).toBe("waiting_for_approval");
+  });
+
+  it("a reply that quotes 'Press Enter to update' above the input bar reads idle", () => {
+    const reply = "* If Cline Hub was updated, the pop-up says: Press Enter to update and restart, Esc to dismiss. Press Enter to update now, or open ClinePass.\n\n";
+    expect(readScreen(builtinCline(), `❯ what does the hub pop-up say?\n\n${reply}${INPUT}`)).toBe("idle");
+  });
+
+  it("an answered pop-up (gone, its toast left) reads idle", () => {
+    const text = CHAT.join("\n").replace("* Hello! How can I help?", "* Hello! How can I help?\n\n   Hub still differs from this CLI. Run 'cline update' and restart when convenient.");
+    expect(readScreen(builtinCline(), text)).toBe("idle");
   });
 
   it("never idle: every approval and unknown screen and every other agent's idle screen in the screens folder", () => {
