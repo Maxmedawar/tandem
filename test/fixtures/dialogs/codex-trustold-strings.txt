@@ -1,0 +1,10 @@
+
+> You are in /private/tmp/r1a12-audit-live/r1a12-box-x/work
+
+  Do you trust the contents of this directory? Working with untrusted contents comes with higher
+  risk of prompt injection.
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue

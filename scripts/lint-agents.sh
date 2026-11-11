@@ -67,7 +67,7 @@ export ADAPTERS LINT_D
 allow() {
   cat <<'EOF'
 bridge/terminal-session.ts|descriptor.id !== 'claude'|gap
-bridge/terminal-session.ts|descriptor.id === 'claude'|U-R1A-18
+bridge/terminal-session.ts|descriptor.id === 'claude'|gap
 bridge/fleet-protocol.ts|ENGINE_IDS|U-R1B-37
 bridge/engine-registry.ts|KNOWN_ENGINE_IDS|U-R1B-37
 bridge/drivable.ts|BuiltinEngineId|U-R1B-37

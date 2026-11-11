@@ -123,6 +123,16 @@ export interface EngineDescriptor {
    *  every descriptor states its policy explicitly rather than a raw poll
    *  count. Phase 2 correction B floors: codex >= 5000, shell >= 1500. */
   readonly minStableMs: number
+  /** First-run dialogs warmup may answer: a harness file's `[[dialogs]]` rows (harnesses/SCHEMA.md).
+   *  Absent = none: warmup answers no dialog. */
+  readonly dialogs?: readonly {
+    readonly name: string
+    readonly kind: 'trust' | 'update' | 'bypass'
+    readonly match: readonly string[]
+    readonly answer: string
+    readonly highlight?: '❯' | '›' | '>'
+    readonly key?: string
+  }[]
 }
 
 /** Mirrors terminal-session.ts's WORKING_MARKER / ready-prompt checks exactly —

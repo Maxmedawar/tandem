@@ -32,7 +32,8 @@ Each file is named `<name>.toml`, where `<name>` is the harness name.
 
 ## Format
 
-TOML. Every field not listed here is refused, at the top level and inside `states` and `keys`.
+TOML. Every field not listed here is refused, at the top level and inside `states`, `keys` and
+`dialogs`.
 
 | Field | Type | Default | Rule |
 |---|---|---|---|
@@ -47,6 +48,7 @@ TOML. Every field not listed here is refused, at the top level and inside `state
 | `history` | string | unset | history file path, starting `/` or `~/` |
 | `states` | table | unset | see below |
 | `keys` | table | unset | see below |
+| `dialogs` | array of tables (`[[dialogs]]`) | none | see below |
 | `delivery` | `"hook"` or `"notice"` | `"notice"` | `"hook"` needs `hook` |
 | `hook` | string | unset | hook command |
 | `permission_hook` | boolean | `false` | |
@@ -76,9 +78,58 @@ Named keys: `Enter Escape Tab BTab Space BSpace Up Down Left Right Home End Page
 `C-a` to `C-z`, `F1` to `F12`, or one character `a`-`z` or `0`-`9`. Anything else (a word, text
 with a newline) is refused.
 
+### `dialogs`
+
+Each `[[dialogs]]` table describes one first-run dialog the agent may show (folder trust, an
+update notice, a bypass-permissions accept) and the one answer Tandem may give at start. 0 to 8
+tables.
+
+| Field | Type | Rule |
+|---|---|---|
+| `name` | string | required; `^[a-z0-9][a-z0-9-]{0,31}$`, unique in the file |
+| `kind` | string | required; `trust`, `update` or `bypass` |
+| `match` | array of patterns | required; 1 to 4 RE2 patterns, ALL must match the screen; screen text, not command text |
+| `answer` | string | required; 1 to 80 characters, command text |
+| `highlight` | string | one of `❯` `›` `>`: select mode; screen text, not command text |
+| `key` | string | one character `a`-`z` or `0`-`9`: key mode |
+
+Exactly one of `highlight` and `key`. Refused: an `answer` that matches NEVER
+(`bridge/harness-registry.ts`: sign-in, log-in, purchase, buy, subscription, payment, billing,
+credit card text), any `answer` containing `updat`, `install` or `upgrad` (any case), and an
+`update` answer that does not start with `Skip`, `Not now`, `Later`, `No`, `Dismiss` or `Remind`:
+an update dialog may only be skipped.
+
+How Tandem uses them (`bridge/terminal-session.ts`):
+
+- **Shown.** A dialog is on screen when all its `match` patterns match and an answer line is
+  present: a line whose text, trimmed, after an optional `highlight` marker and an optional `N. `
+  (in key mode also without a trailing whitespace and the key), equals `answer` or starts with
+  `answer` and ` (`. Two dialogs shown at once are not answered.
+- **The key** (`dialogKey(pane, dialog)`). A block is the run of non-blank lines, not starting
+  `─`, around the answer line. Select mode: Enter only when the `highlight` marker is on the
+  answer line, else one Down or Up toward it. Key mode: `key` only when the answer line ends with
+  whitespace and the key and no other line of its block ends that way.
+- **When.** Only during start (warmup), before the ready check, so a dialog wins over any state
+  (`waiting_for_approval` included): one key per screen poll, no next key until the screen
+  changed, at most 8 arrows and one Enter or key per dialog per start. Only when the start allows
+  that kind (`dialogAnswers`): an opened session in a limits-file folder allows `trust` and
+  `update`, and `bypass` too in a `permission_skip` folder; the relay (`permission_skip` checked)
+  allows all three. A reused or adopted session never runs warmup, so nothing is answered. Outside
+  warmup no dialog is ever answered.
+- **needs owner.** A shown dialog the start does not allow, a shown dialog while NEVER matches the
+  screen, a shown dialog while the screen holds update text (`updat`, `install`, `upgrad`) unless it
+  is an `update` dialog that skips, a dialog still shown after its Enter or key, or a dialog still
+  shown when warmup ends (two dialogs shown at once end this way, with no key):
+  the start kills its own tmux session and fails (`NeedsOwnerError`; an open answers 409
+  `needs owner: <harness> shows its first-run <kind> dialog "<name>" in <cwd> (<reason>); Tandem
+  typed no answer. Open it there yourself once, then open the session again.`; a relay start
+  answers 409 the same way). The first four send no key at all.
+
+Never answer a dialog through an agent's own flag, config or trust file, or its environment.
+
 ### Command text
 
-Every string outside `states` is command text. It may not hold a newline, NUL or any other
+Every string outside `states` and `dialogs` is command text, and so is a dialog's `answer`. It may not hold a newline, NUL or any other
 control character, a format character (bidi or zero-width), a line or paragraph
 separator, nor `` ` ``, `$`, `;`, `|`, `&`, `<`, `>`, nor a `{` or `}` other than in
 the exact text `{id}`.

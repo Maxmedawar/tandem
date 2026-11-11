@@ -113,7 +113,7 @@ describe.skipIf(!LIVE)("codex live: the built-in harness file through HarnessSes
       expect(codex?.programPath).toBeDefined();
       session = await mods.HarnessSession.spawn(
         codex,
-        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)] },
+        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)], dialogAnswers: "safe" },
         async (o) => (terminal = await mods.TerminalSession.spawn({ ...o, ownerIdProvider: async () => "r1a12-live-owner" })),
       );
       expect(session.engine).toBe("codex");

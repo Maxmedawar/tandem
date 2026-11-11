@@ -55,7 +55,9 @@ import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync, sta
 import { chmod, open, mkdir } from 'node:fs/promises'
 import { cpus, homedir, loadavg } from 'node:os'
 import { join, sep } from 'node:path'
+import { RE2JS } from 're2js'
 import { CLAUDE_DESCRIPTOR, type EngineDescriptor } from './drivable.ts'
+import { NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { noteSessionClose, noteSessionStart, TRANSCRIPTS_DIR } from './transcripts/index.ts'
 
@@ -72,9 +74,6 @@ const SESSION_NAME_RE = /^[A-Za-z0-9._-]+$/
  *  by report-cleaning below; the authoritative check is CLAUDE_DESCRIPTOR). */
 const CLAUDE_WORKING_MARKER = 'esc to interrupt'
 
-/** Trust-folder prompt shown on first run in an un-trusted directory (claude only). */
-const TRUST_PROMPT_MARKER = 'trust this folder'
-
 const POLL_MS = 750
 /** Between the typed text and Enter: codex 0.167.1 takes an Enter that lands right after typed
  *  text as a newline (its paste detection), so the text is never submitted. Core waits 200 ms. */
@@ -90,22 +89,19 @@ const SPAWN_WARMUP_MS = 20_000 // max wait for the TUI to become ready on spawn
 const PANE_WIDTH = 200
 const PANE_HEIGHT = 50
 
-/** Marker on the first-run "Bypass Permissions mode" acceptance dialog (distinct
- *  from the normal "bypass permissions on (shift+tab…)" running footer). Claude only. */
-const BYPASS_ACCEPT_MARKER = 'yes, i accept'
-
 /**
- * Claude permission bypass (`--dangerously-skip-permissions`) is OFF by default —
- * an unattended session must not silently gain the power to run any tool without
- * a human present to approve it. Enable it only with TANDEM_ALLOW_BYPASS=1.
+ * TANDEM_ALLOW_BYPASS=1 only lets the relay start (relay.ts refuses without it), and the router
+ * starts a relay only in a limits-file `permission_skip` folder; the relay's two Claude Code
+ * sessions start with `--dangerously-skip-permissions` (`allowBypass: true`). It adds nothing to an
+ * opened session: that starts with its harness file's `skip_prompts_args` only when its real cwd is
+ * in a `permission_skip` folder (bridge/limits.ts, engines/harness-engine.ts).
  *
- * SECURITY: even when enabled, this ONLY suppresses Claude Code's in-session
- * tool-permission prompts. It does not change the admitted starting cwd: the
- * cwd allowlist is enforced BEFORE spawn (in spawn() below AND again in
- * router.handleOpen), and the pane is created with `-c <validated real cwd>`.
- * The allowlist is an admission gate, not an OS sandbox, so the spawned process
- * still has the reach of its OS user. Bypass is Claude-only; every other engine
- * rejects an explicit bypass request rather than silently ignoring it.
+ * SECURITY: skipping prompts ONLY suppresses the agent's in-session tool-permission prompts. It
+ * does not change the admitted starting cwd: the cwd allowlist is enforced BEFORE spawn (in spawn()
+ * below AND again in router.handleOpen), and the pane is created with `-c <validated real cwd>`.
+ * The allowlist is an admission gate, not an OS sandbox, so the spawned process still has the
+ * reach of its OS user. `allowBypass` is Claude-only; every other engine rejects it rather than
+ * silently ignoring it.
  */
 export function bypassPermissionsEnabled(): boolean {
   return (process.env.TANDEM_ALLOW_BYPASS ?? '').trim() === '1'
@@ -113,9 +109,9 @@ export function bypassPermissionsEnabled(): boolean {
 
 /**
  * The legacy TANDEM_SKIP_PERMISSIONS variable used to enable bypass BY DEFAULT
- * (opt-out). It no longer has any effect — only TANDEM_ALLOW_BYPASS=1 enables
- * bypass. If a host still sets it, warn to stderr rather than silently ignoring
- * it, so the change in behavior is visible instead of surprising.
+ * (opt-out). It no longer has any effect (see above). If a host still sets it,
+ * warn to stderr rather than silently ignoring it, so the change in behavior is
+ * visible instead of surprising.
  */
 export function warnLegacySkipPermissionsIfSet(): void {
   if (process.env.TANDEM_SKIP_PERMISSIONS === undefined) return
@@ -165,6 +161,10 @@ export interface SpawnOptions {
   /** Override the bypass-permissions default for this spawn (else env/default).
    *  Claude only; see `model`. */
   allowBypass?: boolean
+  /** Which first-run dialogs warmup may answer (`[[dialogs]]` rows of the descriptor): `safe` =
+   *  trust and update, `safe-and-bypass` = those and bypass. Absent = `none`. The router sets it from
+   *  the limits gate it already ran; reuse and adoption never run warmup, so never answer. */
+  dialogAnswers?: DialogAnswers
   /** Which engine's tmux lifecycle to run. Defaults to CLAUDE_DESCRIPTOR; relay.ts
    *  passes the built-in claude harness file's descriptor. */
   descriptor?: EngineDescriptor
@@ -172,6 +172,11 @@ export interface SpawnOptions {
    *  so the real `~/.tandem/owner-id` is never touched. */
   ownerIdProvider?: OwnerIdProvider
 }
+
+export type DialogAnswers = 'none' | 'safe' | 'safe-and-bypass'
+
+/** Warmup met a first-run dialog it may not answer: the spawn killed its own tmux session. */
+export class NeedsOwnerError extends Error {}
 
 export interface SendResult {
   report: string
@@ -426,20 +431,69 @@ export function describeMarkerlessReadiness(
   return formatUnreadyMessage(pane, load1, cpuCount, name)
 }
 
-/** The one key this screen poll sends to Claude's trust-folder dialog: Enter only when the
- *  highlight (`❯`) is on "Yes, I trust this folder", else one arrow toward it (the list wraps, so
- *  never a blind Down+Enter; Claude Code 2.1.321 highlights "No, exit" first, older versions "Yes").
- *  Undefined unless the highlight and that option sit in one block of option lines, so another
- *  dialog (bypass warning, update prompt) or the prompt box never gets a key. */
-export function trustAnswerKey(pane: string): 'Enter' | 'Down' | 'Up' | undefined {
+const dialogPatterns = new WeakMap<Dialog, RE2JS[]>()
+function patternsOf(d: Dialog): RE2JS[] {
+  let set = dialogPatterns.get(d)
+  if (!set) {
+    set = d.match.map((p) => RE2JS.compile(p, RE2JS.MULTILINE))
+    dialogPatterns.set(d, set)
+  }
+  return set
+}
+
+/** An option line of `d`: its text, trimmed, after an optional highlight marker and an optional
+ *  `N. ` (key mode: before a trailing whitespace and the key), equals the answer or starts with
+ *  the answer and ` (`. */
+function isAnswerLine(line: string, d: Dialog): boolean {
+  let t = line.trim()
+  if (d.highlight !== undefined && t.startsWith(d.highlight)) t = t.slice(d.highlight.length).trimStart()
+  t = t.replace(/^\d+\.\s*/, '')
+  if (d.key !== undefined) t = t.replace(new RegExp(`\\s+${d.key}$`), '')
+  return t === d.answer || t.startsWith(`${d.answer} (`)
+}
+
+/** The dialogs on screen: every `match` pattern matches the screen and an answer line is present. */
+export function shownDialogs(pane: string, dialogs: readonly Dialog[] = []): Dialog[] {
   const lines = pane.split('\n')
-  const yes = lines.findIndex((l) => /^\s*(?:❯\s*)?(?:\d+\.\s*)?yes, i trust this folder\b/i.test(l))
-  if (yes < 0) return undefined
+  return dialogs.filter((d) => patternsOf(d).every((re) => re.matcher(pane).find()) && lines.some((l) => isAnswerLine(l, d)))
+}
+
+/** The one key this screen poll may send to dialog `d`, else undefined. A block is the run of
+ *  non-blank lines, not starting `─`, around the answer line. Select mode (`highlight`): Enter only
+ *  when the marker is on the answer line, else one Down/Up toward it (the list may wrap, so never a
+ *  blind Down+Enter). Key mode (`key`): the key only when the answer line ends with whitespace and
+ *  the key and no other line of its block ends that way. */
+export function dialogKey(pane: string, d: Dialog): string | undefined {
+  const lines = pane.split('\n')
+  const at = lines.findIndex((l) => isAnswerLine(l, d))
+  if (at < 0) return undefined
   const inBlock = (i: number) => (lines[i] ?? '').trim() !== '' && !/^\s*─/.test(lines[i]!)
-  const highlighted = (i: number) => lines[i]!.trimStart().startsWith('❯')
-  for (let i = yes; inBlock(i); i--) if (highlighted(i)) return i === yes ? 'Enter' : 'Down'
-  for (let i = yes + 1; inBlock(i); i++) if (highlighted(i)) return 'Up'
+  if (d.key !== undefined) {
+    const ends = (i: number) => new RegExp(`\\s${d.key}$`).test(lines[i]!.trimEnd())
+    if (!ends(at)) return undefined
+    for (let i = at - 1; inBlock(i); i--) if (ends(i)) return undefined
+    for (let i = at + 1; inBlock(i); i++) if (ends(i)) return undefined
+    return d.key
+  }
+  const highlighted = (i: number) => lines[i]!.trimStart().startsWith(d.highlight!)
+  for (let i = at; inBlock(i); i--) if (highlighted(i)) return i === at ? 'Enter' : 'Down'
+  for (let i = at + 1; inBlock(i); i++) if (highlighted(i)) return 'Up'
   return undefined
+}
+
+const allowsDialog = (answers: DialogAnswers, kind: Dialog['kind']) =>
+  kind === 'bypass' ? answers === 'safe-and-bypass' : answers !== 'none'
+
+/** At most this many arrows per dialog per start. */
+const MAX_DIALOG_ARROWS = 8
+
+/** Warmup's dialog progress for one start. */
+interface DialogWatch {
+  /** The screen the last key was sent on: no next key until the screen changed. */
+  movedOn?: string
+  /** Dialogs that got their Enter or key. */
+  answered: Set<string>
+  arrows: Map<string, number>
 }
 
 /** Stability-tracking state threaded through stepStability() across polls. */
@@ -537,6 +591,7 @@ export class TerminalSession {
   private readonly _cwd: string
   private readonly logPath: string
   private readonly descriptor: EngineDescriptor
+  private readonly dialogAnswers: DialogAnswers
   /** Set by warmup(): did the TUI reach its prompt? */
   private _ready = false
   /** Set by warmup() when NOT ready: an actionable reason (load/blank/attach). */
@@ -545,11 +600,12 @@ export class TerminalSession {
   // Explicit field assignment (NOT TS "parameter properties") — the bridge runs
   // under `node --experimental-strip-types`, whose strip-only mode rejects the
   // `private x: T` constructor-parameter shorthand.
-  private constructor(name: string, cwd: string, logPath: string, descriptor: EngineDescriptor) {
+  private constructor(name: string, cwd: string, logPath: string, descriptor: EngineDescriptor, dialogAnswers: DialogAnswers = 'none') {
     this._name = name
     this._cwd = cwd
     this.logPath = logPath
     this.descriptor = descriptor
+    this.dialogAnswers = dialogAnswers
   }
 
   get name(): string {
@@ -660,8 +716,13 @@ export class TerminalSession {
     const safeLog = logPath.replace(/'/g, `'\\''`)
     await tmux(['pipe-pane', '-o', '-t', paneTarget(name), `cat >> '${safeLog}'`])
 
-    const session = new TerminalSession(name, cwd, logPath, descriptor)
-    await session.warmup()
+    const session = new TerminalSession(name, cwd, logPath, descriptor, opts.dialogAnswers ?? 'none')
+    try {
+      await session.warmup()
+    } catch (e) {
+      if (e instanceof NeedsOwnerError) await session.close()
+      throw e
+    }
     return session
   }
 
@@ -777,11 +838,11 @@ export class TerminalSession {
   }
 
   /**
-   * Wait for the engine to be ready. Marker-based descriptors (claude) dismiss
-   * the first-run trust/bypass dialogs and wait for `isReady`. Markerless
-   * descriptors (codex/shell) optionally submit `warmupPrompt` once, then wait
-   * for the pane to be byte-stable for >= minStableMs (binding — Phase 2
-   * correction B) — never a guessed readiness marker.
+   * Wait for the engine to be ready. Marker-based descriptors wait for `isReady`. Markerless
+   * descriptors (codex/shell) optionally submit `warmupPrompt` once, then wait for the pane to be
+   * byte-stable for >= minStableMs (binding — Phase 2 correction B) — never a guessed readiness
+   * marker. Both first answer a first-run dialog of the descriptor's `dialogs` (answerDialog), before
+   * the ready check, so a dialog wins over any state; one it may not answer throws NeedsOwnerError.
    */
   private async warmup(): Promise<void> {
     if (this.descriptor.isReady) {
@@ -791,36 +852,60 @@ export class TerminalSession {
     await this.warmupMarkerless()
   }
 
+  private needsOwner(d: Dialog, reason: string): NeedsOwnerError {
+    return new NeedsOwnerError(
+      `needs owner: ${this.descriptor.id} shows its first-run ${d.kind} dialog "${d.name}" in ${this._cwd} (${reason}); ` +
+        'Tandem typed no answer. Open it there yourself once, then open the session again.',
+    )
+  }
+
+  /**
+   * One warmup poll's dialog step: true when a dialog is on screen (a key was sent, or warmup waits
+   * for the screen to change or the answer to be highlighted). One key per poll, and no next key
+   * until the screen changed since the last one; at most 8 arrows and one Enter or key per dialog.
+   * Throws NeedsOwnerError, sending no key, when `dialogAnswers` does not allow the dialog's kind,
+   * when NEVER matches the screen, when the screen shows update text and the dialog is not an `update`
+   * one that skips, or when a dialog is still shown after its Enter or key. Two
+   * dialogs at once get no key.
+   */
+  private async answerDialog(pane: string, watch: DialogWatch): Promise<boolean> {
+    const shown = shownDialogs(pane, this.descriptor.dialogs)
+    if (shown.length === 0) return false
+    if (pane === watch.movedOn || shown.length > 1) return true
+    const d = shown[0]!
+    if (watch.answered.has(d.name)) throw this.needsOwner(d, "it is still shown after Tandem's answer")
+    if (!allowsDialog(this.dialogAnswers, d.kind)) throw this.needsOwner(d, `the limits file lets Tandem answer no ${d.kind} dialog here`)
+    if (NEVER.test(pane)) throw this.needsOwner(d, 'the screen asks for a sign-in or a purchase')
+    // Checked here too: a descriptor need not come from the loader. An update is only ever skipped.
+    if (UPDATE_TEXT.test(d.answer) || (UPDATE_TEXT.test(pane) && !(d.kind === 'update' && SKIPS_UPDATE.test(d.answer)))) {
+      throw this.needsOwner(d, 'the screen asks about an update, which Tandem only skips')
+    }
+    const key = dialogKey(pane, d)
+    if (key === undefined) return true
+    if (key === 'Down' || key === 'Up') {
+      const arrows = watch.arrows.get(d.name) ?? 0
+      if (arrows >= MAX_DIALOG_ARROWS) return true
+      watch.arrows.set(d.name, arrows + 1)
+    } else {
+      watch.answered.add(d.name)
+    }
+    await tmux(['send-keys', '-t', this.tmuxTarget, key])
+    watch.movedOn = pane
+    return true
+  }
+
+  /** At the warmup deadline a dialog still on screen fails the start. */
+  private failIfDialogShown(pane: string): void {
+    const shown = shownDialogs(pane, this.descriptor.dialogs)
+    if (shown.length > 0) throw this.needsOwner(shown[0]!, 'it is still shown when the warmup ended')
+  }
+
   private async warmupMarkerBased(isReady: (pane: string) => boolean): Promise<void> {
     const deadline = Date.now() + SPAWN_WARMUP_MS
-    // Claude's own dialogs only: another agent's trust dialog never gets a key it was not sent.
-    const isClaude = this.descriptor.id === 'claude'
-    let trusted = false
-    let movedOn: string | undefined // the screen the last trust arrow was sent on
-    let bypassAccepted = false
+    const watch: DialogWatch = { answered: new Set(), arrows: new Map() }
     while (Date.now() < deadline) {
       const pane = await this.capture()
-      const lower = pane.toLowerCase()
-      const trustKey: string | undefined = isClaude && !trusted && lower.includes(TRUST_PROMPT_MARKER) ? trustAnswerKey(pane) : undefined
-      // One key per poll toward "Yes, I trust this folder", Enter only once it is highlighted; no
-      // next key until the screen shows the last arrow landed (a slow TUI never gets two in flight).
-      if (trustKey && pane !== movedOn) {
-        await tmux(['send-keys', '-t', this.tmuxTarget, trustKey])
-        trusted = trustKey === 'Enter'
-        movedOn = pane
-        await sleep(POLL_MS)
-        continue
-      }
-      // First-run "Bypass Permissions mode" acceptance dialog (only when
-      // --dangerously-skip-permissions is used AND the host hasn't accepted it
-      // before / lacks settings.skipDangerousModePermissionPrompt). Best-effort:
-      // the affirmative ("Yes, I accept") sits below the default "No, exit", so
-      // move down once and confirm. Hosts that auto-skip this never hit it.
-      if (isClaude && !bypassAccepted && lower.includes(BYPASS_ACCEPT_MARKER)) {
-        await tmux(['send-keys', '-t', this.tmuxTarget, 'Down'])
-        await sleep(150)
-        await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
-        bypassAccepted = true
+      if (await this.answerDialog(pane, watch)) {
         await sleep(POLL_MS)
         continue
       }
@@ -836,12 +921,11 @@ export class TerminalSession {
     // can surface an actionable message instead of silently driving a blank pane —
     // the #1 "sessions not working" symptom (a CPU-starved TUI under heavy load).
     const finalPane = await this.capture()
-    // Claude keeps its `❯` check; any other agent is ready only on its own positive idle.
-    const warning = isClaude
-      ? describeReadiness(finalPane, loadavg()[0], cpus().length, this._name)
-      : isReady(finalPane) && !this.isWorking(finalPane)
-        ? null
-        : describeMarkerlessReadiness(finalPane, loadavg()[0], cpus().length, this._name)
+    this.failIfDialogShown(finalPane)
+    // Ready only on the descriptor's own positive idle.
+    const warning = isReady(finalPane) && !this.isWorking(finalPane)
+      ? null
+      : describeMarkerlessReadiness(finalPane, loadavg()[0], cpus().length, this._name)
     if (warning === null) {
       // Became ready right at the deadline.
       this._ready = true
@@ -857,8 +941,13 @@ export class TerminalSession {
     const deadline = Date.now() + SPAWN_WARMUP_MS
     let state = INITIAL_STABILITY_STATE
     const required = requiredStablePolls(this.descriptor)
+    const watch: DialogWatch = { answered: new Set(), arrows: new Map() }
     while (Date.now() < deadline) {
       const pane = await this.capture()
+      if (await this.answerDialog(pane, watch)) {
+        await sleep(POLL_MS)
+        continue
+      }
       const step = stepStability(pane, state, this.descriptor, required)
       state = step.state
       // Require non-blank content too: an all-empty pane can look "stable"
@@ -871,6 +960,7 @@ export class TerminalSession {
       await sleep(POLL_MS)
     }
     const finalPane = await this.capture()
+    this.failIfDialogShown(finalPane)
     this._ready = false
     this._readinessWarning = describeMarkerlessReadiness(finalPane, loadavg()[0], cpus().length, this._name)
     process.stderr.write(`[bridge] ${this._readinessWarning}\n`)

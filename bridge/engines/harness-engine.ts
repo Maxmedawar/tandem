@@ -10,7 +10,7 @@
 import type { EngineDescriptor, ReadOptions, ReadResult } from '../drivable.ts'
 import { createStateReader, readScreen, type ReadState } from '../harness-detect.ts'
 import type { Harness } from '../harness-registry.ts'
-import { spawnArgv, TerminalSession, type SpawnOptions as TerminalSpawnOptions } from '../terminal-session.ts'
+import { spawnArgv, TerminalSession, type DialogAnswers, type SpawnOptions as TerminalSpawnOptions } from '../terminal-session.ts'
 import { TerminalAdapterSession, type TerminalSessionLike } from './terminal-adapter.ts'
 
 /** A terminal that can also show its current screen. */
@@ -27,6 +27,8 @@ export interface HarnessSpawnOptions {
   /** Append the file's `skip_prompts_args`: the router sets it only when the real cwd is in a
    *  limits-file `permission_skip` folder (bridge/limits.ts). */
   skipPrompts?: boolean
+  /** Which of the file's `[[dialogs]]` warmup may answer (terminal-session.ts SpawnOptions); absent = `none`. */
+  dialogAnswers?: DialogAnswers
 }
 
 /**
@@ -35,12 +37,14 @@ export interface HarnessSpawnOptions {
  * (the registry answers 503 before this runs). With an `idle` rule the screen rules say ready
  * and working; without one the agent is markerless, so its turns end `quiet` once the screen
  * holds still for `states.debounce_ms` (5000 ms when the file has no `states` table).
- * With `skipPrompts` the file's `skip_prompts_args` follow its args.
+ * With `skipPrompts` the file's `skip_prompts_args` follow its args. The file's `[[dialogs]]` rows
+ * ride along for warmup.
  */
 export function harnessDescriptor(h: Harness, opts: { skipPrompts?: boolean } = {}): EngineDescriptor {
   if (!h.programPath) throw new Error(`harness "${h.name}": program "${h.program}" was not found`)
   const argv = ['/usr/bin/env', '--', h.programPath, ...h.args, ...(opts.skipPrompts ? h.skip_prompts_args : [])]
   const minStableMs = h.states?.debounce_ms ?? 5000
+  const dialogs = h.dialogs ? { dialogs: h.dialogs } : {}
   if (h.states?.idle?.length) {
     return {
       id: h.name,
@@ -48,9 +52,10 @@ export function harnessDescriptor(h: Harness, opts: { skipPrompts?: boolean } = 
       isReady: (pane: string) => readScreen(h, pane) === 'idle',
       isWorking: (pane: string) => readScreen(h, pane) !== 'idle',
       minStableMs,
+      ...dialogs,
     }
   }
-  return { id: h.name, argv, minStableMs }
+  return { id: h.name, argv, minStableMs, ...dialogs }
 }
 
 export class HarnessSession extends TerminalAdapterSession {

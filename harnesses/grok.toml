@@ -24,3 +24,12 @@ idle = ['^>(?: [^\n]*)?\z']
 
 [keys]
 interrupt = ["Escape", "C-c"]
+
+# First-run dialog warmup may answer (SCHEMA.md `[[dialogs]]`): grok 1.0.77's folder trust. A plain
+# capture shows no highlight character, but each option ends with its own key, so key mode.
+[[dialogs]]
+name = "folder-trust"
+kind = "trust"
+match = ['Do you trust the contents of this directory\?']
+answer = "Yes, proceed"
+key = "y"

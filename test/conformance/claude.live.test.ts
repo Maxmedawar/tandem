@@ -104,7 +104,7 @@ describe.skipIf(!LIVE)("claude live: the built-in harness file through HarnessSe
       expect(claude?.source).toBe("builtin");
       session = await mods.HarnessSession.spawn(
         claude!,
-        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)], allowBypass: false },
+        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)], allowBypass: false, dialogAnswers: "safe" },
         async (o) => (terminal = await mods.TerminalSession.spawn({ ...o, ownerIdProvider: async () => "r1a11-live-owner" })),
       );
       expect(session.engine).toBe("claude");

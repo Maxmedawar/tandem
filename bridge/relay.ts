@@ -31,7 +31,7 @@ import { appendFileSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { TerminalSession, bypassPermissionsEnabled, readLogPage } from './terminal-session.ts'
+import { TerminalSession, bypassPermissionsEnabled, readLogPage, type DialogAnswers } from './terminal-session.ts'
 import { loadedHarnesses } from './engine-registry.ts'
 import { harnessDescriptor } from './engines/harness-engine.ts'
 import { emitCompletion, emitEscalation, emitNeedsInput } from './events.ts'
@@ -203,6 +203,8 @@ export interface StartRelayOptions {
   context?: string
   /** cwd allowlist passed straight through to TerminalSession.spawn. */
   allowlist?: string[]
+  /** Passed straight through to both spawns (which first-run dialogs warmup may answer). */
+  dialogAnswers?: DialogAnswers
 }
 
 export interface StartRelayResult {
@@ -270,10 +272,11 @@ export async function startRelay(opts: StartRelayOptions): Promise<StartRelayRes
   const claude = loadedHarnesses().get('claude')
   if (!claude) throw new Error('the built-in harness file harnesses/claude.toml did not load')
   const descriptor = harnessDescriptor(claude)
-  const lead = await TerminalSession.spawn({ name: leadName, cwd: opts.cwd, allowlist, descriptor, allowBypass: true })
+  const dialogAnswers = opts.dialogAnswers
+  const lead = await TerminalSession.spawn({ name: leadName, cwd: opts.cwd, allowlist, descriptor, allowBypass: true, dialogAnswers })
   let worker: TerminalSession
   try {
-    worker = await TerminalSession.spawn({ name: workerName, cwd: opts.cwd, allowlist, descriptor, allowBypass: true })
+    worker = await TerminalSession.spawn({ name: workerName, cwd: opts.cwd, allowlist, descriptor, allowBypass: true, dialogAnswers })
   } catch (e) {
     // Don't leak the lead session if the worker fails to come up.
     await lead.close().catch(() => {})
