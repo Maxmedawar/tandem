@@ -1,0 +1,12 @@
+❯ hello
+
+* Hello! How can I help?
+
+ Cline needs permission
+
+ Approve tool call?
+ write
+   src/a.ts
+
+ [y] Approve  [n] Deny
+

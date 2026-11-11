@@ -1,0 +1,12 @@
+❯ hello
+
+* Hello! How can I help?
+
+ Cline needs permission
+
+ Approve tool call?
+ switch_to_act_mode
+   Switch from plan mode to act mode
+
+ [y] Approve  [n] Deny
+

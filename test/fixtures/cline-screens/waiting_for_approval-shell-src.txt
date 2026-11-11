@@ -1,0 +1,12 @@
+❯ hello
+
+* Hello! How can I help?
+
+ Cline needs permission
+
+ Approve tool call?
+ run_commands
+   $ npm test
+
+ [y] Approve  [n] Deny
+

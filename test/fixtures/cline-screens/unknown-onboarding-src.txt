@@ -1,0 +1,7 @@
+
+                    Welcome to Cline
+                    Connect a model provider to get started.
+
+                      Sign in with Cline
+                      Bring your own provider
+

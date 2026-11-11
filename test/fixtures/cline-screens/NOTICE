@@ -1,0 +1,32 @@
+Cline CLI screens in this folder are plain-text (no colour) for harnesses/cline.toml.
+
+Every *-src.txt file here is CONSTRUCTED, not a capture. Each is built from short UI strings in
+Cline CLI 3.0.74 (npm package `cline` 3.0.74, sha256
+4daea6d75508760b18447d6f00c6bac88ef20af8fe17da4252a90a20fe36c692; its darwin-arm64 binary
+`@cline/cli-darwin-arm64` 3.0.74, sha256
+75aa9293bf88517634c1bf832abae4c9e311f44929735e3858c0b5ba6667e38a; and the source tag
+cli-v3.0.74 of github.com/cline/cline, Apache-2.0), read as text only, never run: chiefly
+apps/cli/src/tui/components/input-bar.tsx, inline-tool-response.tsx, chat-message-list.tsx,
+chat-entry.tsx, views/home-view.tsx, views/chat-view.tsx and views/onboarding. Only short UI
+strings are transcribed; no code is copied.
+
+idle-home-src.txt: the centred home view: a title, the input bar (`─` rules above and below, `❯`
+and the act placeholder `What can I do for you?`) with leading spaces, and a status line.
+idle-chat-src.txt: a user line, a settled reply (`*` gutter), the chat input bar with
+`❯ Ask anything...`, and the status line.
+idle-plan-src.txt: idle-chat-src.txt in plan mode (`❯ Plan something...`, `● Plan ○ Act`).
+working-thinking-src.txt: idle-chat-src.txt with the turn's `dots` spinner frame and
+`Thinking... (esc to cancel)` above the input bar.
+working-stream-src.txt: idle-chat-src.txt with a streaming reply (a `dots` spinner frame in the
+gutter); the thinking line is gone and the placeholder is still shown.
+working-tool-src.txt: idle-chat-src.txt with a running tool (`dots` frame, `run_commands`).
+waiting_for_approval-*-src.txt: the inline approval panel (`Cline needs permission`,
+`Approve tool call?`, the tool and its parameters, `[y] Approve  [n] Deny`) for a shell command,
+a file write and the plan-to-act switch (`switch_to_act_mode`); the input bar is replaced.
+unknown-onboarding-src.txt: the first-run screen with no provider (`Welcome to Cline`,
+`Connect a model provider to get started.`, provider rows).
+unknown-question-src.txt: a question from the agent (`Cline is asking a question`, choices,
+`Type a response...`); the input bar is replaced.
+unknown-hubupdate-src.txt: the hub update dialog (`Cline Hub update required`, `Update Now`).
+
+None of these is a real screen. A real screen added here by a live run is named *-real.txt.
