@@ -1,12 +1,20 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterAll, afterEach } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   validateModel,
   validateEffort,
   bypassPermissionsEnabled,
   warnLegacySkipPermissionsIfSet,
+  spawnArgv,
   EFFORT_LEVELS,
   MODEL_ALIASES,
 } from "../bridge/terminal-session.ts";
+import { CLAUDE_DESCRIPTOR } from "../bridge/drivable.ts";
+import { loadHarnesses } from "../bridge/harness-registry.ts";
+import { HarnessSession, harnessDescriptor } from "../bridge/engines/harness-engine.ts";
 
 // vi.spyOn(process.stderr, "write") does not reliably intercept writes made
 // from an imported module in this vitest pool config, so capture manually.
@@ -94,5 +102,53 @@ describe("warnLegacySkipPermissionsIfSet (TANDEM_SKIP_PERMISSIONS is ignored)", 
     expect(bypassPermissionsEnabled()).toBe(false);
     if (prevAllow === undefined) delete process.env.TANDEM_ALLOW_BYPASS;
     else process.env.TANDEM_ALLOW_BYPASS = prevAllow;
+  });
+});
+
+describe("the legacy TANDEM_SKIP_PERMISSIONS warning prints once per spawn (U-R1A-12)", () => {
+  const BUILTIN = fileURLToPath(new URL("../harnesses/", import.meta.url));
+  const tmp = mkdtempSync(join(tmpdir(), "r1a12-controls-"));
+  const claude = () => loadHarnesses({ installDir: BUILTIN, ownerDir: join(tmp, "no-owner") }).harnesses.get("claude")!;
+  const prevSkip = process.env.TANDEM_SKIP_PERMISSIONS;
+  afterEach(() => {
+    if (prevSkip === undefined) delete process.env.TANDEM_SKIP_PERMISSIONS;
+    else process.env.TANDEM_SKIP_PERMISSIONS = prevSkip;
+  });
+  afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+
+  async function captureStderrAsync(run: () => Promise<void>): Promise<string[]> {
+    const orig = process.stderr.write.bind(process.stderr);
+    const calls: string[] = [];
+    process.stderr.write = ((chunk: unknown) => {
+      calls.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await run();
+    } finally {
+      process.stderr.write = orig;
+    }
+    return calls;
+  }
+  const warnings = (calls: string[]) => calls.filter((c) => c.includes("TANDEM_SKIP_PERMISSIONS is ignored"));
+
+  it("spawnArgv for claude writes nothing", () => {
+    process.env.TANDEM_SKIP_PERMISSIONS = "1";
+    expect(captureStderr(() => void spawnArgv(harnessDescriptor(claude()), {}))).toEqual([]);
+    expect(captureStderr(() => void spawnArgv(CLAUDE_DESCRIPTOR, {}))).toEqual([]);
+  });
+
+  it("HarnessSession.spawn(<built-in claude>) with the default spawn function and a cwd outside its allowlist rejects on the cwd and warns exactly once", async () => {
+    process.env.TANDEM_SKIP_PERMISSIONS = "1";
+    const allowed = join(tmp, "allowed");
+    const outside = join(tmp, "outside");
+    mkdirSync(allowed);
+    mkdirSync(outside);
+    const calls = await captureStderrAsync(async () => {
+      await expect(
+        HarnessSession.spawn(claude(), { name: "r1a12-warn", cwd: outside, allowlist: [allowed] }),
+      ).rejects.toThrow(/cwd not allowed/);
+    });
+    expect(warnings(calls)).toHaveLength(1);
   });
 });

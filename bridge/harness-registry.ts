@@ -47,6 +47,8 @@ export interface HarnessError { file: string; reason: string }
 
 const MAX_BYTES = 64 * 1024
 const NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
+/** The session list filter reads `all` (every agent) and `terminal` (the shell). */
+const RESERVED_NAMES = new Set(['all', 'terminal'])
 /** No leading `-` (a launcher such as tmux would read it as an option, `--` hands it the next argument). */
 const BARE_PROGRAM = /^[A-Za-z0-9._+][A-Za-z0-9._+-]*$/
 /** Each part of an absolute path in the bare-name characters: no space, quote, glob or backslash that sh -c would turn into another program. */
@@ -180,6 +182,7 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
 /** Reads one `*.toml` entry without following a symlink or blocking on a FIFO. */
 function readToml(file: string, stem: string, owner: boolean): Table {
   if (!NAME.test(stem)) fail('bad file name: must be <name>.toml with a valid name')
+  if (RESERVED_NAMES.has(stem)) fail('reserved name: the session list filter uses "all" and "terminal"')
   const st = lstatSync(file)
   if (st.isSymbolicLink()) fail('symlink: a harness file must be a regular file')
   if (!st.isFile()) fail('not a regular file')

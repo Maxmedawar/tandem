@@ -14,7 +14,8 @@ import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } 
 const home = mkdtempSync(join(tmpdir(), 'hub-rpc-home-'))
 const savedHome = process.env.HOME
 process.env.HOME = home
-const { handleHubRequest, filterSessionsByEngine } = await import('../bridge/hub-rpc.ts')
+const { handleHubRequest } = await import('../bridge/hub-rpc.ts')
+const { filterSessionsByEngine } = await import('../bridge/router.ts')
 
 afterAll(() => {
   process.env.HOME = savedHome

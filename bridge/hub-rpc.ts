@@ -6,23 +6,12 @@
  * other parsed value goes to route() unchanged so its statuses hold. Hub headers
  * are ignored: none grants or changes anything. A router throw answers 500
  * `internal_error`; its message goes to stderr only. A response frame over the
- * link cap is answered 413 `payload_too_large` instead of being sent.
+ * link cap is answered 413 `payload_too_large` instead of being sent. The agent filter and
+ * the read log lines live in route(), so hub calls and local MCP calls get the same ones.
  */
-import { audit } from './audit.ts'
 import { MAX_FRAME_BYTES } from './hub-link.ts'
 import { route } from './router.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
-
-/** Rows of `engine` (`terminal` means `shell`), then the caller's limit. No engine or `all` keeps every row. */
-export function filterSessionsByEngine<T extends { engine?: string }>(
-  sessions: T[],
-  engine: string | undefined,
-  limit: number,
-): T[] {
-  if (!engine || engine === 'all') return sessions.slice(0, limit)
-  const wanted = engine === 'terminal' ? 'shell' : engine
-  return sessions.filter((session) => session.engine === wanted).slice(0, limit)
-}
 
 function parseBody(base64: string | undefined): unknown {
   if (!base64) return {}
@@ -52,32 +41,8 @@ export async function handleHubRequest(frame: CcmHttpRequestFrame): Promise<CcmH
   try {
     const method = frame.method.toUpperCase()
     const query = new URLSearchParams(frame.raw_query ?? '')
-    const parts = frame.path.split('/').filter(Boolean)
     // route() reads the body as an object; any other JSON value passes unchanged (see the file comment).
     const body = parseBody(frame.body_base64) as Record<string, unknown>
-
-    // ponytail: read audit here, move into router.route when a later unit owns router.ts.
-    if (method === 'GET' && parts.length === 3 && parts[2] === 'read') {
-      if (parts[0] === 'sessions') audit({ route: 'GET /sessions/:name/read', name: decodeURIComponent(parts[1]) })
-      if (parts[0] === 'relay') audit({ route: 'GET /relay/:loopId/read', loopId: decodeURIComponent(parts[1]) })
-    }
-    // A send with empty text is the router's poll mode: it returns the transcript, so it is a read.
-    if (method === 'POST' && parts.length === 3 && parts[0] === 'sessions' && parts[2] === 'send' && !String(body?.['text'] ?? '')) {
-      audit({ route: 'POST /sessions/:name/send', name: decodeURIComponent(parts[1]), read: true })
-    }
-
-    // ponytail: agent filter here, move into router.route when a later unit owns router.ts.
-    const engine = query.get('engine')
-    if (method === 'GET' && parts.length === 1 && parts[0] === 'sessions' && engine && engine !== 'all') {
-      const limit = query.get('limit') ? Number(query.get('limit')) : 20
-      const every = new URLSearchParams(query)
-      every.set('limit', String(Number.MAX_SAFE_INTEGER)) // listSessions slices only at the end
-      const result = await route({ method, path: frame.path, query: every, body })
-      if (result.status !== 200) return response(frame.request_id, result.status, result.body)
-      const { sessions = [], ...rest } = result.body as { sessions?: { engine?: string }[] }
-      return response(frame.request_id, 200, { ...rest, sessions: filterSessionsByEngine(sessions, engine, limit) })
-    }
-
     const result = await route({ method, path: frame.path, query, body })
     return response(frame.request_id, result.status, result.body)
   } catch (error) {

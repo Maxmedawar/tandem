@@ -8,8 +8,8 @@
  *
  * ENGINE-AWARE (Phase 2): a drivable "session" is either a REAL interactive
  * claude/codex/shell TUI in a tmux session "ccm-<name>" (driven by the shared
- * TerminalSession lifecycle via keystroke injection + pane scraping; claude and
- * every other harness-file agent through engines/harness-engine.ts), or an
+ * TerminalSession lifecycle via keystroke injection + pane scraping; claude, codex
+ * and every other harness-file agent through engines/harness-engine.ts), or an
  * attached Hermes writable-agent id (a loopback HTTP gateway, not tmux). We
  * NEVER run `claude -p` / headless and NEVER set ANTHROPIC_API_KEY, so Claude
  * usage stays on the user's interactive subscription. The autonomous capability
@@ -32,7 +32,7 @@
  *   - Only ccm-* tmux sessions (claude/codex/shell) or an allowlisted Hermes
  *     agent id are drivable.
  *   - tmux send-keys is injection-safe (-l literal + -- end-of-options).
- *   - Audit log: every spawn / send / interrupt / close / relay control appends
+ *   - Audit log: every spawn / send / read / interrupt / close / relay control appends
  *     metadata only to a private ~/.tandem/bridge.log. Prompt, command, task,
  *     goal, context, report, output, and request-body values are replaced with
  *     byte counts. A failed audit write surfaces to stderr.
@@ -52,7 +52,6 @@ import {
   EngineDisabledError,
   EngineUnavailableError,
 } from './engine-registry.ts'
-import { CodexSession } from './engines/codex.ts'
 import { ShellSession } from './engines/shell.ts'
 import { HarnessSession } from './engines/harness-engine.ts'
 import { HermesSession, loadHermesConfig } from './engines/hermes.ts'
@@ -127,6 +126,20 @@ function pathParts(path: string): string[] {
   return path.split('/').filter(Boolean)
 }
 
+/** listSessions' default limit, applied after an agent filter as on an unfiltered list. */
+const DEFAULT_LIST_LIMIT = 20
+
+/** Rows of `engine` (`terminal` means `shell`), then the caller's limit. No engine or `all` keeps every row. */
+export function filterSessionsByEngine<T extends { engine?: string }>(
+  sessions: T[],
+  engine: string | undefined,
+  limit: number,
+): T[] {
+  if (!engine || engine === 'all') return sessions.slice(0, limit)
+  const wanted = engine === 'terminal' ? 'shell' : engine
+  return sessions.filter((session) => session.engine === wanted).slice(0, limit)
+}
+
 /**
  * Test/entry seam: run the router with a minimal request shape. The MCP server
  * calls this for every tool invocation.
@@ -144,11 +157,14 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
   const parts = pathParts(req.path)
   const m = req.method.toUpperCase()
 
-  // GET /sessions
+  // GET /sessions, optionally one agent's rows (?engine=); the limit applies after the filter.
   if (m === 'GET' && parts.length === 1 && parts[0] === 'sessions') {
     const limit = req.query.get('limit') ? Number(req.query.get('limit')) : undefined
     const project = req.query.get('project') ?? undefined
-    return ok(await listSessions({ limit, project }))
+    const engine = req.query.get('engine') ?? undefined
+    if (!engine || engine === 'all') return ok(await listSessions({ limit, project }))
+    const { sessions, ...rest } = await listSessions({ limit: Number.MAX_SAFE_INTEGER, project })
+    return ok({ ...rest, sessions: filterSessionsByEngine(sessions, engine, limit ?? DEFAULT_LIST_LIMIT) })
   }
 
   // POST /sessions/open
@@ -165,6 +181,12 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
       audit({ route: `${m} /sessions/:name/${action}`, name, denied: 'relay-owned' })
       return err(409, `session "${name}" is relay-owned; use the relay routes`)
     }
+    // Reads are audited once, live or not, never with text. A send with empty text is the
+    // poll mode (it returns the transcript), so it is a read.
+    if (m === 'POST' && action === 'send' && !String(req.body?.['text'] ?? '')) {
+      audit({ route: 'POST /sessions/:name/send', name, read: true })
+    }
+    if (m === 'GET' && action === 'read') audit({ route: 'GET /sessions/:name/read', name })
     if (m === 'POST' && action === 'send') return handleSend(name, req)
     if (m === 'GET' && action === 'read') return handleRead(name, req)
     if (m === 'POST' && action === 'interrupt') return handleInterrupt(name)
@@ -180,7 +202,10 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
   if (parts.length === 3 && parts[0] === 'relay') {
     const loopId = decodeURIComponent(parts[1])
     const action = parts[2]
-    if (m === 'GET' && action === 'read') return handleRelayRead(loopId, req)
+    if (m === 'GET' && action === 'read') {
+      audit({ route: 'GET /relay/:loopId/read', loopId })
+      return handleRelayRead(loopId, req)
+    }
     if (m === 'POST' && action === 'stop') {
       audit({ route: 'POST /relay/:loopId/stop', loopId })
       return ok(relay.stop(loopId))
@@ -303,8 +328,8 @@ async function handleOpenHermes(name: string, req: RpcRequest): Promise<RpcResul
   }
 }
 
-/** open_session for claude/codex/shell and harness engines: the shared tmux lifecycle,
- *  generalized from Phase 1's Claude-only path. model/effort remain Claude-only. */
+/** open_session for shell and harness engines (claude and codex included): the shared tmux
+ *  lifecycle, generalized from Phase 1's Claude-only path. model/effort remain Claude-only. */
 async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, harness?: Harness): Promise<RpcResult> {
   // Per-session model/effort (optional, Claude only — binding Phase 2 correction
   // C: no silent option loss for codex/shell). Validated up front so a bad value
@@ -351,23 +376,17 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
 
   // Re-adopt a ccm-* session that survived a bridge restart (re-validates
-  // provenance tags + cwd). Claude sessions keep the tag `claude`, so live ones
-  // started before claude ran from its harness file are adopted too.
+  // provenance tags + cwd). Claude and codex sessions keep the tags `claude` and
+  // `codex`, so live ones started before they ran from their harness files are adopted too.
   const adopted = harness
     ? await HarnessSession.attachExisting(harness, name, ALLOWLIST)
-    : engine === 'codex'
-      ? await CodexSession.attachExisting(name, ALLOWLIST)
-      : await ShellSession.attachExisting(name, ALLOWLIST)
+    : await ShellSession.attachExisting(name, ALLOWLIST)
   if (adopted) {
     registerLive(adopted)
     audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, adopted: true })
     return ok({ name: adopted.id, engine, cwd: adopted.cwd, attachHint: adopted.attachHint(), reused: true })
   }
-  const stillExists = harness
-    ? await HarnessSession.exists(name)
-    : engine === 'codex'
-      ? await CodexSession.exists(name)
-      : await ShellSession.exists(name)
+  const stillExists = harness ? await HarnessSession.exists(name) : await ShellSession.exists(name)
   if (stillExists) {
     audit({ route: 'POST /sessions/open', name, engine, denied: 'adopt-provenance-or-cwd' })
     return err(
@@ -379,9 +398,7 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   try {
     const session = harness
       ? await HarnessSession.spawn(harness, { name, cwd, allowlist: ALLOWLIST, model, effort })
-      : engine === 'codex'
-        ? await CodexSession.spawn({ name, cwd, allowlist: ALLOWLIST })
-        : await ShellSession.spawn({ name, cwd, allowlist: ALLOWLIST })
+      : await ShellSession.spawn({ name, cwd, allowlist: ALLOWLIST })
     registerLive(session)
     audit({ route: 'POST /sessions/open', name: session.id, engine, cwd, model, effort, ready: session.ready })
     // Surface readiness: when the TUI did NOT reach its prompt (the classic
