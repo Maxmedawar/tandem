@@ -87,6 +87,10 @@ const NAME = /^[A-Za-z0-9._-]{1,256}$/
 const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/
 /** Half of a surrogate pair on its own: not UTF-8. */
 const LONE_SURROGATE = /\p{Cs}/u
+/** Bidi controls: they can reorder what a person sees around the text (the label included). */
+const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+/** The most message text one claim may weigh. */
+const MAX_CLAIM_BYTES = 1024 * 1024
 
 /** Whether a message of `level` is due at `point`: an ask waits until the agent is idle. */
 export function due(level: Level, point: Point): boolean {
@@ -115,6 +119,7 @@ function checkSend({ from, to, level, text, replyByMinutes }: SendInput): number
     throw new MailError(400, `text: 1 to ${MAX_ROOM_EVENT_BODY_BYTES} bytes of UTF-8; nothing was saved`)
   }
   if (CONTROL.test(text)) throw new MailError(400, 'text: a control character (only newline and tab are allowed); nothing was saved')
+  if (BIDI.test(text)) throw new MailError(400, 'text: a bidi control character; nothing was saved')
   let minutes: number | undefined
   if (level === 'ask') {
     minutes = replyByMinutes ?? 10
@@ -186,6 +191,10 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   // LIMIT -1 is no limit in SQLite.
   const claimRows = db.prepare(`UPDATE mail SET state = 'delivering', state_at_ms = ? WHERE seq IN
     (SELECT seq FROM mail WHERE to_name = ? AND state = 'queued' AND level IN (SELECT value FROM json_each(?)) ORDER BY seq LIMIT ?) RETURNING *`)
+  const dueRows = db.prepare(`SELECT seq, text FROM mail WHERE to_name = ? AND state = 'queued' AND level IN (SELECT value FROM json_each(?))
+    ORDER BY seq LIMIT ?`)
+  const claimSeqs = db.prepare(`UPDATE mail SET state = 'delivering', state_at_ms = ? WHERE state = 'queued' AND seq IN
+    (SELECT value FROM json_each(?)) RETURNING *`)
   const ackRows = db.prepare(`UPDATE mail SET state = 'delivered', state_at_ms = ?
     WHERE state = 'delivering' AND id IN (SELECT value FROM json_each(?))`)
   const readRows = db.prepare(`UPDATE mail SET state = 'delivered', state_at_ms = ? WHERE seq IN
@@ -198,7 +207,7 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
     ON CONFLICT (to_name) DO UPDATE SET seq = excluded.seq, at_ms = excluded.at_ms`)
   const interruptTop = db.prepare(`SELECT max(seq) AS top FROM mail WHERE to_name = ? AND state = 'queued' AND level = 'interrupt'
     AND from_id IN (SELECT value FROM json_each(?))`)
-  const interruptedSeq = db.prepare(`SELECT seq FROM mail_interrupt WHERE to_name = ?`)
+  const interruptedSeq = db.prepare(`SELECT seq, at_ms FROM mail_interrupt WHERE to_name = ?`)
   const interruptedSet = db.prepare(`INSERT INTO mail_interrupt (to_name, seq, at_ms) VALUES (?, ?, ?)
     ON CONFLICT (to_name) DO UPDATE SET seq = excluded.seq, at_ms = excluded.at_ms`)
 
@@ -240,10 +249,33 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
       for (const r of pendingRows.all(checkName(to)) as { level: Level; n: number }[]) counts[r.level] = Number(r.n)
       return counts
     },
-    /** The queued messages due at `point` (the oldest `limit`, 1 to 500, when given), oldest first, now delivering. */
-    claim(to: string, point: Point, limit?: number): Message[] {
-      const levels = (['fyi', 'ask', 'interrupt'] as const).filter((l) => due(l, point))
-      return oldestFirst(claimRows.all(now(), checkName(to), JSON.stringify(levels), limit === undefined ? -1 : checkLimit(limit)))
+    /**
+     * The queued messages due at `point` (the oldest `limit`, 1 to 500, when given), oldest first,
+     * now delivering. With `maxBytes` (1 to 1048576): only the oldest whose texts together weigh at
+     * most that many bytes, the first always taken, in one transaction.
+     */
+    claim(to: string, point: Point, limit?: number, maxBytes?: number): Message[] {
+      const levels = JSON.stringify((['fyi', 'ask', 'interrupt'] as const).filter((l) => due(l, point)))
+      const name = checkName(to)
+      const most = limit === undefined ? -1 : checkLimit(limit)
+      if (maxBytes === undefined) return oldestFirst(claimRows.all(now(), name, levels, most))
+      if (!Number.isInteger(maxBytes) || maxBytes < 1 || maxBytes > MAX_CLAIM_BYTES) throw new MailError(400, `maxBytes: a whole number 1 to ${MAX_CLAIM_BYTES}`)
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        const seqs: number[] = []
+        let bytes = 0
+        for (const r of dueRows.all(name, levels, most) as { seq: number; text: string }[]) {
+          bytes += Buffer.byteLength(r.text, 'utf8')
+          if (seqs.length > 0 && bytes > maxBytes) break
+          seqs.push(Number(r.seq))
+        }
+        const out = oldestFirst(claimSeqs.all(now(), JSON.stringify(seqs)))
+        db.exec('COMMIT')
+        return out
+      } catch (e) {
+        db.exec('ROLLBACK')
+        throw e
+      }
     },
     /** Delivering -> delivered; returns the number moved. */
     ack(ids: string[]): number {
@@ -284,14 +316,17 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
      * (recorded here), else false with nothing written: one interrupt key per newest Interrupt
      * message, across every process. Only a message whose sender the limits file's interrupt_from
      * lists now counts: checked at send, and again here, so a sender taken out later presses no key.
+     * With `gapMs`, false (nothing written) until that long after the last key: the message waits.
      */
-    interruptFor(to: string): boolean {
+    interruptFor(to: string, gapMs = 0): boolean {
       checkName(to)
       db.exec('BEGIN IMMEDIATE')
       try {
         const top = (interruptTop.get(to, JSON.stringify(limitsSnapshot().interrupt_from ?? [])) as { top: number | null }).top
-        const stored = Number((interruptedSeq.get(to) as { seq: number } | undefined)?.seq ?? 0)
-        const out = top !== null && Number(top) > stored
+        const last = interruptedSeq.get(to) as { seq: number; at_ms: number } | undefined
+        const stored = Number(last?.seq ?? 0)
+        const age = last === undefined ? Infinity : now() - Number(last.at_ms)
+        const out = top !== null && Number(top) > stored && !(age >= 0 && age < gapMs)
         if (out) interruptedSet.run(to, Number(top), now())
         db.exec('COMMIT')
         return out
