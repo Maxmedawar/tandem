@@ -131,7 +131,7 @@ describe("pi: the built-in harness file", () => {
     expect(h.skip_prompts_args).toEqual([]);
     expect(h.keys).toEqual({ interrupt: ["Escape"] });
     expect(h.states?.working).toEqual(["Working\\.\\.\\."]);
-    expect(h.states?.idle).toEqual(["─{20,}\\n[^\\n]*\\n─{20,}\\n[^\\n]*\\n[^\\n]*\\d%/\\d"]);
+    expect(h.states?.idle).toEqual(["─{20,}\\n[^\\n]*\\n─{20,}\\n[^\\n]*\\n[^\\n]*(?:\\d%|\\?)/\\d"]);
     expect(h.states?.waiting_for_approval ?? []).toEqual([]);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.hook).toBeUndefined();
@@ -154,6 +154,7 @@ describe("pi: the built-in harness file", () => {
   it.each([
     ["idle-doc.txt", "idle"],
     ["idle-header-doc.txt", "idle"],
+    ["idle-compacted-doc.txt", "idle"],
     ["working-doc.txt", "working"],
   ])("%s reads %s through the built-in file", (file, state) => {
     expect(readScreen(builtinPi(), screen(join(PI_SCREENS, file)))).toBe(state);

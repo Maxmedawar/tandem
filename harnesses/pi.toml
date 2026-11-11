@@ -19,7 +19,7 @@ delivery = "notice"
 
 [states]
 working = ['Working\.\.\.']
-idle = ['─{20,}\n[^\n]*\n─{20,}\n[^\n]*\n[^\n]*\d%/\d']
+idle = ['─{20,}\n[^\n]*\n─{20,}\n[^\n]*\n[^\n]*(?:\d%|\?)/\d']
 
 [keys]
 interrupt = ["Escape"]
