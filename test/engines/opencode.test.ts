@@ -19,11 +19,12 @@ import type { SpawnOptions } from "../../bridge/terminal-session.ts";
 const TMUX_BOX = mkdtempSync("/tmp/r1b08-");
 process.env.TMUX_TMPDIR = TMUX_BOX;
 delete process.env.TMUX;
-const SOCK = join(TMUX_BOX, `tmux-${process.getuid!()}`, "default");
+// U-R1A-19: Tandem's own socket under TANDEM_HOME (set below to join(tmp, "tandem")), read at cleanup.
+const SOCK = () => join(tmp, "tandem", "tmux", "tandem");
 afterAll(() => {
   const out = execFileSync(
     "/bin/sh",
-    ["-c", 'if test -S "$1"; then tmux -S "$1" kill-server; echo "tmux -S $1 kill-server rc=$?"; else echo "no private server left"; fi', "sh", SOCK],
+    ["-c", 'if test -S "$1"; then tmux -S "$1" kill-server; echo "tmux -S $1 kill-server rc=$?"; else echo "no private server left"; fi', "sh", SOCK()],
     { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
   console.log(`r1b08 cleanup: ${out.trim()}`);
