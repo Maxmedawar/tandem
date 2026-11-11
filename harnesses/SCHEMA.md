@@ -23,7 +23,7 @@ Only `*.toml` files directly inside each folder are read. Subfolders and other f
 A missing owner folder just means no owner files.
 
 The built-in files are `claude.toml` (Claude Code), `codex.toml` (Codex CLI), `grok.toml`
-(Grok CLI), `antigravity.toml` (Antigravity CLI, program `agy`), `hermes.toml` (Hermes WebUI
+(Grok CLI), `antigravity.toml` (Antigravity CLI, program `agy`), `opencode.toml` (OpenCode), `hermes.toml` (Hermes WebUI
 agent, attached through its adapter, no program) and `shell.toml` (plain `sh -l`). No agent is
 on by default: each one, built-in or owner, runs only when `TANDEM_ENABLED_ENGINES` names it and
 its program is found (an adapter agent: its adapter's own checks).
