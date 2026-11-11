@@ -105,7 +105,7 @@ const FABRIC_LINK_PREFIX = '/__tunnel/fabric-rpc'
 
 /**
  * The link route for fabric calls. Order: a `token` query 401, not POST 405, a missing or
- * wrong bearer 401, a body over WS_MAX_FRAME_BYTES 413, a body that is not an object with
+ * wrong bearer 401, a body over WS_MAX_FRAME_BYTES 413 (readCapped: never held past the cap), a body that is not an object with
  * an object `input` 400; then the TunnelDO's answer as it is. Only `input` is kept: the
  * caller is the hub's own owner, derived here as TandemMcp derives it.
  */
@@ -116,8 +116,8 @@ async function handleFabricLink(request: Request, env: HandlerEnv, url: URL): Pr
   if (!env.TANDEM_HUB_LINK_TOKEN || !presented || !timingSafeEqual(presented, env.TANDEM_HUB_LINK_TOKEN)) {
     return new Response('unauthorized', { status: 401 })
   }
-  const bytes = await request.arrayBuffer()
-  if (bytes.byteLength > WS_MAX_FRAME_BYTES) return jsonResponse({ error: 'payload_too_large' }, 413)
+  const bytes = await readCapped(request, WS_MAX_FRAME_BYTES)
+  if (!bytes) return jsonResponse({ error: 'payload_too_large' }, 413)
   let input: unknown
   try {
     input = (JSON.parse(new TextDecoder().decode(bytes)) as { input?: unknown }).input
@@ -133,6 +133,24 @@ async function handleFabricLink(request: Request, env: HandlerEnv, url: URL): Pr
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ caller: await fabricCallerFor(SINGLE_USER_ID), input }),
   })
+}
+
+/**
+ * The request body, or undefined when it is over `cap` bytes. A declared length over the cap
+ * is refused unread. A body with no declared length is kept up to the cap; past it the rest
+ * is read and thrown away, so the hub never holds more than `cap` bytes of a refused body.
+ * Thrown away, not cancelled: a local hub (`wrangler dev`) fails the next request it gets
+ * after a body is cancelled part-way ("Your worker restarted mid-request").
+ */
+async function readCapped(request: Request, cap: number): Promise<Uint8Array | undefined> {
+  if (Number(request.headers.get('content-length') ?? 0) > cap) return undefined
+  const bytes = new Uint8Array(cap)
+  let size = 0
+  for await (const chunk of (request.body ?? []) as AsyncIterable<Uint8Array>) {
+    if (size + chunk.byteLength <= cap) bytes.set(chunk, size)
+    size += chunk.byteLength
+  }
+  return size > cap ? undefined : bytes.subarray(0, size)
 }
 
 function jsonResponse(body: unknown, status: number): Response {
