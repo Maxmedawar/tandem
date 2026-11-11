@@ -132,7 +132,7 @@ describe("cursor-agent: the built-in harness file", () => {
     expect(h.skip_prompts_args).toEqual(["--force"]);
     expect(h.account_env).toBeUndefined();
     expect(h.keys).toEqual({ interrupt: ["C-c"], approve: "y", deny: "n" });
-    expect(h.states?.waiting_for_approval).toEqual(["Run (?:outside sandbox )?\\(once\\)", "\\(esc or n\\)"]);
+    expect(h.states?.waiting_for_approval).toEqual(["Run (?:outside sandbox )?\\(once\\)", "\\(esc or n(?: or p)?\\)", "Keep \\(n\\)"]);
     expect(h.states?.working).toEqual(["(?i)ctrl\\+c to stop"]);
     expect(h.states?.idle).toEqual(["→ (?:Plan, search, build anything|Add a follow-up)"]);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
@@ -170,6 +170,25 @@ describe("cursor-agent: the built-in harness file", () => {
     const text = screen(IDLE_SRC);
     expect(text).toContain("→ Plan, search, build anything");
     expect(readScreen(builtinCursor(), text.replace("→ Plan, search, build anything", "→ hello"))).not.toBe("idle");
+  });
+
+  // Audit: the layout Cursor 2026.11.11-043ef28 draws (1734.index.js), not the box of the -src
+  // fixtures: the prompt bar has a one-column margin and a one-column padding before `→ `, half-block
+  // rows above and below, and a footer whose model and context figure vary; approval rows start with
+  // the `→ ` marker; Write and Delete approvals have no `Skip (esc or n)` row.
+  const BAR = (c: string) => ` ${c.repeat(118)}`;
+  const PAD = (s: string) => s.padEnd(118);
+  it.each([
+    ["first turn, padded, footer with no figure", "idle", [BAR("▄"), PAD("  → Plan, search, build anything"), BAR("▀"), "  Auto"]],
+    ["follow-up, padded, footer with a long model and a figure", "idle", [BAR("▄"), PAD("  → Add a follow-up"), BAR("▀"), "  claude-4.5-sonnet-thinking-extended-context · 37.2%"]],
+    ["follow-up with the /plan hint", "idle", [BAR("▄"), PAD("  → Add a follow-up — /plan to review and build"), BAR("▀")]],
+    ["running turn, padded", "working", [BAR("▄"), `  → Add a follow-up${" ".repeat(80)}ctrl+c to stop `, BAR("▀")]],
+    ["typed but not sent", "unknown", [BAR("▄"), PAD("  → hello"), BAR("▀")]],
+    ["shell approval", "waiting_for_approval", [" Run this command?", " $ npm test", " → Run (once) (y)", "   Add Shell(npm) to allowlist? (tab)", "   Skip & tell the agent what to do instead (esc or n)"]],
+    ["write approval", "waiting_for_approval", [" Write to this file?", " in /tmp/work/a.txt", " → Proceed (y)", "   Reject & propose changes (esc or n or p)", "   Add Write(a.txt) to allowlist? (tab)"]],
+    ["delete approval", "waiting_for_approval", [" Delete this file?", " → Delete (y)", "   Keep (n)"]],
+  ])("real layout: %s reads %s", (_label, state, lines) => {
+    expect(readScreen(builtinCursor(), ["", ...(lines as string[]), ""].join("\n"))).toBe(state);
   });
 
   it("never idle: every approval and unknown screen and every other agent's idle screen in the screens folder", () => {

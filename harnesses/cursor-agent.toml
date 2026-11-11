@@ -4,7 +4,8 @@
 # run for this file. idle is the input box's placeholder after `→` (`Plan, search, build anything`
 # on the first turn, `Add a follow-up` later), from the UI strings; unproven on a real screen until
 # the live row runs. working is the running box's `ctrl+c to stop`. waiting_for_approval is the
-# command approval's `Run (once)` / `(esc or n)` rows; approve is `y`, deny is `n`. interrupt is
+# command approval's `Run (once)` / `(esc or n)` rows, a file write's `(esc or n or p)` row and a
+# delete's `Keep (n)` row (one approval list, its own keys); approve is `y`, deny is `n`. interrupt is
 # one C-c; a second C-c exits. account_env is unset: the login follows HOME, not
 # CURSOR_CONFIG_DIR. No dialog row: the workspace-trust menu's `▶` marker and `[a]` key prefix are
 # not SCHEMA forms. delivery is `notice`: Cursor's hooks live in its own config, which Tandem never
@@ -18,7 +19,7 @@ history = "~/.cursor/chats"
 delivery = "notice"
 
 [states]
-waiting_for_approval = ['Run (?:outside sandbox )?\(once\)', '\(esc or n\)']
+waiting_for_approval = ['Run (?:outside sandbox )?\(once\)', '\(esc or n(?: or p)?\)', 'Keep \(n\)']
 working = ['(?i)ctrl\+c to stop']
 idle = ['→ (?:Plan, search, build anything|Add a follow-up)']
 
