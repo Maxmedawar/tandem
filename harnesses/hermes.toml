@@ -1,0 +1,10 @@
+# Hermes WebUI agent. Not a terminal program: Tandem attaches to an agent that is already running,
+# over loopback HTTP, through the adapter bridge/engines/hermes.ts, and never starts or stops it.
+# Settings (environment): TANDEM_HERMES_BASE_URL (a loopback host only), TANDEM_HERMES_WRITABLE_AGENTS
+# (the agent ids that may be driven), TANDEM_HERMES_PASSWORD_PATH, TANDEM_HERMES_TIMEOUT_MS,
+# TANDEM_HERMES_MAX_RESPONSE_BYTES and TANDEM_HERMES_DISABLE_LIVE.
+# has_prompts = true: Hermes can ask for its own approvals in its WebUI, which Tandem cannot see or
+# answer.
+name = "hermes"
+adapter = "hermes"
+has_prompts = true

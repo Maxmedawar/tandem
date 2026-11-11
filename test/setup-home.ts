@@ -15,6 +15,15 @@ if (process.env.TANDEM_LIVE !== "1") {
 // token). A test that needs one sets it itself, after this file.
 for (const k of Object.keys(process.env)) if (k.startsWith("CCM_")) delete process.env[k];
 
+// Always, live mode included: no inherited TANDEM_HERMES_* (a live Hermes, its password file) and
+// none of the live install's path variables; the real Hermes network stays off. A test that runs
+// its own Hermes server sets its own values, after this file.
+for (const k of Object.keys(process.env)) if (k.startsWith("TANDEM_HERMES_")) delete process.env[k];
+for (const k of ["TANDEM_CONFIG_FILE", "TANDEM_DEVICE_READY_FILE", "TANDEM_OWNER_PASSWORD_FILE", "TANDEM_ENROLLMENT_STATE_DIR"]) {
+  delete process.env[k];
+}
+process.env.TANDEM_HERMES_DISABLE_LIVE = "1";
+
 // Canonical spelling of a path that may not exist yet: realpath of its deepest existing ancestor
 // (symlinks, letter case), compared case-insensitively where the file system usually is.
 const real = (p: string): string => {

@@ -39,6 +39,18 @@ afterEach(() => {
 });
 afterAll(() => rmSync(tmp, { recursive: true, force: true }));
 
+// U-R1A-16 cases: temp folders under /tmp/r1a16-, owner files in $TANDEM_HOME/harnesses (0700, files 0600).
+const BOX16 = mkdtempSync("/tmp/r1a16-registry-");
+afterAll(() => rmSync(BOX16, { recursive: true, force: true }));
+function ownerHome(files: Record<string, string>): string {
+  const home = mkdtempSync(join(BOX16, "home-"));
+  const owner = join(home, "harnesses");
+  mkdirSync(owner);
+  chmodSync(owner, 0o700);
+  for (const [name, text] of Object.entries(files)) writeFileSync(join(owner, name), text, { mode: 0o600 });
+  return home;
+}
+
 describe("parseEngineId — strict known-id parsing", () => {
   it("accepts every known id, case-insensitively", () => {
     for (const id of KNOWN_ENGINE_IDS) {
@@ -115,25 +127,75 @@ describe("resolveEngine — order: engine given -> known -> enabled -> program f
     }
   });
 
-  it("hermes resolves with no harness (its code path until U-R1A-16)", async () => {
+  // U-R1A-16: hermes runs from its built-in adapter file: no program, no PATH lookup.
+  it("hermes resolves to its built-in adapter file with PATH an empty folder", async () => {
     programsOnPath(false);
+    vi.stubEnv("PATH", EMPTY_BIN);
+    resetHarnessCache();
     const r = await resolveEngine("hermes", { enabledEngines: new Set(["hermes"]) });
-    expect(r).toEqual({ id: "hermes" });
+    expect(r.id).toBe("hermes");
+    expect(r.harness).toMatchObject({ name: "hermes", source: "builtin", file: join(BUILTIN, "hermes.toml"), adapter: "hermes", kind: "agent" });
+    expect(r.harness).not.toHaveProperty("programPath");
   });
 
-  it("an owner file named like a built-in id is skipped with its stderr line", async () => {
-    const home = mkdtempSync(join(tmp, "home-"));
-    const owner = join(home, "harnesses");
-    mkdirSync(owner);
-    chmodSync(owner, 0o700);
-    writeFileSync(join(owner, "hermes.toml"), 'name = "hermes"\nprogram = "/bin/sh"\nhas_prompts = false\n', { mode: 0o600 });
+  it("an owner hermes.toml is refused at load with its stderr line, and the built-in stays", async () => {
+    const home = ownerHome({ "hermes.toml": 'name = "hermes"\nprogram = "/bin/sh"\nhas_prompts = false\n' });
     programsOnPath(true, home);
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation((() => true) as never);
-    expect(loadedHarnesses().has("hermes")).toBe(false);
+    expect(loadedHarnesses().get("hermes")).toMatchObject({ source: "builtin", file: join(BUILTIN, "hermes.toml") });
     expect(stderr.mock.calls.map((c) => String(c[0]))).toContainEqual(
-      `[bridge] harness file skipped: ${join(owner, "hermes.toml")}: "hermes" keeps its built-in engine\n`,
+      `[bridge] harness file refused: ${join(home, "harnesses", "hermes.toml")}: built-in name: an owner file cannot replace a built-in\n`,
     );
-    expect(await resolveEngine("hermes", { enabledEngines: new Set(["hermes"]) })).toEqual({ id: "hermes" });
+    expect((await resolveEngine("hermes", { enabledEngines: new Set(["hermes"]) })).harness?.source).toBe("builtin");
+  });
+
+  it("an unknown name in TANDEM_ENABLED_ENGINES fails closed, naming every built-in and loaded name once", async () => {
+    const home = ownerHome({ "r1a16-owner.toml": 'name = "r1a16-owner"\nprogram = "r1a16-owner"\nhas_prompts = false\n' });
+    programsOnPath(true, home);
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", "claude,nosuch");
+    const names = [...new Set([...KNOWN_ENGINE_IDS, ...loadedHarnesses().keys()])].sort();
+    expect(names).toContain("r1a16-owner");
+    const e = await resolveEngine("claude").catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(UnknownEngineError);
+    expect((e as Error).message).toBe(`unknown engine: "nosuch". Supported engines: ${names.join(", ")}.`);
+  });
+});
+
+// U-R1A-16: a built-in id whose built-in file is not loaded is unavailable (503), for an open and
+// for a relay start alike. The registry and the router are imported again over a loader that
+// drops claude's file.
+describe("a built-in id with no harness file loaded", () => {
+  afterEach(() => {
+    vi.doUnmock("../bridge/harness-registry.ts");
+    vi.resetModules();
+  });
+
+  it("resolveEngine throws EngineUnavailableError; open and relay start answer 503", async () => {
+    const work = mkdtempSync(join(BOX16, "work-"));
+    programsOnPath(true);
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", "claude");
+    vi.stubEnv("CCM_CWD_ALLOWLIST", work);
+    vi.resetModules();
+    vi.doMock("../bridge/harness-registry.ts", async (importOriginal) => {
+      const real = await importOriginal<typeof import("../bridge/harness-registry.ts")>();
+      return {
+        ...real,
+        loadHarnesses: (opts?: Parameters<typeof real.loadHarnesses>[0]) => {
+          const res = real.loadHarnesses(opts);
+          res.harnesses.delete("claude");
+          return res;
+        },
+      };
+    });
+    const registry = await import("../bridge/engine-registry.ts");
+    const e = await registry.resolveEngine("claude").catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(registry.EngineUnavailableError);
+    expect((e as Error).message).toContain("has no harness file loaded");
+    const { routeForTest } = await import("../bridge/router.ts");
+    const open = await routeForTest("POST", "/sessions/open", { engine: "claude" });
+    expect(open.status).toBe(503);
+    const relay = await routeForTest("POST", "/relay/start", { goal: "x", cwd: work });
+    expect(relay.status).toBe(503);
   });
 });
 

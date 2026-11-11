@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:f
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DrivableSession, EngineId } from '../bridge/drivable.ts'
-import { resetHarnessCache } from '../bridge/engine-registry.ts'
+import { loadedHarnesses, resetHarnessCache } from '../bridge/engine-registry.ts'
 import { listLiveTmuxSessions, listSessions, registerLive, unregisterLive } from '../bridge/sessions.ts'
 
 const registered: string[] = []
@@ -146,6 +146,26 @@ describe('listSessions privacy and admission filters', () => {
       })
       expect(result.sessions.map((s) => s.id)).not.toContain('nobody')
       expect(result.sessions.map((s) => s.id).sort()).toEqual(['cl', 'fa-live', 'fa-reg'])
+    })
+
+    // U-R1A-16: hermes has a built-in file now, but an adapter agent is never tmux-hosted, so its
+    // tag is never valid tmux provenance.
+    it('a tmux row tagged hermes never lists, even with hermes loaded, enabled and its cwd allowed', async () => {
+      withHarness('hermes')
+      expect(loadedHarnesses().get('hermes')?.adapter).toBe('hermes')
+      const deps = {
+        ownerIdProvider: async () => 'owner-a',
+        tmuxFn: async () => 'ccm-r1a16-hm\t300\t/allowed/project\nccm-cl\t202\t/allowed/project',
+        provenanceReader: async (name: string) => ({ engine: name === 'r1a16-hm' ? 'hermes' : 'claude', owner: 'owner-a' }),
+      }
+      const result = await listSessions({
+        allowlist: ['/allowed'],
+        enabledEngines: new Set(['claude', 'hermes']),
+        listingDependencies: deps,
+      })
+      expect(result.sessions.map((s) => s.id)).not.toContain('r1a16-hm')
+      expect(result.sessions.map((s) => s.id)).toContain('cl')
+      expect((await listLiveTmuxSessions(deps)).map((s) => s.name)).toEqual(['cl'])
     })
 
     it('the restart listing shows the owner\'s harness and claude sessions, never another owner\'s', async () => {

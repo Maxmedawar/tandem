@@ -3,21 +3,28 @@
 #
 # Usage: sh scripts/lint-agents.sh [ROOT]   (ROOT default .)
 #
-# NAMES: the base names of ROOT/harnesses/*.toml except shell, plus the agents that have no
-# file yet: grok gemini antigravity hermes opencode pi.
+# NAMES: the base names of ROOT/harnesses/*.toml except shell, plus a fixed list that holds
+# whether or not a file exists (so an agent's code still fails if its file goes): grok gemini
+# antigravity hermes opencode pi.
+# ADAPTERS: the values x of the `adapter = "<x>"` lines in ROOT/harnesses/*.toml (each a
+# lowercase name: letters, digits and -) whose adapter file bridge/engines/<x>.ts exists.
 #   A  code: in a *.ts file (not *.test.ts) under bridge/, src/ or hub/src/, a line that is not
 #      a comment (its first non-blank characters are not //, * or /*) holds a whole quoted
 #      string equal to a NAME ('n', "n" or n between backticks). bridge/transcripts/readers/ is
-#      exempt: one history reader per agent format.
+#      exempt: one history reader per agent format. In bridge/engines/<x>.ts with x in ADAPTERS
+#      (the adapter file a built-in harness file names), a line passes when x is the only NAME
+#      it holds in quotes; any other quoted NAME there still fails.
 #   B  favoured default: in README.md, SETUP.md, .env.example, src/mcp-server.ts or
 #      hub/src/mcp.ts, a NAME and the word "default" (each a whole word, any case) share one
 #      sentence of a line (no . or ; between them).
 #   C  .env.example's TANDEM_ENABLED_ENGINES= line has a value: no agent is on by default.
+#   D  a harness file's `adapter = "<x>"` line whose bridge/engines/<x>.ts is missing (or whose
+#      x is not such a name): "D harnesses/<file>:<line>".
 # ALLOW (below): one "path|fixed text|owner" per line. A hit passes when an entry has its path
 # and its line contains that text. An entry that matches nothing prints
 # "lint-agents: stale <entry>" and does not fail.
 #
-# Output: "<A|B|C> <path>:<line>" per failure, then "lint-agents: PASS" (exit 0) or
+# Output: "<A|B|C|D> <path>:<line>" per failure, then "lint-agents: PASS" (exit 0) or
 # "lint-agents: FAIL (<n>)" (exit 1). ROOT or ROOT/harnesses missing:
 # "lint-agents: ERROR <what>" (exit 2).
 set -u
@@ -37,18 +44,28 @@ for f in harnesses/*.toml; do
   [ "$n" = shell ] || NAMES="$n|$NAMES"
 done
 
+# ADAPTERS (space-separated, a space at each end) and LINT_D (one D line per bad adapter line).
+ADAPTERS=' '
+LINT_D=''
+for f in harnesses/*.toml; do
+  [ -f "$f" ] || continue
+  hits=$(awk '/^[ \t]*adapter[ \t]*=[ \t]*"/ { v = $0; sub(/^[^"]*"/, "", v); sub(/".*$/, "", v); print FNR "|" v }' "$f")
+  while IFS='|' read -r ln x; do
+    [ -n "$ln" ] || continue
+    case $x in
+      ''|-*|*[!a-z0-9-]*) ok=no ;;
+      *) if [ -f "bridge/engines/$x.ts" ]; then ok=yes; else ok=no; fi ;;
+    esac
+    if [ "$ok" = yes ]; then ADAPTERS="$ADAPTERS$x "; else LINT_D="${LINT_D}D $f:$ln
+"; fi
+  done <<HITS
+$hits
+HITS
+done
+export ADAPTERS LINT_D
+
 allow() {
   cat <<'EOF'
-bridge/engines/hermes.ts|= 'hermes'|U-R1A-16
-bridge/engines/hermes.ts|engine "hermes"|U-R1A-16
-bridge/router.ts|=== 'hermes'|U-R1A-16
-bridge/router.ts|engine "hermes"|U-R1A-16
-bridge/router.ts|engine: 'hermes'|U-R1A-16
-bridge/sessions.ts|session.engine === 'hermes'|U-R1A-16
-bridge/sessions.ts|? 'hermes'|U-R1A-16
-bridge/harness-registry.ts|adapter?: 'hermes'|U-R1A-16
-bridge/harness-registry.ts|adapter !== 'hermes'|U-R1A-16
-hub/src/mcp.ts|"hermes"|U-R1A-16
 bridge/terminal-session.ts|descriptor.id !== 'claude'|gap
 bridge/terminal-session.ts|descriptor.id === 'claude'|U-R1A-18
 bridge/fleet-protocol.ts|ENGINE_IDS|U-R1B-37
@@ -82,6 +99,7 @@ BEGIN {
   word = "(^|[^a-z0-9_])(" names ")([^a-z0-9_]|$)"
   dflt = "(^|[^a-z0-9_])default([^a-z0-9_]|$)"
   b["README.md"] = b["SETUP.md"] = b[".env.example"] = b["src/mcp-server.ts"] = b["hub/src/mcp.ts"] = 1
+  adapters = ENVIRON["ADAPTERS"]
   na = split(ENVIRON["LINT_ALLOW"], rows, "\n")
   for (i = 1; i <= na; i++) {
     r = rows[i]
@@ -104,9 +122,17 @@ function sentenceB(line,    s, n, i, parts) {
 }
 {
   file = $0; isA = (file ~ /\.ts$/); ln = 0
+  # own: x when this file is bridge/engines/<x>.ts and x is in ADAPTERS; its quoted x is dropped for A.
+  own = ""
+  if (file ~ /^bridge\/engines\/[a-z0-9-]+\.ts$/) {
+    own = substr(file, 16, length(file) - 18)
+    if (index(adapters, " " own " ") == 0) own = ""
+  }
   while ((getline line < file) > 0) {
     ln++
-    if (isA && line !~ /^[ \t]*(\/\/|\*|\/\*)/ && line ~ ra) hit("A", file, ln, line)
+    t = line
+    if (own != "") { gsub(q own q, "", t); gsub("\"" own "\"", "", t); gsub(bq own bq, "", t) }
+    if (isA && line !~ /^[ \t]*(\/\/|\*|\/\*)/ && t ~ ra) hit("A", file, ln, line)
     if ((file in b) && sentenceB(line)) hit("B", file, ln, line)
     if (file == ".env.example" && line ~ /^TANDEM_ENABLED_ENGINES=/) {
       v = substr(line, 24); gsub(/[ \t"'"'"']/, "", v)
@@ -116,6 +142,8 @@ function sentenceB(line,    s, n, i, parts) {
   close(file)
 }
 END {
+  nd = split(ENVIRON["LINT_D"], dl, "\n")
+  for (i = 1; i <= nd; i++) if (dl[i] != "") { print dl[i]; fails++ }
   for (i = 1; i <= na; i++) if (rows[i] != "" && !used[i]) print "lint-agents: stale " rows[i]
   if (fails) { print "lint-agents: FAIL (" fails ")"; exit 1 }
   print "lint-agents: PASS"

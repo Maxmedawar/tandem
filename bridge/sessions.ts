@@ -2,12 +2,12 @@
  * sessions.ts — the live DrivableSession registry, live-session listing, and
  * the cwd-allowlist security helpers (the trust boundary the reviewer scrutinizes).
  *
- * A "session" is an interactive engine (claude/codex/shell) TUI running in a
- * tmux session named "ccm-<name>", or an attached Hermes writable-agent id
- * (not tmux-hosted). listSessions() reports ONLY sessions Tandem currently
- * OWNS and can safely address (binding — Phase 2 correction E): live ccm-*
- * tmux sessions whose `@tandem_engine`/`@tandem_owner` provenance tags match
- * THIS installation (see ./ownership.ts and ./terminal-session.ts
+ * A "session" is an interactive harness-file agent TUI running in a tmux
+ * session named "ccm-<name>", or an agent attached through the adapter its
+ * built-in harness file names (Hermes; not tmux-hosted). listSessions()
+ * reports ONLY sessions Tandem currently OWNS and can safely address
+ * (binding — Phase 2 correction E): live ccm-* tmux sessions whose
+ * `@tandem_engine`/`@tandem_owner` provenance tags match THIS installation (see ./ownership.ts and ./terminal-session.ts
  * readSessionProvenance), each tagged with its engine. A tmux session with
  * missing or mismatched provenance is NEVER listed as drivable, even if its
  * name matches the ccm-* prefix. There is no history surface: Tandem does not
@@ -36,11 +36,12 @@ import { readSessionProvenance } from './terminal-session.ts'
 const HOME = homedir()
 const SESSION_PREFIX = 'ccm-'
 
-/** A tmux engine tag is valid provenance when it names a loaded harness file (the built-in
- *  claude, codex and shell files included). `hermes` has no file and is never tmux-hosted, so a
- *  tmux session claiming `@tandem_engine=hermes` is never valid provenance. */
+/** A tmux engine tag is valid provenance when it names a loaded harness file without `adapter`
+ *  (the built-in claude, codex and shell files included). An adapter agent is never tmux-hosted,
+ *  so a tmux session tagged with an adapter file's name is never valid provenance. */
 function isTmuxEngineTag(tag: string): boolean {
-  return loadedHarnesses().has(tag)
+  const harness = loadedHarnesses().get(tag)
+  return harness !== undefined && harness.adapter === undefined
 }
 
 const SESSION_NAME_RE = /^[A-Za-z0-9._-]+$/
@@ -171,7 +172,7 @@ interface LiveTmuxSession {
  * safely address. A raw `ccm-*` tmux session name is not sufficient proof —
  * anyone on the same OS user account could hand-create one (see
  * ./ownership.ts). A session is only included when its `@tandem_engine` tag is
- * a known tmux-hosted engine id or a loaded harness name AND its `@tandem_owner` tag exactly matches
+ * the name of a loaded harness file without `adapter` AND its `@tandem_owner` tag exactly matches
  * this installation's durable owner id (binding — Phase 2 correction E:
  * "Missing/mismatched tmux provenance must never appear as drivable").
  */
@@ -238,8 +239,9 @@ export async function listSessions(
   const live = await listLiveTmuxSessions(opts.listingDependencies)
 
   // Registry entries are sessions this running bridge already admitted. This
-  // is also the only source for Hermes, which has no tmux inventory and is
-  // deliberately never discovered by listing a gateway or personal files.
+  // is also the only source for adapter agents (Hermes), which have no tmux
+  // inventory and are deliberately never discovered by listing a gateway or
+  // personal files. An adapter session has cwd '' and is labelled by its engine.
   const registered = (
     await Promise.all(
       [...registry.values()].map(async (session) => ({ session, alive: await session.isAlive().catch(() => false) })),
@@ -249,8 +251,8 @@ export async function listSessions(
     .map(({ session }): SessionInfo => ({
       id: session.id,
       engine: session.engine,
-      project: session.engine === 'hermes'
-        ? 'hermes'
+      project: session.cwd === ''
+        ? session.engine
         : session.cwd.split('/').filter(Boolean).pop() ?? session.cwd,
       cwd: session.cwd,
       live: true,

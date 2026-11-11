@@ -1,6 +1,12 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { routeForTest } from "../../bridge/router.ts";
+import { loadOrCreateOwnerId } from "../../bridge/ownership.ts";
 import {
   HermesSession,
   canonicalizeHermesBaseUrl,
@@ -742,5 +748,412 @@ describe("HermesSession — interrupt/close are safe no-ops (no tmux pane, no ow
     const session = HermesSession.attach({ agentId: "agent-a", config: makeConfig(), fetchImpl, passwordReader: fakePasswordReader });
     await session.close();
     expect(calls.length).toBe(0);
+  });
+});
+
+// ---- U-R1A-16: A1.1's Hermes steps through the router, against a test-only Hermes server ----
+//
+// The server below is the only Hermes these cases reach: node:http on 127.0.0.1, port 0, closed in
+// afterAll. It serves the three WebUI routes the adapter uses and counts requests per path.
+
+type Msg = { role: string; content: string };
+
+async function startTestHermes(password: string) {
+  const cookies = new Set<string>();
+  const sessions = new Map<string, { messages: Msg[]; active_stream_id: string | null }>([
+    ["r1a16-agent", { messages: [], active_stream_id: null }],
+  ]);
+  const counts: Record<string, number> = {};
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  let n = 0;
+  const server = createServer(async (req, res) => {
+    const u = new URL(req.url ?? "/", "http://127.0.0.1");
+    const key = `${req.method} ${u.pathname}`;
+    counts[key] = (counts[key] ?? 0) + 1;
+    const chunks: Buffer[] = [];
+    for await (const c of req) chunks.push(c as Buffer);
+    let body: Record<string, unknown> = {};
+    try {
+      if (chunks.length) body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    } catch {
+      body = {};
+    }
+    const reply = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
+      res.writeHead(status, { "content-type": "application/json", ...headers });
+      res.end(JSON.stringify(payload));
+    };
+    const signedIn = cookies.has(String(req.headers.cookie ?? "").trim());
+    if (key === "POST /api/auth/login") {
+      if (body.password !== password) return reply(401, { error: "wrong password" });
+      const cookie = `r1a16sid=${++n}`;
+      cookies.add(cookie);
+      return reply(200, { ok: true }, { "set-cookie": `${cookie}; Path=/; HttpOnly` });
+    }
+    if (key === "GET /api/session") {
+      if (!signedIn) return reply(401, { error: "sign in" });
+      const s = sessions.get(u.searchParams.get("session_id") ?? "");
+      if (!s || u.searchParams.get("messages") !== "1") return reply(404, { error: "no such session" });
+      return reply(200, { session: s });
+    }
+    if (key === "POST /api/chat/start") {
+      if (!signedIn) return reply(401, { error: "sign in" });
+      const s = sessions.get(String(body.session_id));
+      if (!s) return reply(404, { error: "no such session" });
+      const text = String(body.message);
+      s.messages.push({ role: "user", content: text });
+      s.active_stream_id = `r1a16-stream-${++n}`;
+      const t = setTimeout(() => {
+        timers.delete(t);
+        s.messages.push({ role: "assistant", content: `reply: ${text}` });
+        s.active_stream_id = null;
+      }, 300);
+      timers.add(t);
+      return reply(200, { stream_id: s.active_stream_id });
+    }
+    return reply(404, { error: "no route" });
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    count: (key: string) => counts[key] ?? 0,
+    total: () => Object.values(counts).reduce((a, b) => a + b, 0),
+    messageCount: (id: string) => sessions.get(id)?.messages.length ?? 0,
+    close: () =>
+      new Promise<void>((resolve) => {
+        for (const t of timers) clearTimeout(t);
+        server.closeAllConnections();
+        server.close(() => resolve());
+      }),
+  };
+}
+
+// Awaited env helper, as in test/router-engines.test.ts: the routed call finishes before the
+// variables are put back.
+async function withEnv<T>(vars: Record<string, string | undefined>, run: () => Promise<T>): Promise<T> {
+  const prev: Record<string, string | undefined> = {};
+  for (const k of Object.keys(vars)) prev[k] = process.env[k];
+  for (const [k, v] of Object.entries(vars)) {
+    if (v === undefined) delete process.env[k];
+    else process.env[k] = v;
+  }
+  try {
+    return await run();
+  } finally {
+    for (const [k, v] of Object.entries(prev)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+}
+
+describe("Hermes through the router on a test-only server (U-R1A-16, A1.1)", () => {
+  const box = mkdtempSync("/tmp/r1a16-hermes-");
+  const passwordFile = join(box, "password");
+  const wrongPasswordFile = join(box, "wrong-password");
+  writeFileSync(passwordFile, "r1a16-password\n", { mode: 0o600 });
+  writeFileSync(wrongPasswordFile, "r1a16-not-it\n", { mode: 0o600 });
+  let hermes: Awaited<ReturnType<typeof startTestHermes>>;
+  beforeAll(async () => {
+    hermes = await startTestHermes("r1a16-password");
+  });
+  afterAll(async () => {
+    await hermes.close();
+    rmSync(box, { recursive: true, force: true });
+  });
+
+  const env = (over: Record<string, string | undefined> = {}) => ({
+    TANDEM_ENABLED_ENGINES: "hermes",
+    TANDEM_HERMES_BASE_URL: hermes.url,
+    TANDEM_HERMES_WRITABLE_AGENTS: "r1a16-agent,r1a16-ghost",
+    TANDEM_HERMES_PASSWORD_PATH: passwordFile,
+    TANDEM_HERMES_DISABLE_LIVE: "0",
+    ...over,
+  });
+  type Body = Record<string, unknown> & { error?: string; sessions?: { id: string; engine: string; live: boolean }[] };
+  const call = async (method: string, path: string, body: Record<string, unknown> = {}, query = "", over = {}) => {
+    const res = await withEnv(env(over), () => routeForTest(method, path, body, query));
+    return { status: res.status, body: res.body as Body };
+  };
+  const open = (name: string, extra: Record<string, unknown> = {}, over = {}) =>
+    call("POST", "/sessions/open", { name, engine: "hermes", ...extra }, "", over);
+  const listed = async () => ((await call("GET", "/sessions", {}, "engine=hermes")).body.sessions ?? []).map((s) => s.id);
+
+  describe("A1.1 steps", () => {
+    let cursor = 0;
+    let token = "";
+
+    it("start: open attaches and checks the agent answers (one login, one session read)", async () => {
+      const logins = hermes.count("POST /api/auth/login");
+      const reads = hermes.count("GET /api/session");
+      const res = await open("r1a16-agent");
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ name: "r1a16-agent", engine: "hermes" });
+      expect(res.body).not.toHaveProperty("reused");
+      expect(hermes.count("POST /api/auth/login")).toBe(logins + 1);
+      expect(hermes.count("GET /api/session")).toBe(reads + 1);
+    });
+
+    it("ready: the session lists live under engine=hermes", async () => {
+      const res = await call("GET", "/sessions", {}, "engine=hermes");
+      expect(res.status).toBe(200);
+      expect(res.body.sessions).toEqual([expect.objectContaining({ id: "r1a16-agent", engine: "hermes", live: true })]);
+    });
+
+    it("send: a unique token starts a turn (status running, cursor = the message count before)", async () => {
+      token = `r1a16-token-${process.pid}-${Date.now()}`;
+      const before = hermes.messageCount("r1a16-agent");
+      const starts = hermes.count("POST /api/chat/start");
+      const res = await call("POST", "/sessions/r1a16-agent/send", { text: token });
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ status: "running", engine: "hermes", cursor: before });
+      expect(hermes.count("POST /api/chat/start")).toBe(starts + 1);
+      cursor = res.body.cursor as number;
+    });
+
+    it("wait and read: reads from the cursor reach idle within 5 s and hold the reply", async () => {
+      const deadline = Date.now() + 5000;
+      let page: Body = {};
+      for (;;) {
+        page = (await call("GET", "/sessions/r1a16-agent/read", {}, `cursor=${cursor}`)).body;
+        if (page.idle === true || Date.now() > deadline) break;
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      expect(page.idle).toBe(true);
+      expect(page.text).toContain(`reply: ${token}`);
+    });
+
+    it("interrupt: 200 with no request to Hermes", async () => {
+      const before = hermes.total();
+      const res = await call("POST", "/sessions/r1a16-agent/interrupt");
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ ok: true, engine: "hermes" });
+      expect(hermes.total()).toBe(before);
+    });
+
+    it("close: 200, no request to Hermes, and no longer listed", async () => {
+      const before = hermes.total();
+      const res = await call("POST", "/sessions/r1a16-agent/close");
+      expect(res.status).toBe(200);
+      expect(res.body).toMatchObject({ ok: true, engine: "hermes" });
+      expect(hermes.total()).toBe(before);
+      expect(await listed()).not.toContain("r1a16-agent");
+    });
+  });
+
+  describe("an agent that does not answer is not opened", () => {
+    it("an allowlisted id Hermes does not know: 503 did not answer, not listed, a second open is not reused", async () => {
+      for (let i = 0; i < 2; i++) {
+        const res = await open("r1a16-ghost");
+        expect(res.status).toBe(503);
+        expect(res.body.error).toMatch(/did not answer/);
+        expect(res.body).not.toHaveProperty("reused");
+      }
+      expect(await listed()).not.toContain("r1a16-ghost");
+    });
+
+    it("a wrong password: 503", async () => {
+      await call("POST", "/sessions/r1a16-agent/close");
+      const res = await open("r1a16-agent", {}, { TANDEM_HERMES_PASSWORD_PATH: wrongPasswordFile });
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatch(/did not answer/);
+      expect(await listed()).not.toContain("r1a16-agent");
+    });
+
+    it("TANDEM_HERMES_DISABLE_LIVE=1: 503 with no request", async () => {
+      await call("POST", "/sessions/r1a16-agent/close");
+      const before = hermes.total();
+      const res = await open("r1a16-agent", {}, { TANDEM_HERMES_DISABLE_LIVE: "1" });
+      expect(res.status).toBe(503);
+      expect(hermes.total()).toBe(before);
+    });
+  });
+
+  describe("refusals before any request", () => {
+    it.each(["cwd", "model", "effort"])("%s given: 400", async (field) => {
+      const before = hermes.total();
+      const res = await open("r1a16-agent", { [field]: field === "cwd" ? "/tmp" : "high" });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(`${field} is not supported for engine "hermes"`);
+      expect(hermes.total()).toBe(before);
+    });
+
+    it("hermes not enabled: 403", async () => {
+      const before = hermes.total();
+      const res = await open("r1a16-agent", {}, { TANDEM_ENABLED_ENGINES: undefined });
+      expect(res.status).toBe(403);
+      expect(hermes.total()).toBe(before);
+    });
+
+    it("an id not on the allowlist: 403", async () => {
+      const before = hermes.total();
+      const res = await open("r1a16-stranger");
+      expect(res.status).toBe(403);
+      expect(res.body.error).toMatch(/not on the writable-agent allowlist/);
+      expect(hermes.total()).toBe(before);
+    });
+
+    it("base URL unset: 503", async () => {
+      const before = hermes.total();
+      const res = await open("r1a16-agent", {}, { TANDEM_HERMES_BASE_URL: undefined });
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatch(/not configured/);
+      expect(hermes.total()).toBe(before);
+    });
+  });
+
+  // ---- U-R1A-16-R1 audit: one table per row of the review ----
+  describe("U-R1A-16-R1 audit: provenance, loopback only, refusal order, one open per name", () => {
+    // tmux only on a private socket this file makes (never the default one, never $TMUX's).
+    const tmuxBox = mkdtempSync("/tmp/r1a16-tmux-");
+    const sockDir = join(tmuxBox, `tmux-${process.getuid?.() ?? 0}`);
+    const sock = join(sockDir, "default");
+    const savedTmux = { TMUX: process.env.TMUX, TMUX_TMPDIR: process.env.TMUX_TMPDIR };
+    const tx = (...args: string[]) => execFileSync("tmux", ["-S", sock, ...args], { stdio: "pipe" });
+    beforeAll(() => {
+      mkdirSync(sockDir, { mode: 0o700 });
+      delete process.env.TMUX;
+      process.env.TMUX_TMPDIR = tmuxBox;
+    });
+    afterAll(() => {
+      try {
+        tx("kill-server");
+      } catch {
+        /* no private server left */
+      }
+      for (const [k, v] of Object.entries(savedTmux)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      rmSync(tmuxBox, { recursive: true, force: true });
+    });
+    // Every row starts with nothing attached (a reuse of a live session is not re-checked).
+    beforeEach(async () => {
+      await call("POST", "/sessions/r1a16-agent/close");
+    });
+
+    /** `name` is not a session: not listed under any filter, and a send finds nothing live. */
+    const expectNotRegistered = async (name: string) => {
+      for (const q of ["engine=hermes", "engine=all", ""]) {
+        expect(((await call("GET", "/sessions", {}, q)).body.sessions ?? []).map((s) => s.id)).not.toContain(name);
+      }
+      const send = await call("POST", `/sessions/${name}/send`, { text: "r1a16" });
+      expect(send.status).toBe(409);
+      expect(send.body.error).toMatch(/is not live/);
+    };
+
+    it("(1) a ccm- tmux session carrying this owner's tag and the adapter agent's tag is never adopted, reused or listed", async () => {
+      const owner = await loadOrCreateOwnerId();
+      tx("new-session", "-d", "-s", "ccm-r1a16-agent", "sleep", "600");
+      tx("set-option", "-t", "ccm-r1a16-agent:", "@tandem_engine", "hermes");
+      tx("set-option", "-t", "ccm-r1a16-agent:", "@tandem_owner", owner);
+      try {
+        const before = hermes.total();
+        const res = await open("r1a16-agent");
+        expect(res.status).toBe(409);
+        expect(res.body).not.toHaveProperty("reused");
+        expect(hermes.total()).toBe(before);
+        await expectNotRegistered("r1a16-agent");
+      } finally {
+        tx("kill-session", "-t", "ccm-r1a16-agent");
+      }
+    });
+
+    it.each([
+      "http://r1a16-x.example",
+      "https://r1a16-x.example:8443/base",
+      "http://127.0.0.1.r1a16-x.example",
+      "http://localhost.r1a16-x.example",
+      "http://r1a16-xlocalhost",
+      "http://r1a16-x@127.0.0.1:1",
+      "http://0.0.0.0/r1a16-x",
+      "http://[::ffff:127.0.0.1]/r1a16-x",
+      "http://192.168.1.10/r1a16-x",
+      "ftp://127.0.0.1/r1a16-x",
+      "file:///r1a16-x",
+      "r1a16-x",
+    ])("(2) base URL %s: 503 before any request, no URL in the answer, nothing registered", async (url) => {
+      const before = hermes.total();
+      const res = await open("r1a16-agent", {}, { TANDEM_HERMES_BASE_URL: url });
+      expect(res.status).toBe(503);
+      expect(res.body.error).not.toContain("r1a16-x");
+      expect(hermes.total()).toBe(before);
+      await expectNotRegistered("r1a16-agent");
+    });
+
+    it("(2) a redirect from the loopback server is never followed (it could name any host)", async () => {
+      let targetHits = 0;
+      const target = createServer((req, res) => {
+        targetHits++;
+        req.resume();
+        const body = JSON.stringify(req.method === "POST" ? { ok: true } : { session: { messages: [], active_stream_id: null } });
+        res.writeHead(200, { "content-type": "application/json", "set-cookie": "r1a16sid=target; Path=/" });
+        res.end(body);
+      });
+      await new Promise<void>((resolve) => target.listen(0, "127.0.0.1", resolve));
+      const to = `http://127.0.0.1:${(target.address() as AddressInfo).port}`;
+      let redirects = 0;
+      const redirector = createServer((req, res) => {
+        redirects++;
+        req.resume();
+        res.writeHead(307, { location: `${to}${req.url}` });
+        res.end();
+      });
+      await new Promise<void>((resolve) => redirector.listen(0, "127.0.0.1", resolve));
+      try {
+        const res = await open("r1a16-agent", {}, { TANDEM_HERMES_BASE_URL: `http://127.0.0.1:${(redirector.address() as AddressInfo).port}` });
+        expect(redirects).toBeGreaterThan(0);
+        expect(targetHits).toBe(0);
+        expect(res.status).toBe(503);
+        expect(res.body.error).toMatch(/did not answer/);
+        await expectNotRegistered("r1a16-agent");
+      } finally {
+        for (const s of [redirector, target]) {
+          s.closeAllConnections();
+          await new Promise<void>((resolve) => s.close(() => resolve()));
+        }
+      }
+    });
+
+    it.each(["1", "true", "YES", " on "])("(2) TANDEM_HERMES_DISABLE_LIVE=%j: 503, no request, nothing registered", async (flag) => {
+      const before = hermes.total();
+      const res = await open("r1a16-agent", {}, { TANDEM_HERMES_DISABLE_LIVE: flag });
+      expect(res.status).toBe(503);
+      expect(res.body.error).toMatch(/did not answer/);
+      expect(hermes.total()).toBe(before);
+      await expectNotRegistered("r1a16-agent");
+    });
+
+    // Each row breaks two or more rules at once; the earlier rule must be the answer.
+    it.each<[string, string, Record<string, unknown>, Record<string, string | undefined>, number, RegExp]>([
+      ["an unknown engine beats cwd", "r1a16-agent", { engine: "r1a16-nosuch", cwd: "/tmp" }, {}, 400, /^unknown engine: "r1a16-nosuch"\. Supported engines: .*\bhermes\b/],
+      ["not enabled beats cwd, model and effort", "r1a16-agent", { cwd: "/tmp", model: "x", effort: "high" }, { TANDEM_ENABLED_ENGINES: "shell" }, 403, /is disabled/],
+      ["cwd beats model, no base URL and the allowlist", "r1a16-stranger", { cwd: "/tmp", model: "x" }, { TANDEM_HERMES_BASE_URL: undefined }, 400, /^cwd is not supported/],
+      ["model beats effort and a bad base URL", "r1a16-agent", { model: "x", effort: "high" }, { TANDEM_HERMES_BASE_URL: "http://r1a16-x.example" }, 400, /^model is not supported/],
+      ["effort beats the allowlist", "r1a16-stranger", { effort: "high" }, {}, 400, /^effort is not supported/],
+      ["no base URL beats the allowlist", "r1a16-stranger", {}, { TANDEM_HERMES_BASE_URL: undefined }, 503, /not configured/],
+      ["the allowlist beats the answer check", "r1a16-stranger", {}, { TANDEM_HERMES_DISABLE_LIVE: "1" }, 403, /not on the writable-agent allowlist/],
+      ["an empty allowlist admits nobody", "r1a16-agent", {}, { TANDEM_HERMES_WRITABLE_AGENTS: undefined }, 403, /not on the writable-agent allowlist/],
+    ])("(3) refusal order: %s", async (_what, name, extra, over, status, error) => {
+      const before = hermes.total();
+      const res = await open(name, extra, over);
+      expect(res.status).toBe(status);
+      expect(res.body.error).toMatch(error);
+      expect(hermes.total()).toBe(before);
+      await expectNotRegistered(name);
+    });
+
+    it("(6) two simultaneous opens of one name: one attaches, the other reuses it", async () => {
+      const logins = hermes.count("POST /api/auth/login");
+      const body = { name: "r1a16-agent", engine: "hermes" };
+      const both = await withEnv(env(), () =>
+        Promise.all([routeForTest("POST", "/sessions/open", body), routeForTest("POST", "/sessions/open", body)]),
+      );
+      expect(both.map((r) => r.status)).toEqual([200, 200]);
+      expect(both.map((r) => (r.body as Body).reused === true).sort()).toEqual([false, true]);
+      expect(hermes.count("POST /api/auth/login")).toBe(logins + 1);
+      expect(await listed()).toEqual(["r1a16-agent"]);
+      await call("POST", "/sessions/r1a16-agent/close");
+    });
   });
 });

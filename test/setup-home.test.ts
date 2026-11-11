@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, statSync, symlinkSync, unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, symlinkSync, unlinkSync } from "node:fs";
 import { homedir, tmpdir, userInfo } from "node:os";
 import { basename, dirname, join, relative, resolve, isAbsolute, sep } from "node:path";
 
@@ -42,6 +42,41 @@ describe("test setup isolates HOME and TANDEM_HOME", () => {
     const rel = relative(resolve(userInfo().homedir), resolve(th));
     const inside = rel === "" || !(rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel));
     expect(inside, `TANDEM_HOME=${th}`).toBe(false);
+  });
+});
+
+// U-R1A-16: every inherited TANDEM_HERMES_* and the four TANDEM_* path variables are dropped,
+// live mode included, and TANDEM_HERMES_DISABLE_LIVE is set to 1. Names are compared, values never
+// printed: the probe reports only which names are left and whether the flag reads 1.
+const DROPPED = [
+  "TANDEM_HERMES_BASE_URL",
+  "TANDEM_HERMES_WRITABLE_AGENTS",
+  "TANDEM_HERMES_PASSWORD_PATH",
+  "TANDEM_CONFIG_FILE",
+  "TANDEM_DEVICE_READY_FILE",
+  "TANDEM_OWNER_PASSWORD_FILE",
+  "TANDEM_ENROLLMENT_STATE_DIR",
+];
+const leftOf = (env: NodeJS.ProcessEnv) => ({
+  left: DROPPED.filter((k) => k in env),
+  disableLive: env.TANDEM_HERMES_DISABLE_LIVE === "1",
+});
+
+describe("inherited Hermes and Tandem path variables are dropped (U-R1A-16)", () => {
+  const dummy = mkdtempSync("/tmp/r1a16-setup-"); // only named in the dummy values, never written
+  afterAll(() => rmSync(dummy, { recursive: true, force: true }));
+
+  it("a fresh node started with all seven set (and the flag 0) keeps none and reads the flag as 1", () => {
+    const script = `await import(${JSON.stringify(SETUP)}); const env = process.env; process.stdout.write(JSON.stringify({ left: ${JSON.stringify(DROPPED)}.filter((k) => k in env), disableLive: env.TANDEM_HERMES_DISABLE_LIVE === "1" }));`;
+    const env: NodeJS.ProcessEnv = { ...process.env, TANDEM_LIVE: "1", TANDEM_HERMES_DISABLE_LIVE: "0" };
+    for (const k of DROPPED) env[k] = join(dummy, k.toLowerCase());
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], { env, encoding: "utf8" });
+    expect(r.status, "setup probe exit").toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual({ left: [], disableLive: true });
+  });
+
+  it("the same holds in this process", () => {
+    expect(leftOf(process.env)).toEqual({ left: [], disableLive: true });
   });
 });
 

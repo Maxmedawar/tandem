@@ -23,9 +23,10 @@ Only `*.toml` files directly inside each folder are read. Subfolders and other f
 A missing owner folder just means no owner files.
 
 The built-in files are `claude.toml` (Claude Code), `codex.toml` (Codex CLI), `grok.toml`
-(Grok CLI), `antigravity.toml` (Antigravity CLI, program `agy`) and `shell.toml` (plain
-`sh -l`). No agent is on by default: each one, built-in or owner, runs only when
-`TANDEM_ENABLED_ENGINES` names it and its program is found.
+(Grok CLI), `antigravity.toml` (Antigravity CLI, program `agy`), `hermes.toml` (Hermes WebUI
+agent, attached through its adapter, no program) and `shell.toml` (plain `sh -l`). No agent is
+on by default: each one, built-in or owner, runs only when `TANDEM_ENABLED_ENGINES` names it and
+its program is found (an adapter agent: its adapter's own checks).
 
 Each file is named `<name>.toml`, where `<name>` is the harness name.
 
@@ -36,7 +37,7 @@ TOML. Every field not listed here is refused, at the top level and inside `state
 | Field | Type | Default | Rule |
 |---|---|---|---|
 | `name` | string | required | `^[a-z0-9][a-z0-9-]{0,31}$`, equal to the file name without `.toml` |
-| `program` | string | required | a bare name (`^[A-Za-z0-9._+][A-Za-z0-9._+-]*$`, so never starting `-`) found on `PATH`, or an absolute path with no `..` whose parts use only those characters (no space, quote, glob or backslash) |
+| `program` | string | required; refused in a file with `adapter` | a bare name (`^[A-Za-z0-9._+][A-Za-z0-9._+-]*$`, so never starting `-`) found on `PATH`, or an absolute path with no `..` whose parts use only those characters (no space, quote, glob or backslash) |
 | `args` | array of strings | `[]` | arguments for every start |
 | `skip_prompts_args` | array of strings | `[]` | added when the agent should not ask before acting |
 | `resume` | array of strings | `[]` | arguments to resume a session; `{id}` is the session id |
@@ -50,7 +51,7 @@ TOML. Every field not listed here is refused, at the top level and inside `state
 | `hook` | string | unset | hook command |
 | `permission_hook` | boolean | `false` | |
 | `reports_context` | boolean | `false` | |
-| `adapter` | `"hermes"` | unset | built-in files only |
+| `adapter` | string | unset | a built-in adapter's name (`hermes`), built-in files only; such an agent has no program and the terminal fields go unused |
 | `logo` | string | unset | `^[a-z0-9-]+\.(svg\|png)$` |
 
 ### `states`
