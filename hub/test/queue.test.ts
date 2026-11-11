@@ -235,20 +235,21 @@ describe('HubQueue', () => {
 
   it('33A: copy size: one byte over MAX_COPY_BYTES throws, so do 200,000 \\u0001 (200 KB, 1.2 MB escaped); each next put gets the next unused seq', () => {
     const { q } = openQueue()
-    expect(q.queue.put({ id: 'm1', from: 'S', to: ['A'], room: 'r', body: 'x' })).toEqual([{ to: 'A', seq: 1 }])
+    expect(q.queue.put({ id: 'm1', from: 'S', to: ['A'], room: 'room-1', body: 'x' })).toEqual([{ to: 'A', seq: 1 }])
 
-    const over = 'x'.repeat(MAX_COPY_BYTES + 1 - checkBytes('over', 'S', 'r', ''))
-    expect(checkBytes('over', 'S', 'r', over)).toBe(MAX_COPY_BYTES + 1)
-    expect(() => q.queue.put({ id: 'over', from: 'S', to: ['A'], room: 'r', body: over })).toThrow()
+    // A room name longer than `null`: a check copy that left the room out would measure this one under the limit.
+    const over = 'x'.repeat(MAX_COPY_BYTES + 1 - checkBytes('over', 'S', 'room-1', ''))
+    expect(checkBytes('over', 'S', 'room-1', over)).toBe(MAX_COPY_BYTES + 1)
+    expect(() => q.queue.put({ id: 'over', from: 'S', to: ['A'], room: 'room-1', body: over })).toThrow()
     expect(q.queue.take('A').map((c) => c.id)).toEqual(['m1'])
-    expect(q.queue.put({ id: 'm2', from: 'S', to: ['A'], room: 'r', body: 'x' })).toEqual([{ to: 'A', seq: 2 }])
+    expect(q.queue.put({ id: 'm2', from: 'S', to: ['A'], room: 'room-1', body: 'x' })).toEqual([{ to: 'A', seq: 2 }])
 
     const control = '\u0001'.repeat(200_000)
     expect(Buffer.byteLength(control, 'utf8')).toBe(200_000)
-    expect(checkBytes('ctl', 'S', 'r', control)).toBeGreaterThan(1_200_000)
-    expect(() => q.queue.put({ id: 'ctl', from: 'S', to: ['A'], room: 'r', body: control })).toThrow()
+    expect(checkBytes('ctl', 'S', 'room-1', control)).toBeGreaterThan(1_200_000)
+    expect(() => q.queue.put({ id: 'ctl', from: 'S', to: ['A'], room: 'room-1', body: control })).toThrow()
     expect(q.queue.take('A').map((c) => c.id)).toEqual(['m1', 'm2'])
-    expect(q.queue.put({ id: 'm3', from: 'S', to: ['A'], room: 'r', body: 'x' })).toEqual([{ to: 'A', seq: 3 }])
+    expect(q.queue.put({ id: 'm3', from: 'S', to: ['A'], room: 'room-1', body: 'x' })).toEqual([{ to: 'A', seq: 3 }])
     expect(q.queue.take('A').map((c) => [c.id, c.seq, c.room_seq])).toEqual([['m1', 1, 1], ['m2', 2, 2], ['m3', 3, 3]])
   })
 
