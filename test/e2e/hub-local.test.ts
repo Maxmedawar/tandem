@@ -57,7 +57,11 @@ const sessionIds = (listed: Json): string[] => ((listed.sessions ?? []) as { id:
 describe.skipIf(Boolean(missing))(title, () => {
   beforeAll(async () => {
     await startHub('/tmp/r1a07-')
-    await Promise.all((['alpha', 'beta'] as Id[]).map(async (id) => { bridges[id] = await startBridge(id) }))
+    // allSettled: a bridge that connects after its sibling failed is still recorded, so afterAll stops it.
+    const ids: Id[] = ['alpha', 'beta']
+    const started = await Promise.allSettled(ids.map((id) => startBridge(id)))
+    started.forEach((result, i) => { if (result.status === 'fulfilled') bridges[ids[i]] = result.value })
+    for (const result of started) if (result.status === 'rejected') throw result.reason
     const token = await signIn()
     client = new Client({ name: 'r1a07-e2e', version: '0.0.0' })
     await client.connect(
