@@ -1,9 +1,10 @@
 /**
  * roster-hub.ts: the roster commands with the hub as the carrier (U-R1A-31B-2). The hub keeps one
- * copy of the owner's roster and the offers waiting (hub/src/roster-store.ts); it never checks a
- * signature, so every roster or offer fetched here goes through bridge/roster.ts, which checks the
- * whole chain itself. Every call carries the link bearer and a `tandem-proof` signed by this
- * computer's device key over the exact body bytes (hubProofHeader, bridge/hub-link.ts).
+ * copy of the owner's roster and the offers waiting (hub/src/roster-store.ts); nothing here relies
+ * on the hub's own checks, so every roster or offer fetched here goes through bridge/roster.ts,
+ * which checks the whole chain itself. Every call carries the link bearer and a `tandem-proof`
+ * signed by this computer's device key over the exact body bytes (hubProofHeader,
+ * bridge/hub-link.ts).
  *
  * The launcher runs this file for `fingerprint`, `roster` (init, clear) and `trust`. With no
  * TANDEM_HUB_LINK_URL it is exactly roster.ts `main`. Nothing is printed outside main, and no
@@ -23,8 +24,8 @@ import {
   receiveRoster,
   RosterError,
   rosterDir,
+  signOffer,
   sweepOffers,
-  trustOffer,
 } from './roster.ts'
 
 const TIMEOUT_MS = 10_000
@@ -146,14 +147,18 @@ async function pull(hub: RosterHub): Promise<{ len: number; text: string | undef
   return { len: got?.len ?? 0, text: got?.roster }
 }
 
-/** `trust <fp>` with a roster here: sign the offer in and put the roster at the hub, one retry on a conflict. */
+/**
+ * `trust <fp>` with a roster here: sign the offer in (signOffer: nothing written yet) and put that
+ * roster at the hub, one retry on a conflict; roster.json takes it, and the offer goes, only once
+ * the hub took it, so a refused trust changes no file beyond what its pulls took.
+ */
 async function trustThroughHub(hub: RosterHub, fp: string): Promise<number> {
   const key = openDeviceKey()
   const trusted = () => readRoster()?.find((e) => fingerprintOf(e.key) === fp)
   let at = await pull(hub)
   for (let attempt = 0; ; attempt++) {
-    if (!trusted()) trustOffer(key, fp)
-    const text = rosterFileText()
+    const next = trusted() ? undefined : signOffer(key, fp)
+    const text = next?.text ?? rosterFileText()
     if (text === undefined) throw new RosterError('no roster')
     // Already the hub's roster (another computer put the same one first): nothing to send.
     if (text !== at.text && !(await hub.put(at.len, text)).ok) {
@@ -164,7 +169,11 @@ async function trustThroughHub(hub: RosterHub, fp: string): Promise<number> {
       at = await pull(hub)
       continue
     }
-    const id = trusted()!.id
+    if (next) {
+      receiveRoster(next.text, Date.now(), 'peer')
+      sweepOffers()
+    }
+    const id = next?.id ?? trusted()!.id
     say(`trusted ${id} ${fp}. On ${id} run: tandem trust ${key.fingerprint}`)
     return 0
   }

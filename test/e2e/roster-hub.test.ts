@@ -207,4 +207,53 @@ describe.skipIf(Boolean(missing))(title, () => {
     expect(await reason(client.postOffer(JSON.stringify(makeOffer(key, f.id, Date.now() + 86_400_000))))).toBe('hub: 400 roster_invalid')
     expect((await client.get())?.roster).toBe(held!.roster)
   }, 60_000)
+
+  it('(6) (31C-2) a member PUTs the hub roster plus one entry it signed, spelled with spaces: 400 roster_invalid, the hub unchanged; then trust of b on a: exit 0', async () => {
+    const { a, f } = computers
+    process.env.TANDEM_HOME = f.tandemHome
+    const { createHash } = await import('node:crypto')
+    const { rosterHub } = await import('../../bridge/roster-hub.ts')
+    const { openDeviceKey } = await import('../../bridge/device-keys.ts')
+    const url = hub.replace(/^http:/, 'ws:')
+    const aKey = openDeviceKey({ path: join(a.tandemHome, 'keys', 'device.key') })
+    const asA = rosterHub({ url, token: LINK_TOKEN, bridgeId: a.id }, aKey)
+    const held = await asA.get()
+    expect(held?.roster).toBe(rosterText(a))
+    type E = { seq: number; id: string; key: string; signer: string; ts: number; prev: string; sig: string }
+    const etext = (e: Omit<E, 'sig'>) => `tandem-roster-v1\n${e.seq}\n${e.prev}\n${e.id}\n${e.key}\n${e.signer}\n${e.ts}`
+    const entries = JSON.parse(held!.roster).entries as E[]
+    const last = entries[entries.length - 1]
+    const g = openDeviceKey({ path: join(folder('g'), 'keys', 'device.key') })
+    const head = { seq: entries.length, id: 'r1a31b2-g', key: g.publicKey, signer: aKey.publicKey, ts: last.ts, prev: createHash('sha256').update(etext(last), 'utf8').digest('hex') }
+    const canonical = JSON.stringify({ v: 1, entries: [...entries, { ...head, sig: aKey.sign(etext(head)) }] })
+    const spaced = canonical.replace(/":/g, '": ')
+    expect(JSON.parse(spaced)).toEqual(JSON.parse(canonical))
+    const reason = (p: Promise<unknown>) => p.then(() => 'accepted', (e: { reason?: string }) => e.reason)
+    expect(await reason(asA.put(held!.len, spaced))).toBe('hub: 400 roster_invalid')
+    expect((await asA.get())?.roster).toBe(held!.roster)
+    expect(await tandem(a, 'trust', fp.b)).toEqual({ code: 0, out: `trusted r1a31b2-b ${fp.b}. On r1a31b2-b run: tandem trust ${fp.a}\n`, err: '' })
+    expect(rosterText(a)).toBe(held!.roster)
+  }, 120_000)
+
+  it('(7) (31C-2) one new id sends 1,200 proofed GET /__tunnel/roster/offers: all 200; the 1,201st: 429 slow down; another id at once: 200', async () => {
+    const { hubProofHeader } = await import('../../bridge/hub-link.ts')
+    const { openDeviceKey } = await import('../../bridge/device-keys.ts')
+    const url = hub.replace(/^http:/, 'ws:')
+    const path = '/__tunnel/roster/offers'
+    const ask = async (key: ReturnType<typeof openDeviceKey>, id: string) => {
+      const r = await fetch(hub + path, { headers: { authorization: `Bearer ${LINK_TOKEN}`, 'tandem-proof': hubProofHeader(key, { url, method: 'GET', path, id }) } })
+      await r.text()
+      return r.status
+    }
+    const one = openDeviceKey({ path: join(folder('rate1'), 'keys', 'device.key') })
+    const two = openDeviceKey({ path: join(folder('rate2'), 'keys', 'device.key') })
+    const started = Date.now()
+    const statuses: number[] = []
+    for (let i = 0; i < 1200; i++) statuses.push(await ask(one, 'r1a31c2-rate1'))
+    expect(statuses.filter((s) => s !== 200)).toEqual([])
+    const r = await fetch(hub + path, { headers: { authorization: `Bearer ${LINK_TOKEN}`, 'tandem-proof': hubProofHeader(one, { url, method: 'GET', path, id: 'r1a31c2-rate1' }) } })
+    expect([r.status, await r.text()]).toEqual([429, 'slow down'])
+    expect(await ask(two, 'r1a31c2-rate2')).toBe(200)
+    console.log(`(31C-2) e2e (7): 1,201 proofed requests and one more id in ${Date.now() - started} ms`)
+  }, 150_000)
 })

@@ -2,19 +2,23 @@
  * roster-store.ts — the hub's copy of the owner's roster and the pairing offers waiting
  * (U-R1A-31B-2). Computers fetch and upload them through the roster routes (index.ts).
  *
- * The hub never checks a signature: every computer verifies the whole chain itself
- * (bridge/roster.ts), so a roster or offer the hub made or changed is refused there. The hub only
- * keeps one order (an upload must extend exactly the roster it holds), checks that the sender is
- * in what it uploads or is the computer it offers for, and keeps the limits: one offer per
- * computer, OFFER_SLOTS offers from other computers, MAX_POSTS accepted offer posts per computer
- * per POST_WINDOW_MS, offers dropped OFFER_TTL_MS after their own ts or when their key or id is
- * in the roster.
+ * Every computer verifies the whole chain itself (bridge/roster.ts), so a roster or offer the hub
+ * made or changed is refused there. The hub also keeps only a roster whose whole chain checks out
+ * (putChecked through ./roster-verify, U-R1A-31C-2: the hub routes memory calls by it, so one it
+ * kept unchecked would turn memory off for everyone) spelled exactly as every computer writes it,
+ * keeps one order (an upload must extend exactly the roster it holds, so its root stays the first
+ * stored root), checks that the sender is in what it uploads or is the computer it offers for,
+ * and keeps the limits: one offer per computer, OFFER_SLOTS offers from other computers, MAX_POSTS
+ * accepted offer posts per computer per POST_WINDOW_MS, offers dropped OFFER_TTL_MS after their
+ * own ts or when their key or id is in the roster. Offer signatures are the computers' to check.
  *
  * The table is a plain class over injected SQL storage (the shape of a Durable Object's
  * ctx.storage.sql), a clock and a transaction runner, as ./queue.ts and ./devices.ts are, so it
- * tests on a local SQLite file. Every method is one synchronous transaction. This file
- * deliberately imports nothing from the Workers runtime.
+ * tests on a local SQLite file. Every method is one synchronous transaction (putChecked and
+ * members check the signatures first, outside it). This file deliberately imports nothing from the Workers
+ * runtime.
  */
+import { verifyRosterText } from './roster-verify.ts'
 
 export const MAX_ROSTER_BYTES = 131_072
 export const MAX_ROSTER_ENTRIES = 100
@@ -51,7 +55,7 @@ function parse(text: unknown, max: number): unknown {
   }
 }
 
-/** The entries of a roster text of the right shape, else undefined. Signatures are the computers' to check. */
+/** The entries of a roster text of the right shape, else undefined. Signatures: putChecked. */
 function rosterEntries(text: unknown): Entry[] | undefined {
   const doc = parse(text, MAX_ROSTER_BYTES)
   if (!isObject(doc) || Object.keys(doc).sort().join() !== 'entries,v' || doc.v !== 1) return undefined
@@ -62,6 +66,13 @@ function rosterEntries(text: unknown): Entry[] | undefined {
     typeof e.id === 'string' && typeof e.key === 'string' && typeof e.signer === 'string' && typeof e.prev === 'string' && typeof e.sig === 'string')
   return good ? (list as Entry[]) : undefined
 }
+
+type Member = { id: string; key: string }
+type Verify = (text: string) => Promise<Member[] | undefined>
+
+/** The one spelling of `entries` every computer writes (bridge/roster.ts rosterText). */
+const canonical = (entries: Entry[]) =>
+  JSON.stringify({ v: 1, entries: entries.map(({ seq, id, key, signer, ts, prev, sig }) => ({ seq, id, key, signer, ts, prev, sig })) })
 
 /** The offer of the right shape, else undefined. */
 function offerOf(text: unknown): { id: string; key: string; ts: number } | undefined {
@@ -101,9 +112,45 @@ export class RosterStore {
     return this.transaction(() => this.stored())
   }
 
+  /** The last roster text stored or read back with its checked entries (undefined: it does not check out). */
+  private checked?: { text: string; entries: Member[] | undefined }
+
   /**
-   * Store `rosterText` from the computer `senderId`/`senderKey` (the proof's). In order: the
-   * shape ('invalid'); the sender is an entry ('not_in_roster'); then the order ('conflict'):
+   * The `{ id, key }` of every entry of the stored roster when its whole chain checks out, else
+   * none. Checked once per stored text: only a stored roster is ever kept here, so an upload the
+   * hub refuses never makes the next call check the stored one again.
+   */
+  async members(verify: Verify = verifyRosterText): Promise<Member[]> {
+    const text = this.get()?.roster
+    if (text === undefined) return []
+    if (this.checked?.text !== text) {
+      const entries = await verify(text)
+      this.checked = { text, entries }
+      return entries ?? []
+    }
+    return this.checked.entries ?? []
+  }
+
+  /**
+   * The hub's only way in: `rosterText` kept only when `verify` (verifyRosterText, ./roster-verify)
+   * gives its entries for these exact bytes (the stored text itself: its kept check), else
+   * 'invalid' and nothing stored; then put. With put's order rules the root is always the first
+   * stored one. A refused upload costs its own check and nothing after it.
+   */
+  async putChecked(senderId: string, senderKey: string, base: number, rosterText: string, verify: Verify = verifyRosterText): Promise<PutAnswer> {
+    if (typeof rosterText !== 'string') return 'invalid'
+    const entries = this.checked?.text === rosterText ? this.checked.entries : await verify(rosterText)
+    if (!entries) return 'invalid'
+    const answer = this.put(senderId, senderKey, base, rosterText)
+    if (answer === 'ok') this.checked = { text: rosterText, entries }
+    return answer
+  }
+
+  /**
+   * Store `rosterText` from the computer `senderId`/`senderKey` (the proof's), signatures not
+   * checked (putChecked checks them). In order: the shape ('invalid'); the text is not exactly
+   * the spelling every computer writes, bridge/roster.ts rosterText ('invalid'); the sender is an
+   * entry ('not_in_roster'); then the order ('conflict'):
    * with none stored, base 0 and a root self-signed by the sender's key; with one, base its
    * length, every stored entry unchanged at its index, and longer. On 'ok' every offer whose key
    * or id is in the roster is dropped.
@@ -111,6 +158,7 @@ export class RosterStore {
   put(senderId: string, senderKey: string, base: number, rosterText: string): PutAnswer {
     const entries = rosterEntries(rosterText)
     if (!entries || !Number.isSafeInteger(base)) return 'invalid'
+    if (rosterText !== canonical(entries)) return 'invalid'
     if (!entries.some((e) => e.id === senderId && e.key === senderKey)) return 'not_in_roster'
     return this.transaction((): PutAnswer => {
       const held = this.stored()

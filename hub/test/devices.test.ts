@@ -322,3 +322,99 @@ describe('audit rows (U-R1A-31B-1)', () => {
     }
   })
 })
+
+describe('(31C-2) per-id proof limit', () => {
+  // 1,201 distinct nonces: the (d) helper has only 256.
+  const nn = (i: number) => {
+    const b = Buffer.alloc(16, 9)
+    b.writeUInt32BE(i, 0)
+    return b.toString('base64url')
+  }
+  const LIMIT = 1200
+  // Thousands of commits: no fsync per commit on these files, so a slow disk (a small Linux VM
+  // right after npm ci) cannot stall a row; what is read back is the same.
+  const fast = (rows: (query: string) => unknown) => rows('PRAGMA synchronous = OFF')
+
+  it('1,200 admits of one id at one instant: ok; the 1,201st: slow, no row; another id ok; at +600,001 ms ok again', async () => {
+    const mod = await import('../src/devices.ts')
+    expect((mod as Record<string, unknown>).MAX_PROOFS_PER_ID).toBe(LIMIT)
+    const { h, clock, rows } = openDevices()
+    fast(rows)
+    const count = (id: string) => Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces WHERE id = ?', id)[0].c)
+    expect(h.devices.admit('alpha', A.publicKey, nn(0), true)).toBe('bound')
+    for (let i = 1; i < LIMIT; i++) expect([i, h.devices.admit('alpha', A.publicKey, nn(i), true)]).toEqual([i, 'ok'])
+    expect(count('alpha')).toBe(LIMIT)
+    expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT), true)).toBe('slow')
+    expect(count('alpha')).toBe(LIMIT)
+    expect(rows('SELECT nonce FROM hub_device_nonces WHERE nonce = ?', nn(LIMIT))).toEqual([])
+    expect(h.devices.admit('beta', B.publicKey, nn(0), true)).toBe('bound')
+    expect(h.devices.admit('beta', B.publicKey, nn(1), true)).toBe('ok')
+    clock.now = T0 + 600_000
+    expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT + 1), true)).toBe('slow')
+    clock.now = T0 + 600_001
+    expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT + 2), true)).toBe('ok')
+    expect(count('alpha')).toBe(1)
+  })
+
+  it('with 1,200 rows a used nonce is still replay and another key still taken; a slow writes no row; the count survives a restart', () => {
+    const file = join(dir, `d${++files}.sqlite`)
+    const { h, restart, rows } = openDevices(file)
+    fast(rows)
+    const all = () => Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces')[0].c)
+    for (let i = 0; i < LIMIT; i++) h.devices.admit('alpha', A.publicKey, nn(i), true)
+    expect(all()).toBe(LIMIT)
+    expect(h.devices.admit('alpha', A.publicKey, nn(5), true)).toBe('replay')
+    expect(h.devices.admit('alpha', B.publicKey, nn(LIMIT + 5), true)).toBe('taken')
+    for (let i = 0; i < 20; i++) expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT + 10 + i), true)).toBe('slow')
+    expect(all()).toBe(LIMIT)
+    restart()
+    expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT + 50), true)).toBe('slow')
+    expect(h.devices.admit('alpha', A.publicKey, nn(3), true)).toBe('replay')
+    expect(all()).toBe(LIMIT)
+  })
+})
+
+describe('audit rows (U-R1A-31C-2 audit): whose allowance a proof spends', () => {
+  const nn = (i: number) => {
+    const b = Buffer.alloc(16, 7)
+    b.writeUInt32BE(i, 0)
+    return b.toString('base64url')
+  }
+
+  it("another key under a bound id is taken and spends nothing of that id's allowance; an unknown id and a full table write no nonce", () => {
+    const { h, rows } = openDevices()
+    rows('PRAGMA synchronous = OFF')
+    const count = (id: string) => Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces WHERE id = ?', id)[0].c)
+    expect(h.devices.admit('victim', A.publicKey, nn(0), true)).toBe('bound')
+    for (let i = 1; i <= 1300; i++) expect([i, h.devices.admit('victim', B.publicKey, nn(i), true)]).toEqual([i, 'taken'])
+    expect(count('victim')).toBe(1)
+    expect(h.devices.admit('victim', A.publicKey, nn(1), true)).toBe('ok')
+    for (let i = 0; i < 50; i++) expect(h.devices.admit(`ghost${i}`, B.publicKey, nn(i), false)).toBe('unknown')
+    expect(Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces')[0].c)).toBe(2)
+    // New ids from one key: 99 more fill the table; past it nothing is bound and nothing is kept.
+    for (let i = 0; i < 99; i++) expect(h.devices.admit(`n${i}`, B.publicKey, nn(i), true)).toBe('bound')
+    for (let i = 0; i < 50; i++) expect(h.devices.admit(`over${i}`, B.publicKey, nn(i), true)).toBe('full')
+    expect(Number(rows('SELECT COUNT(*) AS c FROM hub_devices')[0].c)).toBe(100)
+    expect(Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces')[0].c)).toBe(101)
+  })
+
+  it('the window slides: each proof frees its place 600,001 ms after it was admitted, never sooner', async () => {
+    const { MAX_PROOFS_PER_ID, NONCE_TTL_MS } = await import('../src/devices.ts')
+    const { h, clock, rows } = openDevices()
+    rows('PRAGMA synchronous = OFF')
+    // 600 at T0, 600 at T0 + 300 s.
+    for (let i = 0; i < 600; i++) h.devices.admit('alpha', A.publicKey, nn(i), true)
+    clock.now = T0 + 300_000
+    for (let i = 600; i < MAX_PROOFS_PER_ID; i++) expect(h.devices.admit('alpha', A.publicKey, nn(i), true)).toBe('ok')
+    expect(h.devices.admit('alpha', A.publicKey, nn(5000), true)).toBe('slow')
+    clock.now = T0 + NONCE_TTL_MS
+    expect(h.devices.admit('alpha', A.publicKey, nn(5001), true)).toBe('slow')
+    // The first 600 go; 600 places, no more, until the second half goes.
+    clock.now = T0 + NONCE_TTL_MS + 1
+    for (let i = 0; i < 600; i++) expect(h.devices.admit('alpha', A.publicKey, nn(6000 + i), true)).toBe('ok')
+    expect(h.devices.admit('alpha', A.publicKey, nn(7000), true)).toBe('slow')
+    clock.now = T0 + 300_000 + NONCE_TTL_MS + 1
+    expect(h.devices.admit('alpha', A.publicKey, nn(7001), true)).toBe('ok')
+    expect(Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces WHERE id = ?', 'alpha')[0].c)).toBe(601)
+  })
+})

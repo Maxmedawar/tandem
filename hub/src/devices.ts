@@ -24,6 +24,9 @@
  *     (U-R1B-28/U-R1B-31); the workaround is a new TANDEM_HUB_LINK_ID.
  *   - At most MAX_DEVICES (100) ids.
  *   - A proof is good for ±300 s of the hub's clock, and each nonce once per id.
+ *   - At most MAX_PROOFS_PER_ID (1,200) admitted proofs per id in any NONCE_TTL_MS (600 s), 2 per
+ *     second on average: past it 'slow' (429), nothing written, so the nonce table holds at most
+ *     100 x 1,200 rows. A bound key can still spend its own id's allowance.
  */
 import { slugifyBridgeId } from './bridge-id.ts'
 
@@ -36,6 +39,8 @@ export const MAX_DEVICES = 100
 export const PROOF_WINDOW_MS = 300_000
 /** How long a used nonce is remembered: longer than the window on both sides. */
 export const NONCE_TTL_MS = 600_000
+/** Admitted proofs one id may have in the nonce table (each kept NONCE_TTL_MS). */
+export const MAX_PROOFS_PER_ID = 1200
 
 export interface ProofFields {
   host: string
@@ -156,7 +161,7 @@ export interface DevicesSql {
   exec(query: string, ...bindings: unknown[]): { toArray(): Record<string, unknown>[] }
 }
 
-export type Admit = 'ok' | 'bound' | 'replay' | 'unknown' | 'taken' | 'full'
+export type Admit = 'ok' | 'bound' | 'replay' | 'unknown' | 'taken' | 'full' | 'slow'
 
 export class HubDevices {
   private readonly sql: DevicesSql
@@ -175,8 +180,9 @@ export class HubDevices {
   /**
    * One proof's check and bind, all in one transaction: a used nonce is 'replay'; an id with no
    * key is bound to `key` ('bound') when `mayBind`, else 'unknown' ('full' past MAX_DEVICES); an
-   * id bound to another key is 'taken' and nothing is written. On 'ok' and 'bound' the nonce is
-   * kept for NONCE_TTL_MS.
+   * id bound to another key is 'taken' and nothing is written. An id holding MAX_PROOFS_PER_ID
+   * nonces is 'slow' and nothing is written (a just-bound id holds none). On 'ok' and 'bound' the
+   * nonce is kept for NONCE_TTL_MS.
    */
   admit(id: string, key: string, nonce: string, mayBind: boolean): Admit {
     return this.transaction((): Admit => {
@@ -194,6 +200,7 @@ export class HubDevices {
       } else if (row.key !== key) {
         return 'taken'
       }
+      if (Number(this.sql.exec('SELECT COUNT(*) AS n FROM hub_device_nonces WHERE id = ?', id).toArray()[0].n) >= MAX_PROOFS_PER_ID) return 'slow'
       this.sql.exec('INSERT INTO hub_device_nonces (id, nonce, exp) VALUES (?, ?, ?)', id, nonce, now + NONCE_TTL_MS)
       return result
     })
