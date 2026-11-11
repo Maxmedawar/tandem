@@ -137,7 +137,7 @@ describe("gemini: the built-in harness file", () => {
       "No, suggest changes \\(esc\\)",
     ]);
     expect(h.states?.working).toEqual(["(?i)esc to cancel"]);
-    expect(h.states?.idle).toEqual(["(?m)^(?:│ )?[>*] +Type your message or @path/to/file"]);
+    expect(h.states?.idle).toEqual(["(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file"]);
     expect(h.states?.debounce_ms).toBe(1500);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.hook).toBeUndefined();
@@ -191,6 +191,16 @@ describe("gemini: the built-in harness file", () => {
     const prompt = "│ >   Type your message or @path/to/file";
     expect(text).toContain(prompt);
     expect(readScreen(builtinGemini(), text.replace(prompt, "│ > hello"))).not.toBe("idle");
+  });
+
+  // 0.38.2 InputPrompt: a Box with paddingX 1 and borderLeft only when ui.useBackgroundColor is
+  // false (its default is true), so the default prompt line starts with a space, not `│`.
+  it.each([" >   ", " *   ", "│ *   "])("the prompt line %j then the placeholder reads idle (default ui.useBackgroundColor, yolo)", (prefix) => {
+    const text = screen(IDLE_SRC);
+    const prompt = "│ >   Type your message or @path/to/file";
+    expect(text).toContain(prompt);
+    expect(readScreen(builtinGemini(), text.replace(prompt, `${prefix}Type your message or @path/to/file`))).toBe("idle");
+    expect(readScreen(builtinGemini(), text.replace(prompt, `${prefix.trimEnd()} hello`))).not.toBe("idle");
   });
 
   it("never idle: every approval and unknown screen and every other agent's idle screen in the screens folder", () => {
