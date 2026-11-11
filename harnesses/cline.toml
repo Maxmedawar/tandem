@@ -43,10 +43,12 @@ waiting_for_approval = [
   'Cline Hub update required[^\n]*(?:\n[^\n]*){1,24}?Press Enter to update now, Esc to keep the Hub running',
   '(?:Try ClinePass|Introducing Cline Desktop)[^\n]*(?:\n[^\n]*){1,24}?Press Enter to open, any other key to close',
 ]
-# U-R1B-ANCHOR: a spinner line counts only with at most one `❯` row (the input bar in use; a row may
-# start with spaces or `│`) after it to the screen end. Not tied by distance: a long reply can push
-# the spinner far up (CLINE audit R2).
-working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to cancel\)[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*(?:\n[ \t│]*❯[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*)?\z', '(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] [^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*(?:\n[ \t│]*❯[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*)?\z']
+# U-R1B-ANCHOR: a spinner line counts only with at most one input bar after it to the screen end: a
+# `❯` row right under a rule of 20 or more `─` (a row may start with spaces or `│`). The bar stays on
+# screen while a turn runs (3.0.74 chat view), and a `❯` row with no rule above it (a reply or
+# reasoning line, a selected queued message) is not a bar. Not tied by distance: a long reply can
+# push the spinner far up (CLINE audit R2).
+working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to cancel\)[^\n]*(?:\n[ \t│]*(?:[^ \t│─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?)*(?:(?:\n[ \t│]*─{20}[^\n]*)+\n[ \t│]*(?:[^ \t│❯─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?(?:\n[ \t│]*(?:[^ \t│─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?)*)*(?:(?:\n[ \t│]*─{20}[^\n]*)+\n[ \t│]*❯[^\n]*(?:\n[ \t│]*(?:[^ \t│─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?)*(?:(?:\n[ \t│]*─{20}[^\n]*)+\n[ \t│]*(?:[^ \t│❯─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?(?:\n[ \t│]*(?:[^ \t│─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?)*)*)?(?:\n[ \t│]*─{20}[^\n]*)*\z', '(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] [^\n]*(?:\n[ \t│]*(?:[^ \t│─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?)*(?:(?:\n[ \t│]*─{20}[^\n]*)+\n[ \t│]*(?:[^ \t│❯─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?(?:\n[ \t│]*(?:[^ \t│─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?)*)*(?:(?:\n[ \t│]*─{20}[^\n]*)+\n[ \t│]*❯[^\n]*(?:\n[ \t│]*(?:[^ \t│─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?)*(?:(?:\n[ \t│]*─{20}[^\n]*)+\n[ \t│]*(?:[^ \t│❯─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?(?:\n[ \t│]*(?:[^ \t│─\n][^\n]*|─{1,19}(?:[^─\n][^\n]*)?)?)*)*)?(?:\n[ \t│]*─{20}[^\n]*)*\z']
 debounce_ms = 5000
 # U-R1B-ANCHOR: the placeholder row counts only when no later row starts with `❯` (after spaces or `│`)
 # to the screen end.

@@ -246,3 +246,101 @@ describe("(live) grok: an approval marker above the composer box still reads wai
     }
   });
 });
+
+// Audit (U-R1B-ANCHOR-2): screens built from each program's own UI code (read as text, never run;
+// none is a capture). A real working or approval screen must keep its state: read as idle with
+// an empty prompt, an agent's text would be typed into a busy agent or an open decision.
+describe("(live) real layouts of pi, cursor-agent, copilot, cline and droid keep their state", () => {
+  const R = "─".repeat(100);
+  // pi 0.79.7: chat, queued messages, loader (a blank row, ` ⠋ Working...`), widgets above the
+  // editor (a blank row, then up to 10 lines and a truncation line per widget), editor, footer.
+  const piFoot = ["~/work (main)", "↑4.7k ↓44 R3.8k $0.009 (sub) 1.7%/272k (auto)"];
+  const pi = (between: string[], editor: string[] = [""]) => [" I will look at the module now.", "", "", " ⠋ Working...", ...between, R, ...editor, R, ...piFoot];
+  const widget = (n: number) => ["", ...Array.from({ length: n }, (_, i) => ` widget line ${i + 1}`)];
+  // cline 3.0.74: the input bar (a rule, the `❯` row, a rule) stays under the transcript while a
+  // turn runs; a queued-messages box sits above it; a reply or reasoning line may start with `❯`.
+  const bar = (text = "Ask anything...") => ["─".repeat(80), `❯ ${text}`, "─".repeat(80), " ███░░░░ (1,024) $0.01   ○ Plan ● Act (Tab)"];
+  const queued = (row: string, hint: string) => ["╭" + "─".repeat(78) + "╮", "│ Queued messages:".padEnd(79) + "│", `│ ${row}`.padEnd(79) + "│", `│ ${hint}`.padEnd(79) + "│", "╰" + "─".repeat(78) + "╯"];
+  // cursor-agent 2026.11.11: an open decision (a rule, the preview, the title, option rows that
+  // each end with a key hint, the selected one after `→ `) hides the prompt bar and its footer.
+  // The bar has half-block edge rows only in a listed terminal with a UTF-8 locale; elsewhere
+  // (tmux, Apple Terminal) it is the `→` row between blank rows.
+  const decision = (preview: string[], title: string, options: string[], under: string[] = []) => ["  Done: the change is in place.", "", " " + "─".repeat(78), ...preview.map((l) => "  " + l), "", "  " + title, ...options.map((o) => "   " + o), "", ...under];
+  const shell = ["  Run (once) (y)", "  Add Shell(npm) to allowlist? (tab)", "  Run Everything (shift+tab)", "  Skip & tell the agent what to do instead (esc or n)"];
+  const pick = (options: string[], at: number) => options.map((o, i) => (i === at ? "→ " + o.slice(2) : o));
+  const write = ["  Proceed (y)", "  Reject & propose changes (esc or n or p)", "  Add Write(src/a.ts) to allowlist? (tab)", "  Run Everything (shift+tab)"];
+  const plainBar = (inner: string) => ["  Done: the change is in place.", "", "", "  " + inner, "", "   Composer 2 · 12%", "   ~/work · main"];
+  const blockBar = (inner: string) => ["  Done: the change is in place.", "", " " + "▄".repeat(78), "  " + inner, " " + "▀".repeat(78), "   Composer 2 · 12%", "   ~/work · main"];
+  // copilot 1.0.109: a permission, path, URL, extension or plan dialog is drawn instead of the
+  // composer, its status row and its hint row; a status line or a notice may follow it.
+  const box = (rows: string[]) => ["╭" + "─".repeat(70) + "╮", ...rows.map((r) => "│ " + r.padEnd(69) + "│"), "╰" + "─".repeat(70) + "╯"];
+  const rail = (text: string) => [" ~/work [⎇ main]" + " ".repeat(30) + "claude-sonnet-4.5", "╻" + "▄".repeat(70), "┃ ❯ " + text, "╹" + "▀".repeat(70)];
+  // droid 1.8.0: while a turn runs the input box shows its steer hint.
+  const droidBox = ["╭" + "─".repeat(70) + "╮", "│ > Enter to steer · Ctrl+Enter to queue".padEnd(71) + "│", "╰" + "─".repeat(70) + "╯", "Auto (Off)  claude-sonnet-4-6" + " ".repeat(30) + "? for help"];
+
+  const LIVE: [string, string, string[], StateName][] = [
+    ["pi", "the loader, a blank row, the editor", pi([""]), "working"],
+    ["pi", "a 3-line widget above the editor", pi(widget(3)), "working"],
+    ["pi", "a 4-line widget above the editor", pi(widget(4)), "working"],
+    ["pi", "a full widget (10 lines and its truncation line)", pi(widget(11)), "working"],
+    ["pi", "typed steering text and a full widget", pi(widget(11), ["also fix the", "other test"]), "working"],
+    ["cline", "a streamed reply with a line that starts with ❯", [" ❯ hello", "", " ⠹ Run this:", "   ❯ npm test", "   then check the log", "", ...bar()], "working"],
+    ["cline", "streamed reasoning with a line that starts with ❯", [" ❯ hello", "", " ⠹ Thinking...", "   ❯ maybe run the tests first", "", ...bar()], "working"],
+    ["cline", "a selected row in the queued-messages box", [" ❯ hello", "", " ⠹ Here is the plan", "", ...queued(" ❯ also fix lint", "↑/↓ navigate, Enter steer, Tab edit, Esc cancels turn"), ...bar()], "working"],
+    ["cline", "a steering row in the queued-messages box, text typed in the bar", [" ❯ hello", "", " * Here is the plan", "", ...queued(" ⠹ also fix lint", "Enter with empty input to steer first · ↑ select or edit"), ...bar("and the docs")], "working"],
+    ["cline", "a steering message in the transcript, the thinking line under it", [" ❯ hello", "", " * Here is the plan", "", " ❯ also fix lint", "", " ⠙ Thinking... (esc to cancel)", "", ...bar()], "working"],
+    ["cursor-agent", "a command decision, the first row selected", decision(["$  npm test in ~/work"], "Run this command?", pick(shell, 0)), "waiting_for_approval"],
+    ["cursor-agent", "a command decision, the allowlist row selected, lines under it", decision(["$  npm test in ~/work"], "Run this command?", pick(shell, 1), [" ".repeat(50) + "Goal active (12s)", " ".repeat(40) + "ctrl+r to review changed files", "", "  2 background jobs"]), "waiting_for_approval"],
+    ["cursor-agent", "a command decision, the last row selected", decision(["$  npm test in ~/work"], "Run this command?", pick(shell, 3)), "waiting_for_approval"],
+    ["cursor-agent", "two decisions, the pager footer", decision(["Approval 1 of 2", "", "$  npm test in ~/work"], "Run this command?", pick(shell, 2), ["  ←/→ to switch approval", ""]), "waiting_for_approval"],
+    ["cursor-agent", "a write decision, the first row selected", decision(["src/a.ts +1 -1", "─".repeat(60), "  1 - old", "  1 + new"], "Write to this file?", pick(write, 0)), "waiting_for_approval"],
+    ["cursor-agent", "a write decision, the allowlist row selected", decision(["src/a.ts +1 -1"], "Write to this file?", pick(write, 2)), "waiting_for_approval"],
+    ["cursor-agent", "a write decision, the last row selected", decision(["src/a.ts +1 -1"], "Write to this file?", pick(write, 3)), "waiting_for_approval"],
+    ["cursor-agent", "a delete decision, Keep selected", decision(["Delete file: src/a.ts"], "Delete this file?", pick(["  Delete (y)", "  Keep (n)"], 1)), "waiting_for_approval"],
+    ["cursor-agent", "a tool decision, the propose row selected", decision(["server: tool"], "Run this MCP tool?", pick(["  Run (once) (y)", "  Allowlist MCP Tool (tab)", "  Reject & propose changes (p)", "  Skip (esc or n)"], 2)), "waiting_for_approval"],
+    ["cursor-agent", "a running turn, the bar with no edge rows", plainBar("→ Add a follow-up" + " ".repeat(40) + "ctrl+c to stop"), "working"],
+    ["cursor-agent", "a running turn, the bar with half-block edge rows", blockBar("→ Add a follow-up" + " ".repeat(40) + "ctrl+c to stop"), "working"],
+    ["copilot", "a command dialog, a status line and a notice under it", ["● Running the tests now.", "", "Permission request (2 remaining)", "", ...box(["Run shell command", "", "$ npm test", "", "Do you want to run this command?", "", "❯ 1. Yes", "  2. Yes, and approve `npm test` for the rest of the running session", "  3. No, and tell Copilot what to do differently (Esc to stop)"]), " main ✓", " Update available"], "waiting_for_approval"],
+    ["copilot", "an assisted dialog", ["● Running the tests now.", "", ...box(["Run shell command", "$ npm test", "What would you like to do?", "❯ 1. Yes", "  2. No (Esc)", "", "↑↓ navigate · enter select · ctrl+e explain"])], "waiting_for_approval"],
+    ["copilot", "an extension dialog", ["● Loading.", "", ...box(['Extension "foo" wants elevated permissions', "It can observe tool calls.", "❯ 1. Yes", "  2. No (Esc)"]), " main ✓"], "waiting_for_approval"],
+    ["copilot", "a plan dialog, a status line under it", ["● Planned.", "", "Plan Ready for Review", "", "  1. Accept plan and continue in Interactive execution mode", "  2. Accept plan and continue in Autopilot execution mode", "❯ 3. Suggest changes", "", " main ✓"], "waiting_for_approval"],
+    ["copilot", "a running turn: the status row, the composer, the busy row under it", ["● Done.", "", ...rail(""), " ◐ Thinking  esc interrupt"], "working"],
+    ["copilot", "a running turn with typed text and a status line", ["● Done.", "", ...rail("also do x"), " ◉ Executing  ctrl+c clear input · ctrl+q enqueue", " main ✓"], "working"],
+    ["droid", "a running turn: the status line, the steer-hint box, the footer", ["⛬ ok", "", "⠋ Thinking... (Press ESC to stop)", "", ...droidBox], "working"],
+    ["droid", "a running turn with a banner box under the footer", ["⠋ Executing... (Press ESC to stop)", " ☐ a todo", "", ...droidBox, "╭" + "─".repeat(40) + "╮", "│ Update available v1.9.0".padEnd(41) + "│", "╰" + "─".repeat(40) + "╯"], "working"],
+  ];
+  it.each(LIVE)("%s: %s", (name, _label, lines, want) => {
+    const h = harnesses.get(name)!;
+    const state = readScreen(h, lines.join("\n"));
+    expect(state).toBe(want);
+    expect(decideInput("agent", "type", state)).toBe("held");
+    expect(decideInput("owner", "type", state)).toBe(want === "waiting_for_approval" ? "refused" : "enter");
+  });
+
+  // The other direction, on the real prompt layouts no fixture holds: a quoted approval or busy
+  // line above the real prompt reads as that prompt alone does.
+  const cursorApproval = linesOf(read("cursor-screens/waiting_for_approval-src.txt"));
+  const cursorWorking = linesOf(read("cursor-screens/working-src.txt"));
+  const QUOTED: [string, string, string[], string[]][] = [
+    ["cursor-agent", "an approval above the empty bar with no edge rows", cursorApproval, plainBar("→ Add a follow-up")],
+    ["cursor-agent", "an approval above typed text in the bar with no edge rows", cursorApproval, plainBar("→ " + T)],
+    ["cursor-agent", "an approval above the empty bar with half-block edge rows", cursorApproval, blockBar("→ Add a follow-up")],
+    ["cursor-agent", "a decision as drawn above the empty bar with no edge rows", decision(["$  npm test in ~/work"], "Run this command?", pick(shell, 0)), plainBar("→ Add a follow-up")],
+    ["cursor-agent", "a write decision as drawn above typed text in the bar with no edge rows", decision(["src/a.ts +1 -1"], "Write to this file?", pick(write, 2)), plainBar("→ " + T)],
+    ["cursor-agent", "a busy bar above the empty bar with no edge rows", cursorWorking, plainBar("→ Add a follow-up")],
+    ["pi", "a busy screen with its editor above the idle editor", pi(widget(11)), linesOf(read("pi-screens/idle-doc.txt"))],
+    ["cline", "a busy screen with its bar above the idle bar", [" ⠹ Run this:", "   ❯ npm test", "", ...bar()], [" * Done.", "", ...bar()]],
+    ["cline", "a busy screen with its bar above typed text in the bar", [" ⠹ Run this:", "   ❯ npm test", "", ...bar()], [" * Done.", "", ...bar(T)]],
+  ];
+  it.each(QUOTED)("%s: quoted %s", (name, _label, block, bottom) => {
+    const h = harnesses.get(name)!;
+    const want = readScreen(h, bottom.join("\n"));
+    expect(want).not.toBe("waiting_for_approval");
+    expect(want).not.toBe("working");
+    for (const b of [block, block.map((l) => "  " + l)]) {
+      const q = [...b, "  That is the screen I saw.", "", ...bottom].join("\n");
+      expect(readScreen(h, q)).toBe(want);
+      if (want === "idle") expect(isPromptEmpty(h, q)).toBe(isPromptEmpty(h, bottom.join("\n")));
+    }
+  });
+});

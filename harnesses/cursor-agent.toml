@@ -21,8 +21,11 @@ delivery = "notice"
 
 [states]
 # U-R1B-ANCHOR: an open decision hides the prompt bar (2026.11.11 UI code, U-R1B-CURSOR audit), so an
-# approval row counts only when no bar or box opens after it (no `┌` or `▄` row) to the screen end.
-waiting_for_approval = ['Run (?:outside sandbox )?\(once\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄\n][^\n]*)?)*\z', '\(esc or n(?: or p)?\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄\n][^\n]*)?)*\z', 'Keep \(n\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄\n][^\n]*)?)*\z']
+# approval row counts only when no bar or box opens after it (no `┌` or `▄` row) and no prompt row
+# follows it to the screen end. The bar has no edge rows in tmux or Apple Terminal, so the prompt row
+# is told by its text: a `→` row that does not end with `)` (a selected option row ends with its key
+# hint, like `(tab)`).
+waiting_for_approval = ['Run (?:outside sandbox )?\(once\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄→\n][^\n]*|→[^\n]*\)[ \t]*)?)*\z', '\(esc or n(?: or p)?\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄→\n][^\n]*|→[^\n]*\)[ \t]*)?)*\z', 'Keep \(n\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄→\n][^\n]*|→[^\n]*\)[ \t]*)?)*\z']
 # U-R1B-ANCHOR: the stop hint and the placeholder count only on the prompt row in use: no later row
 # opens a bar or box (`┌`, `▄`) or is a prompt row (`│`, `→`) to the screen end, like empty_prompt.
 working = ['(?i)ctrl\+c to stop[^\n]*(?:\n[ \t]*(?:[^ \t│→┌▄\n][^\n]*)?)*\z']
