@@ -172,7 +172,8 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
         to_name TEXT NOT NULL, level TEXT NOT NULL, text TEXT NOT NULL, sent_at_ms INTEGER NOT NULL,
         reply_by_ms INTEGER, state TEXT NOT NULL, state_at_ms INTEGER NOT NULL);
       CREATE INDEX IF NOT EXISTS mail_inbox ON mail (to_name, state, seq);
-      CREATE TABLE IF NOT EXISTS mail_notice (to_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, at_ms INTEGER NOT NULL)`)
+      CREATE TABLE IF NOT EXISTS mail_notice (to_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, at_ms INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS mail_interrupt (to_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, at_ms INTEGER NOT NULL)`)
   } catch (e) {
     db.close()
     throw e
@@ -194,6 +195,10 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   const queuedTop = db.prepare(`SELECT count(*) AS n, max(seq) AS top FROM mail WHERE to_name = ? AND state = 'queued'`)
   const noticedSeq = db.prepare(`SELECT seq FROM mail_notice WHERE to_name = ?`)
   const noticedSet = db.prepare(`INSERT INTO mail_notice (to_name, seq, at_ms) VALUES (?, ?, ?)
+    ON CONFLICT (to_name) DO UPDATE SET seq = excluded.seq, at_ms = excluded.at_ms`)
+  const interruptTop = db.prepare(`SELECT max(seq) AS top FROM mail WHERE to_name = ? AND state = 'queued' AND level = 'interrupt'`)
+  const interruptedSeq = db.prepare(`SELECT seq FROM mail_interrupt WHERE to_name = ?`)
+  const interruptedSet = db.prepare(`INSERT INTO mail_interrupt (to_name, seq, at_ms) VALUES (?, ?, ?)
     ON CONFLICT (to_name) DO UPDATE SET seq = excluded.seq, at_ms = excluded.at_ms`)
 
   /** One audit line per send or refusal; the text becomes a byte count there. */
@@ -266,6 +271,26 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
           noticedSet.run(to, Number(top), now())
           out = Number(n)
         }
+        db.exec('COMMIT')
+        return out
+      } catch (e) {
+        db.exec('ROLLBACK')
+        throw e
+      }
+    },
+    /**
+     * True when this inbox holds a queued Interrupt message newer than the last key pressed for it
+     * (recorded here), else false with nothing written: one interrupt key per newest Interrupt
+     * message, across every process. Who may send one was checked at send (interrupt_from).
+     */
+    interruptFor(to: string): boolean {
+      checkName(to)
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        const top = (interruptTop.get(to) as { top: number | null }).top
+        const stored = Number((interruptedSeq.get(to) as { seq: number } | undefined)?.seq ?? 0)
+        const out = top !== null && Number(top) > stored
+        if (out) interruptedSet.run(to, Number(top), now())
         db.exec('COMMIT')
         return out
       } catch (e) {

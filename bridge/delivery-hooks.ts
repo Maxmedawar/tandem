@@ -168,6 +168,18 @@ export function removeHook(name: string): void {
   rmSync(turnFile(dir, name), { force: true })
 }
 
+/** Removes the session's turn file (Tandem pressed its interrupt key: no Stop hook runs). A bad name or a refused folder: nothing. */
+export function clearTurn(name: string): void {
+  try {
+    if (!NAME.test(name)) return
+    const dir = join(tandemHome(), 'delivery')
+    checkDir(dir)
+    rmSync(turnFile(dir, name), { force: true })
+  } catch {
+    /* nothing to clear */
+  }
+}
+
 /**
  * The turn state the session's hooks last wrote; undefined when there is none, it is a symlink,
  * another user's or not readable, or its recorded time is over 15 minutes old (or ahead of now), so

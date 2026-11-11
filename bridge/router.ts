@@ -74,6 +74,8 @@ import {
   registerLive,
   unregisterLive,
   listSessions,
+  liveSessionNames,
+  listLiveTmuxSessions,
 } from './sessions.ts'
 import * as relay from './relay.ts'
 import { emitCompletion, summarize } from './events.ts'
@@ -263,6 +265,16 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
   if (isRelayOwned(name)) {
     audit({ route: 'POST /sessions/open', name, denied: 'relay-owned' })
     return err(409, `session name "${name}" is reserved for the relay; use the relay routes`)
+  }
+  // A name equal to an open one ignoring case would share its delivery and transcript files on a
+  // case-insensitive disk. The tmux list is read first, so the check below and the claim in
+  // `opening` run with no await between them (two opens started together: one wins).
+  const tmuxNames = (await listLiveTmuxSessions().catch(() => [])).map((s) => s.name)
+  const lower = name.toLowerCase()
+  const other = [...liveSessionNames(), ...opening.keys(), ...tmuxNames].find((n) => n !== name && n.toLowerCase() === lower)
+  if (other !== undefined) {
+    audit({ route: 'POST /sessions/open', name, denied: 'name-case' })
+    return err(409, `session name "${name}" differs only in case from session "${other}"; use another name`)
   }
 
   // One open per name at a time: every open path checks the name (live, tmux) and registers it
