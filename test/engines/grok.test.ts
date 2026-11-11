@@ -144,7 +144,8 @@ describe("grok: the built-in harness file", () => {
     ["grok-waiting_for_approval-3.txt", "waiting_for_approval"],
     ["grok-unknown-signin.txt", "unknown"],
     // Real grok 1.0.77 screens recorded on mini by test/conformance/grok.live.test.ts.
-    ["grok-waiting_for_approval-real.txt", "waiting_for_approval"],
+    // The folder-trust menu (U-R1A-18B keeps it in test/fixtures/dialogs/, where warmup answers it).
+    ["../dialogs/grok-trust-real.txt", "waiting_for_approval"],
     ["grok-idle-real.txt", "idle"],
     // After interrupt(): grok cancels the turn and puts the prompt back in the composer.
     ["grok-idle-real2.txt", "idle"],
@@ -156,7 +157,7 @@ describe("grok: the built-in harness file", () => {
 
   it("never idle: every waiting_for_approval and unknown fixture of every agent, and the recorded trust menu", () => {
     const files = readdirSync(SCREENS).filter((f) => /-(waiting_for_approval|unknown)-[a-z0-9]+\.txt$/.test(f));
-    expect(files).toContain("grok-waiting_for_approval-real.txt");
+    files.push("../dialogs/grok-trust-real.txt");
     for (const f of files) expect(readScreen(builtinGrok(), readFileSync(join(SCREENS, f), "utf8")), f).not.toBe("idle");
   });
 
