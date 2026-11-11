@@ -44,6 +44,7 @@ import {
 } from './tunnel-routing'
 import { HubQueue, type PutResult, type QueuedCopy, type QueueMessage } from './queue'
 import { HubDevices, PROOF_WINDOW_MS, parseProof, verifyProof, type ProofContext } from './devices'
+import { RosterStore, type OfferAnswer, type PutAnswer } from './roster-store'
 import type { Env } from './types'
 import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
@@ -146,13 +147,14 @@ export class TunnelDO extends DurableObject<Env> {
    * The one check of a `tandem-proof` header for both link routes (index.ts), in this order:
    * no header or a malformed one, a `queryId` that is not exactly the proof's id, a ts more than
    * PROOF_WINDOW_MS from the hub's clock, or a bad signature: 401. Then, synchronously after the
-   * signature check so a check-and-bind never interleaves with another: admit. 'ok'/'bound' 200,
-   * 'replay'/'unknown' 401, 'taken' 409, 'full' 503.
+   * signature check so a check-and-bind never interleaves with another: admit. 'ok'/'bound' 200
+   * (with the proof's id and key: the roster routes act for that computer), 'replay'/'unknown'
+   * 401, 'taken' 409, 'full' 503.
    */
   async checkDevice(
     value: string | null,
     ctx: ProofContext & { queryId?: string; mayBind: boolean },
-  ): Promise<{ status: 200 | 401 | 409 | 503 }> {
+  ): Promise<{ status: 200; id: string; key: string } | { status: 401 | 409 | 503 }> {
     const proof = parseProof(value)
     if (!proof) return { status: 401 }
     if (ctx.queryId !== undefined && ctx.queryId !== proof.id) return { status: 401 }
@@ -162,7 +164,7 @@ export class TunnelDO extends DurableObject<Env> {
     switch (this.hubDevices().admit(proof.id, proof.key, proof.nonce, ctx.mayBind)) {
       case 'ok':
       case 'bound':
-        return { status: 200 }
+        return { status: 200, id: proof.id, key: proof.key }
       case 'taken':
         return { status: 409 }
       case 'full':
@@ -170,6 +172,32 @@ export class TunnelDO extends DurableObject<Env> {
       default:
         return { status: 401 }
     }
+  }
+
+  /* ---- The owner's roster and the pairing offers (./roster-store; routes in index.ts) ---- */
+
+  private rosters?: RosterStore
+
+  private rosterStore(): RosterStore {
+    return (this.rosters ??= new RosterStore(this.ctx.storage.sql, Date.now, (fn) => this.ctx.storage.transactionSync(fn)))
+  }
+
+  rosterGet(): { len: number; roster: string } | undefined {
+    return this.rosterStore().get()
+  }
+
+  /** The store's answer and the length it holds after it (0 when none). */
+  rosterPut(senderId: string, senderKey: string, base: number, rosterText: string): { answer: PutAnswer; len: number } {
+    const answer = this.rosterStore().put(senderId, senderKey, base, rosterText)
+    return { answer, len: this.rosterStore().get()?.len ?? 0 }
+  }
+
+  rosterPostOffer(senderId: string, senderKey: string, offerText: string): OfferAnswer {
+    return this.rosterStore().postOffer(senderId, senderKey, offerText)
+  }
+
+  rosterOffers(): string[] {
+    return this.rosterStore().offers()
   }
 
   /* ---- Mac side: accept the bridge's outbound WebSocket ---- */

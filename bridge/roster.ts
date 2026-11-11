@@ -307,7 +307,7 @@ export function makeOffer(key: DeviceKey, id: string, now: number = Date.now()):
   return { v: 1, ...head, sig: key.sign(offerText(head)) }
 }
 
-/** Keep an offer for the owner to compare; returns its fingerprint. */
+/** Keep an offer for the owner to compare (after a sweep, so stale offers never fill the slots); returns its fingerprint. */
 export function receiveOffer(raw: unknown, now: number = Date.now()): string {
   const offer = checkOffer(raw)
   if (!fresh(offer, now)) throw new RosterError('time')
@@ -315,6 +315,7 @@ export function receiveOffer(raw: unknown, now: number = Date.now()): string {
   return withLock((dir) => {
     const offers = join(dir, 'offers')
     checkDir(offers, true)
+    sweepIn(dir, offers, now)
     const path = join(offers, `${fingerprint}.json`)
     const waiting = readdirSync(offers).filter((f) => f.endsWith('.json'))
     if (!waiting.includes(`${fingerprint}.json`) && waiting.length >= MAX_OFFERS) throw new RosterError('full')
@@ -334,6 +335,56 @@ function offerAt(offers: string, fingerprint: string): Offer | undefined {
     if (e instanceof RosterError) throw new RosterError(e.reason, path)
     throw e
   }
+}
+
+const OFFER_FILE = /^[0-9a-f]{16}\.json$/
+
+/**
+ * Remove, from the checked folder `offers`, each waiting offer that is not fresh or whose key or
+ * id is already in roster.json (it can never be trusted). Every offer is read (and checked) before
+ * the roster, so a refused file stops the sweep with its own path. Returns the count removed.
+ */
+function sweepIn(dir: string, offers: string, now: number): number {
+  const waiting = readdirSync(offers).filter((f) => OFFER_FILE.test(f)).map((f) => ({ f, offer: offerAt(offers, f.slice(0, 16)) }))
+  if (waiting.length === 0) return 0
+  const entries = rosterIn(dir) ?? []
+  let removed = 0
+  for (const { f, offer } of waiting) {
+    if (!offer) continue
+    if (fresh(offer, now) && !entries.some((e) => e.key === offer.key || e.id === offer.id)) continue
+    unlinkSync(join(offers, f))
+    removed++
+  }
+  return removed
+}
+
+/** Sweep the waiting offers (see sweepIn); returns the count removed. */
+export function sweepOffers(now: number = Date.now()): number {
+  return withLock((dir) => {
+    const offers = join(dir, 'offers')
+    return checkDir(offers, false) ? sweepIn(dir, offers, now) : 0
+  })
+}
+
+/** Remove every waiting offer; returns the count. roster.json is never touched. */
+export function clearOffers(): number {
+  return withLock((dir) => {
+    const offers = join(dir, 'offers')
+    if (!checkDir(offers, false)) return 0
+    const names = readdirSync(offers).filter((f) => f.endsWith('.json'))
+    for (const f of names) unlinkSync(join(offers, f))
+    return names.length
+  })
+}
+
+/** Remove pending.json; true when one was there. roster.json is never touched. */
+export function clearPending(): boolean {
+  return withLock((dir) => {
+    const path = join(dir, 'pending.json')
+    if (!lstatSync(path, { throwIfNoEntry: false })) return false
+    unlinkSync(path)
+    return true
+  })
 }
 
 /** The offers waiting, by id and fingerprint. */
@@ -374,21 +425,59 @@ export function trustOffer(key: DeviceKey, fingerprint: string, now: number = Da
 const same = (a: Entry, b: Entry) => JSON.stringify(a) === JSON.stringify(b)
 
 /**
- * Take a roster from another computer. With a roster here: only a longer one with this one as its
- * exact prefix ('updated'); the same is 'same', a shorter one 'stale', another branch 'fork'.
- * Without one: kept as pending.json when it holds this computer's key and id ('pending').
+ * Which of two different entries at a fork point wins (U-R1A-31B-2): the lower fingerprint of
+ * the signer, then of the key, then the lower sig (plain string order). Every computer applies
+ * the same rule, so two that trusted a new computer at once end on one roster.
  */
-export function receiveRoster(raw: unknown): 'updated' | 'same' | 'pending' {
+export function forkWinner(a: Entry, b: Entry): 'a' | 'b' {
+  const order: [string, string][] = [[fingerprintOf(a.signer), fingerprintOf(b.signer)], [fingerprintOf(a.key), fingerprintOf(b.key)], [a.sig, b.sig]]
+  for (const [x, y] of order) if (x !== y) return x < y ? 'a' : 'b'
+  return 'a'
+}
+
+/**
+ * Take a roster from another computer. With a roster here, the incoming one must verify under
+ * this roster's root (every refusal of verifyRoster stands); then: the same is 'same', a longer
+ * one with this one as its exact prefix 'updated', a strict prefix of this one 'stale'. Two
+ * branches: at the fork point k, forkWinner of the two entries decides (`from` 'hub': the
+ * incoming one always wins, the hub keeps one order and accepts only an extension of it). This
+ * one wins: 'kept', nothing written. The incoming one wins: it must hold this computer's key and
+ * id ('fork' otherwise, nothing written: its signer re-signs it later); this computer's own
+ * entries after k whose key and id are both missing from it are signed again on its end, and the
+ * whole is verified again ('rebased'). Entries after k signed by another computer are dropped
+ * here: their signer re-signs them when it applies the same rule.
+ * Without a roster here: kept as pending.json when it holds this computer's key and id ('pending').
+ */
+export function receiveRoster(raw: unknown, now: number = Date.now(), from: 'peer' | 'hub' = 'peer'): 'updated' | 'same' | 'pending' | 'kept' | 'rebased' {
+  if (!isTime(now)) throw new RosterError('shape')
   return withLock((dir) => {
     const local = rosterIn(dir)
     if (local) {
-      const next = verifyRoster(raw, local[0].key)
-      if (!local.every((e, i) => next[i] && same(e, next[i]))) {
-        throw new RosterError(next.length < local.length && next.every((e, i) => same(e, local[i])) ? 'stale' : 'fork')
+      const root = local[0].key
+      const next = verifyRoster(raw, root)
+      const both = Math.min(local.length, next.length)
+      let k = 0
+      while (k < both && same(local[k], next[k])) k++
+      if (k === both) {
+        if (next.length === local.length) return 'same'
+        if (next.length < local.length) throw new RosterError('stale')
+        writeAtomic(join(dir, 'roster.json'), rosterText(next))
+        return 'updated'
       }
-      if (next.length === local.length) return 'same'
-      writeAtomic(join(dir, 'roster.json'), rosterText(next))
-      return 'updated'
+      if (from !== 'hub' && forkWinner(local[k], next[k]) === 'a') return 'kept'
+      const key = openDeviceKey()
+      const id = thisId()
+      if (!next.some((e) => e.key === key.publicKey && e.id === id)) throw new RosterError('fork')
+      const out = [...next]
+      for (const e of local.slice(k)) {
+        if (e.signer !== key.publicKey || out.some((o) => o.key === e.key || o.id === e.id)) continue
+        const last = out[out.length - 1]
+        const head = { seq: out.length, id: e.id, key: e.key, signer: key.publicKey, ts: Math.max(now, last.ts), prev: sha256(entryText(last)) }
+        out.push({ ...head, sig: key.sign(entryText(head)) })
+      }
+      const rebased = verifyRoster(rosterText(out), root)
+      writeAtomic(join(dir, 'roster.json'), rosterText(rebased))
+      return 'rebased'
     }
     const next = verifyRoster(raw)
     const me = openDeviceKey().publicKey
@@ -421,9 +510,9 @@ export function joinRoster(key: DeviceKey, signerFingerprint: string): Entry[] {
   })
 }
 
-// ---- CLI (packaging/tandem: fingerprint, roster, roster init, trust <fingerprint>) ----
+// ---- CLI (packaging/tandem: fingerprint, roster, roster init, roster clear, trust <fingerprint>; through bridge/roster-hub.ts) ----
 
-const USAGE = 'usage: tandem fingerprint | tandem roster | tandem roster init | tandem trust <fingerprint>\n'
+const USAGE = 'usage: tandem fingerprint | tandem roster | tandem roster init | tandem roster clear | tandem trust <fingerprint>\n'
 
 export function main(args: string[]): number {
   const say = (s: string) => process.stdout.write(s + '\n')
@@ -447,6 +536,11 @@ export function main(args: string[]): number {
       say(`roster started: ${id} ${key.fingerprint}`)
       return 0
     }
+    if (command === 'roster' && rest.length === 1 && rest[0] === 'clear') {
+      const n = clearOffers()
+      say(`cleared ${n} waiting offers; ${clearPending() ? 'pending join removed' : 'no pending join'}`)
+      return 0
+    }
     if (command === 'trust' && rest.length === 1) {
       const key = openDeviceKey()
       const dir = rosterDir()
@@ -456,7 +550,7 @@ export function main(args: string[]): number {
         say(`trusted ${t.id} ${t.fingerprint}. On ${t.id} run: tandem trust ${key.fingerprint}`)
         return 0
       }
-      if (!has('pending.json')) throw new RosterError('no roster and no pending join (hub transport is U-R1A-31B)')
+      if (!has('pending.json')) throw new RosterError('no roster and no pending join (set TANDEM_HUB_LINK_URL to fetch one from the hub)')
       joinRoster(key, rest[0])
       say(`joined the roster signed by ${rest[0]}`)
       return 0

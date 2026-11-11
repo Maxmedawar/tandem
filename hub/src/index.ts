@@ -18,6 +18,10 @@
  *     on the tunnel): a computer with no memory
  *     store passes a fabric call here; the TunnelDO sends it to the memory home. The hub
  *     sets the caller itself (its one owner); a caller in the body is never used.
+ *   - The roster routes (U-R1A-31B-2; same secret and proof, an id proved here for the first
+ *     time is bound: a new computer offers before its bridge ever connected): GET and PUT of the
+ *     owner's roster, POST of this computer's pairing offer, GET of the offers waiting. The hub
+ *     keeps them (./roster-store) and never checks a signature; every computer does.
  *   - GET / is an unauthenticated health check.
  *
  * The provider routes: anything starting with the API routes (/mcp, /sse) and
@@ -32,7 +36,7 @@ import { TUNNEL_SINGLETON_NAME, type Env } from './types'
 import { handleAuthorize, timingSafeEqual, createRegistrationGuardedFetch, SINGLE_USER_ID } from './auth-gate'
 import { WS_MAX_FRAME_BYTES } from './frame-size'
 import { fabricCallerFor } from '../../src/fabric/mcp-tools.ts'
-import { EMPTY_SHA256, PROOF_HEADER, sha256Hex } from './devices'
+import { EMPTY_SHA256, PROOF_HEADER, sha256Hex, type ProofContext } from './devices'
 
 /** Env as seen by the default handler: the provider injects OAUTH_PROVIDER. */
 type HandlerEnv = Env & { OAUTH_PROVIDER: OAuthHelpers }
@@ -70,6 +74,11 @@ const defaultHandler: ExportedHandler<HandlerEnv> = {
     if (url.pathname.startsWith(FABRIC_LINK_PREFIX + '/fabric/')) {
       return handleFabricLink(request, env, url)
     }
+
+    // Each roster route runs the device check for its own request.
+    if (url.pathname === '/__tunnel/roster') return handleRoster(request, env, url, 'roster', (stub, ctx) => stub.checkDevice(request.headers.get(PROOF_HEADER), ctx))
+    if (url.pathname === '/__tunnel/roster/offer') return handleRoster(request, env, url, 'offer', (stub, ctx) => stub.checkDevice(request.headers.get(PROOF_HEADER), ctx))
+    if (url.pathname === '/__tunnel/roster/offers') return handleRoster(request, env, url, 'offers', (stub, ctx) => stub.checkDevice(request.headers.get(PROOF_HEADER), ctx))
 
     if (url.pathname === '/authorize') {
       return handleAuthorize(request, env)
@@ -164,6 +173,84 @@ async function handleFabricLink(request: Request, env: HandlerEnv, url: URL): Pr
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ caller: await fabricCallerFor(SINGLE_USER_ID), input }),
   })
+}
+
+type TunnelStub = DurableObjectStub<import('./tunnel-do').TunnelDO>
+type RosterRoute = 'roster' | 'offer' | 'offers'
+type DeviceCheck = (stub: TunnelStub, ctx: ProofContext & { mayBind: boolean }) => ReturnType<TunnelStub['checkDevice']>
+
+/** The methods each roster route takes and the body cap for each (bytes). */
+const ROSTER_METHODS: Record<RosterRoute, Record<string, number>> = {
+  roster: { GET: 0, PUT: 135_168 },
+  offer: { POST: 8192 },
+  offers: { GET: 0 },
+}
+
+/** `{ <names> }` exactly, each of the given type, else undefined. */
+function bodyOf(bytes: Uint8Array, types: Record<string, 'number' | 'string'>): Record<string, unknown> | undefined {
+  try {
+    const value: unknown = JSON.parse(new TextDecoder().decode(bytes))
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+    const o = value as Record<string, unknown>
+    const names = Object.keys(types).sort()
+    if (Object.keys(o).sort().join() !== names.join() || !names.every((n) => typeof o[n] === types[n])) return undefined
+    return o
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * The roster routes. Order, as the fabric link route: a `token` query 401, a method the route
+ * does not take 405, a missing or wrong bearer 401, a body over the route's cap 413, then the
+ * device proof over these exact bytes (an id proved for the first time is bound to its key; a
+ * refusal as checkDevice says), then the store's answer for the computer the proof names.
+ */
+async function handleRoster(request: Request, env: HandlerEnv, url: URL, route: RosterRoute, check: DeviceCheck): Promise<Response> {
+  if (url.searchParams.has('token')) return new Response('unauthorized', { status: 401 })
+  const cap = ROSTER_METHODS[route][request.method]
+  if (cap === undefined) return new Response('method not allowed', { status: 405 })
+  const presented = bearerToken(request)
+  if (!env.TANDEM_HUB_LINK_TOKEN || !presented || !timingSafeEqual(presented, env.TANDEM_HUB_LINK_TOKEN)) {
+    return new Response('unauthorized', { status: 401 })
+  }
+  const bytes = await readCapped(request, cap)
+  if (!bytes) return jsonResponse({ error: 'payload_too_large' }, 413)
+  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME))
+  const device = await check(stub, {
+    host: url.host,
+    method: request.method,
+    path: url.pathname,
+    bodySha256: await sha256Hex(bytes),
+    mayBind: true,
+  })
+  if (device.status !== 200) return deviceRefusal(device.status)
+  const { id, key } = device
+  if (route === 'offers') return jsonResponse({ offers: await stub.rosterOffers() }, 200)
+  if (route === 'offer') {
+    const body = bodyOf(bytes, { offer: 'string' })
+    if (!body) return jsonResponse({ error: 'roster_invalid' }, 400)
+    switch (await stub.rosterPostOffer(id, key, body.offer as string)) {
+      case 'ok': return jsonResponse({ ok: true }, 200)
+      case 'not_yours': return jsonResponse({ error: 'offer_not_yours' }, 403)
+      case 'full': return jsonResponse({ error: 'offers_full' }, 409)
+      case 'slow': return jsonResponse({ error: 'slow_down' }, 429)
+      default: return jsonResponse({ error: 'roster_invalid' }, 400)
+    }
+  }
+  if (request.method === 'GET') {
+    const held = await stub.rosterGet()
+    return held ? jsonResponse({ len: held.len, roster: held.roster }, 200) : jsonResponse({ error: 'no_roster' }, 404)
+  }
+  const body = bodyOf(bytes, { base: 'number', roster: 'string' })
+  if (!body) return jsonResponse({ error: 'roster_invalid' }, 400)
+  const { answer, len } = await stub.rosterPut(id, key, body.base as number, body.roster as string)
+  switch (answer) {
+    case 'ok': return jsonResponse({ len }, 200)
+    case 'conflict': return jsonResponse({ error: 'roster_conflict', len }, 409)
+    case 'not_in_roster': return jsonResponse({ error: 'not_in_roster' }, 403)
+    default: return jsonResponse({ error: 'roster_invalid' }, 400)
+  }
 }
 
 /**
