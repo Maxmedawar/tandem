@@ -1,17 +1,17 @@
 /**
- * cloud-code-mcp Worker entry.
+ * tandem hub Worker entry.
  *
  * Layout:
  *   - OAuthProvider (@cloudflare/workers-oauth-provider) wraps the MCP endpoint
  *     so claude.ai's custom-connector OAuth handshake works. This is a personal,
  *     single-user connector, so the authorize step is gated by a PASSWORD login
- *     form (src/auth-gate.ts, secret CCM_MCP_PASSWORD) — NOT auto-approved. On the
- *     correct password it completes the grant for the one user (Max) and 302s back
+ *     form (src/auth-gate.ts, secret TANDEM_HUB_PASSWORD) — NOT auto-approved. On the
+ *     correct password it completes the grant for the one user (the owner) and 302s back
  *     with a code; with no secret configured it FAILS CLOSED.
  *   - The MCP server (Streamable HTTP at /mcp, SSE at /sse) is the OAuth-protected
  *     API; tokens are minted by the provider and required to reach it.
  *   - GET /__tunnel/connect is a RAW websocket route guarded by a shared secret
- *     (CCM_TUNNEL_TOKEN); it forwards to the singleton TunnelDO. It is NOT behind
+ *     (TANDEM_HUB_LINK_TOKEN); it forwards to the singleton TunnelDO. It is NOT behind
  *     OAuth — it is the Mac bridge's own outbound channel.
  *   - GET / is an unauthenticated health check.
  *
@@ -21,7 +21,7 @@
  */
 
 import OAuthProvider, { type OAuthHelpers } from '@cloudflare/workers-oauth-provider'
-import { CloudCodeMcp } from './mcp'
+import { TandemMcp } from './mcp'
 import { iconBytes, ICON_MIME } from './icon'
 import { TUNNEL_SINGLETON_NAME, type Env } from './types'
 import { handleAuthorize, timingSafeEqual, createRegistrationGuardedFetch } from './auth-gate'
@@ -38,7 +38,7 @@ const defaultHandler: ExportedHandler<HandlerEnv> = {
     const url = new URL(request.url)
 
     if (url.pathname === '/') {
-      return new Response('cloud-code-mcp', { status: 200 })
+      return new Response('tandem', { status: 200 })
     }
 
     // Connector icon (the Claude Code crab). Unauthenticated, non-sensitive:
@@ -83,7 +83,7 @@ function bearerToken(request: Request): string | undefined {
 function handleTunnelConnect(request: Request, env: HandlerEnv): Response | Promise<Response> {
   const presented = bearerToken(request)
 
-  if (!env.CCM_TUNNEL_TOKEN || !presented || !timingSafeEqual(presented, env.CCM_TUNNEL_TOKEN)) {
+  if (!env.TANDEM_HUB_LINK_TOKEN || !presented || !timingSafeEqual(presented, env.TANDEM_HUB_LINK_TOKEN)) {
     return new Response('unauthorized', { status: 401 })
   }
 
@@ -98,11 +98,11 @@ function handleTunnelConnect(request: Request, env: HandlerEnv): Response | Prom
 const REGISTER_ENDPOINT = '/register'
 
 const oauthProvider = new OAuthProvider({
-  // The OAuth-protected MCP transports. Both serve the same CloudCodeMcp agent
+  // The OAuth-protected MCP transports. Both serve the same TandemMcp agent
   // (binding MCP_OBJECT, the package default).
   apiHandlers: {
-    '/mcp': CloudCodeMcp.serve('/mcp'),
-    '/sse': CloudCodeMcp.serveSSE('/sse'),
+    '/mcp': TandemMcp.serve('/mcp'),
+    '/sse': TandemMcp.serveSSE('/sse'),
   },
   // Cast: the provider types defaultHandler's env as `unknown`; we narrow it to
   // our Env (+ injected OAUTH_PROVIDER), which is sound at runtime.
@@ -116,7 +116,7 @@ const oauthProvider = new OAuthProvider({
  * The exported Worker handler WRAPS the OAuthProvider so we can gate dynamic
  * client registration (POST /register) BEFORE the provider handles it. Without
  * this, registration is OPEN: an attacker could register a client with
- * `redirect_uri:https://evil/cb`, phish Max with a crafted /authorize link, and
+ * `redirect_uri:https://evil/cb`, phish the owner with a crafted /authorize link, and
  * launder the auth code to their address. The guard rejects any registration whose
  * redirect_uri origin is off the allowlist; everything else (authorize, token, api,
  * tunnel, health) passes straight through to the provider with (request, env, ctx).
@@ -126,5 +126,5 @@ export default {
 } satisfies ExportedHandler<HandlerEnv>
 
 export { TunnelDO } from './tunnel-do'
-export { CloudCodeMcp } from './mcp'
+export { TandemMcp } from './mcp'
 export { LoginThrottleDO } from './login-throttle'

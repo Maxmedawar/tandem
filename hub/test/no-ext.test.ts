@@ -49,12 +49,12 @@ beforeAll(async () => {
   port = await freePort()
   const inspectorPort = await freePort()
   persist = mkdtempSync(join(tmpdir(), 'no-ext-wrangler-'))
-  // The old mailbox secret is set too: even with it configured and presented,
-  // the routes do not exist.
+  // The hub reads no mailbox secret: even with the old one presented, the
+  // routes do not exist.
   wrangler = spawn(join(root, 'node_modules', '.bin', 'wrangler'), [
     'dev', '--local', '--port', String(port), '--ip', '127.0.0.1', '--inspector-port', String(inspectorPort),
-    '--var', `CCM_TUNNEL_TOKEN:${T}`, '--var', `CCM_EXT_TOKEN:${E}`,
-    '--var', `CCM_MCP_PASSWORD:${'p'.repeat(32)}`,
+    '--var', `TANDEM_HUB_LINK_TOKEN:${T}`,
+    '--var', `TANDEM_HUB_PASSWORD:${'p'.repeat(32)}`,
     '--persist-to', persist,
   ], { cwd: root, detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'] })
   await new Promise<void>((resolve, reject) => {

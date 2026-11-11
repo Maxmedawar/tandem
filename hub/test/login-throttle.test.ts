@@ -23,7 +23,7 @@ async function makeGate() {
     redirectTo: 'https://claude.ai/callback?code=THE_CODE&state=xyz',
   }))
   const env = {
-    CCM_MCP_PASSWORD: PASSWORD,
+    TANDEM_HUB_PASSWORD: PASSWORD,
     LOGIN_THROTTLE: {
       idFromName: (name: string) => name,
       get: () => ({
