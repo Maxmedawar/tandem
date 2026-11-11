@@ -13,6 +13,11 @@
  * `trusted_surface` marker (only the hub's /__fabric-rpc route sets it; without it the
  * answer is 403) and this process's fabric store, if one is open (none: 503).
  *
+ * A path starting `/transcripts/` goes to this process's own transcript search
+ * (./transcripts/search.ts, opened on first use): POST `/transcripts/search` and
+ * `/transcripts/get` with an object body answer its status and body; any other method or
+ * path there is 404, any other body 400.
+ *
  * fabricForward is the other direction, for a computer with no store: its local MCP
  * servers pass each fabric call over HTTPS to the hub's link route, and the hub sends it
  * to the memory home. HTTPS, not a frame: the stdio server has no link socket.
@@ -21,6 +26,7 @@ import { routeFabricRpc } from './fabric/rpc-router.ts'
 import type { LocalFabricHost } from './fabric/local-fabric-host.ts'
 import { MAX_FRAME_BYTES } from './hub-link.ts'
 import { route } from './router.ts'
+import type { TranscriptSearch } from './transcripts/search.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
 
 function parseBody(base64: string | undefined): unknown {
@@ -91,7 +97,33 @@ export function fabricForward(config: { url: string; token: string }): FabricFor
   }
 }
 
+let transcripts: Promise<TranscriptSearch> | undefined
+
+async function transcriptRequest(frame: CcmHttpRequestFrame): Promise<CcmHttpResponseFrame> {
+  const action = frame.path === '/transcripts/search' ? 'search' : frame.path === '/transcripts/get' ? 'get' : undefined
+  if (!action || frame.method.toUpperCase() !== 'POST') return response(frame.request_id, 404, { error: 'not found' })
+  let body: unknown = null
+  if (frame.body_base64) {
+    try {
+      body = JSON.parse(Buffer.from(frame.body_base64, 'base64').toString('utf8'))
+    } catch {
+      body = null
+    }
+  }
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) return response(frame.request_id, 400, { error: 'body: must be an object' })
+  try {
+    transcripts ??= import('./transcripts/search.ts').then((m) => m.openTranscriptSearch())
+    const search = await transcripts
+    const result = action === 'search' ? await search.search(body) : await search.get(body)
+    return response(frame.request_id, result.status, result.body)
+  } catch {
+    transcripts = undefined
+    return response(frame.request_id, 500, { error: 'search unavailable' })
+  }
+}
+
 export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: LocalFabricHost): Promise<CcmHttpResponseFrame> {
+  if (frame.path.startsWith('/transcripts/')) return transcriptRequest(frame)
   if (frame.path.startsWith('/fabric/')) {
     try {
       const result = await routeFabricRpc({
