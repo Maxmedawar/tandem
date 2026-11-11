@@ -1,0 +1,5 @@
+Copilot is attempting to access the following URL:
+https://example.com
+Do you want to allow this access?
+❯ 1. Yes
+  2. Something else, and tell Copilot what to do differently (Esc to stop)

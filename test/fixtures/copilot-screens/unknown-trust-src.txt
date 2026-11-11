@@ -1,0 +1,9 @@
+╭──────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                     │
+│ /tmp/work                                                │
+│ Do you trust the files in this folder?                   │
+│ ❯ 1. Yes                                                 │
+│   2. Yes, and remember this folder for future sessions   │
+│   3. No (Esc)                                            │
+╰──────────────────────────────────────────────────────────╯
+↑/↓ to navigate · enter to select · esc to cancel

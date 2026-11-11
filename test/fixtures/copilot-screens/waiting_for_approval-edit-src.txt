@@ -1,0 +1,7 @@
+╭──────────────────────────────────────────────────────────╮
+│ Edit file                                                │
+│ Do you want to edit src/a.ts?                            │
+│ ❯ 1. Yes                                                 │
+│   2. Yes, and approve all file operations for the rest of the running session │
+│   3. No, and tell Copilot what to do differently (Esc to stop) │
+╰──────────────────────────────────────────────────────────╯

@@ -1,0 +1,40 @@
+# GitHub Copilot CLI, program `copilot`, checked against @github/copilot 1.0.109 (darwin-arm64, read
+# as text, never run). idle is the hint row `/ commands` (rendered `/ commands · ? help`), which
+# Copilot draws only under an empty prompt; unproven on a real screen until the live row runs.
+# working is the busy hint `ctrl+c interrupt` and its variants (`stop agents`, `clear input`,
+# `exit shell mode`), or its Escape forms (`esc interrupt`, `esc stop agents`, `esc edit prompt`,
+# `esc again to ...`). waiting_for_approval is an approval box's reject row `..., and tell Copilot
+# what to do differently` (or `why`); its `Do you want to <verb>` question only with a menu row that
+# Esc takes (`(Esc)` / `(Esc to stop)`) below it, so a reply that asks the same words is not a
+# dialog; the Assisted Permissions hint `ctrl+e explain`; the extension permission and
+# environment-variable dialog titles; and the plan approval's `Accept plan ...` / `Exit to ...` rows.
+# approve is Enter (the first row, `Yes`, is selected when the box opens), deny is Escape (the
+# reject row). interrupt is one C-c; a second C-c exits. account_env is COPILOT_HOME (default
+# ~/.copilot); the token itself sits in the system keychain, so U-R1B-11 proves the switch. No
+# dialog row: the folder-trust menu sits inside a box border, which no SCHEMA dialog form reads.
+# delivery is `notice`: Copilot's hooks live in its own settings files, which Tandem never writes.
+name = "copilot"
+program = "copilot"
+has_prompts = true
+skip_prompts_args = ["--allow-all"]
+resume = ["--resume={id}"]
+account_env = "COPILOT_HOME"
+history = "~/.copilot/session-state"
+delivery = "notice"
+
+[states]
+waiting_for_approval = [
+  ', and tell Copilot (?:what to do differently|why)',
+  'Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\b(?:[^\n]*\n){0,20}?[^\n]*\(Esc',
+  'ctrl\+e explain',
+  'Extension "[^"\n]*" wants (?:elevated permissions|to read \d+ sensitive environment variables?)',
+  'Accept plan and continue in (?:Autopilot|Interactive) execution mode',
+  'Exit to Interactive execution mode without running the plan',
+]
+working = ['ctrl\+c (?:interrupt|stop agents|clear input|exit shell mode)', 'esc (?:interrupt|stop agents|edit prompt)', 'esc again to ']
+idle = ['/ commands']
+
+[keys]
+interrupt = ["C-c"]
+approve = "Enter"
+deny = "Escape"
