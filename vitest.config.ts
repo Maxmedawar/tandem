@@ -7,5 +7,5 @@ import { configDefaults, defineConfig } from "vitest/config";
 // hub/ is its own package with its own dependencies: its suite runs from hub/.
 export default defineConfig({
   css: { postcss: { plugins: [] } },
-  test: { exclude: [...configDefaults.exclude, "hub/**"] },
+  test: { exclude: [...configDefaults.exclude, "hub/**"], setupFiles: ["test/setup-home.ts"] },
 });
