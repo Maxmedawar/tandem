@@ -1,0 +1,19 @@
+Cursor CLI screens in this folder are plain-text (no colour) for harnesses/cursor-agent.toml.
+
+Every *-src.txt file here is CONSTRUCTED, not a capture. Each is built from short UI strings in
+the Cursor CLI package 2026.11.11-043ef28 for darwin/arm64 (package `@anysphere/agent-cli-runtime`,
+proprietary, Anysphere / Cursor), read as text only: its 1734.index.js and index.js. Only short UI
+strings are transcribed; no code is copied.
+
+idle-src.txt: a header line, the input box (`┌─┐` / `│` / `└─┘`) with the first-turn placeholder
+`→ Plan, search, build anything`, and a footer line.
+idle-followup-src.txt: a reply line, then the same box with the later placeholder
+`→ Add a follow-up`.
+working-src.txt: idle-followup-src.txt with the running turn's right placeholder `ctrl+c to stop`.
+waiting_for_approval-src.txt: a command approval (`Run (once)` `(y)`,
+`Add Shell(npm) to allowlist?` `(tab)`, `Skip` `(esc or n)`).
+unknown-trust-src.txt: the workspace-trust menu (`Workspace Trust Required`, the `▶` selection
+marker, `[a] Trust this workspace`, `[q] Quit`).
+unknown-login-src.txt: the signed-out start screen (`Press any key to log in...`).
+
+None of these is a real screen. A real screen added here by a live run is named *-real.txt.
