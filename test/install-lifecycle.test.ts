@@ -92,9 +92,12 @@ function expectServiceInstalled(box: Sandbox): void {
   const log = readFileSync(box.serviceLog, 'utf8')
   if (onMac) {
     expect(definition).toContain('<string>com.tandem.runtime</string>')
+    expect(definition).toContain(`<string>${join(box.state, 'current')}/bin/tandem</string>`)
     expect(log).toContain('launchctl bootstrap')
   } else {
-    expect(definition).toContain(`ExecStart=${join(box.state, 'current')}/bin/tandem run`)
+    // Quoted: systemd splits an unquoted value on spaces.
+    expect(definition).toContain(`ExecStart="${join(box.state, 'current')}/bin/tandem" run\n`)
+    expect(definition).toContain(`Environment="TANDEM_HOME=${box.state}"\n`)
     expect(log).toContain('systemctl --user enable --now tandem.service')
   }
 }
@@ -108,7 +111,9 @@ function expectServiceRemoved(box: Sandbox): void {
 }
 
 function sandbox(): Sandbox {
-  const home = mkdtempSync(join(tmpdir(), 'tandem-home-'))
+  // A space in the path, as a real home can have one: every path the installer
+  // writes into a service definition has to survive it.
+  const home = mkdtempSync(join(tmpdir(), 'tandem home-'))
   const state = join(home, '.tandem')
   const serviceLog = join(home, 'service.log')
   writeFileSync(serviceLog, '')
@@ -193,7 +198,52 @@ describe('installing Tandem on a machine that has nothing', { timeout: 300_000 }
       expect(existsSync(join(box.state, 'current'))).toBe(false)
       expect(existsSync(box.serviceFile)).toBe(false)
       expect(readFileSync(box.serviceLog, 'utf8')).toBe('')
+      expect(existsSync(box.state), 'a refused release wrote into the state folder').toBe(false)
+      expect(existsSync(join(box.home, '.local', 'bin', 'tandem'))).toBe(false)
     } finally { box.cleanup() }
+  })
+
+  it('refuses a truncated archive and writes nothing', () => {
+    const box = sandbox()
+    const partial = join(box.home, 'partial.tar.gz')
+    try {
+      const whole = readFileSync(archive)
+      writeFileSync(partial, whole.subarray(0, Math.floor(whole.byteLength / 2)))
+
+      expect(() => box.run('install.sh', [], partial)).toThrow()
+      expect(existsSync(box.state), 'a refused release wrote into the state folder').toBe(false)
+      expect(readFileSync(box.serviceLog, 'utf8')).toBe('')
+    } finally { box.cleanup() }
+  })
+
+  it('refuses a release that needs Node on a machine that has none', () => {
+    const box = sandbox()
+    const built = mkdtempSync(join(tmpdir(), 'tandem-nonode-'))
+    const bare = mkdtempSync(join(tmpdir(), 'tandem-barepath-'))
+    try {
+      execFileSync('sh', [join(repoRoot, 'packaging', 'build-release.sh'), built], {
+        cwd: repoRoot, stdio: 'pipe', env: { ...process.env, TANDEM_BUNDLE_NODE: '0' },
+      })
+      const nodeless = join(built, readdirSync(built).find(name => name.endsWith('.tar.gz'))!)
+      // A PATH that holds the tools the installer uses and no node.
+      for (const tool of ['sh', 'uname', 'mkdir', 'chmod', 'mktemp', 'rm', 'mv', 'cp', 'cut', 'shasum', 'tar', 'find', 'wc', 'tr', 'sed', 'head', 'grep', 'sort', 'comm', 'cat', 'dirname', 'ln', 'id', 'openssl']) {
+        const found = execFileSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf8' }).trim()
+        execFileSync('ln', ['-s', found, join(bare, tool)])
+      }
+      let output = ''
+      try {
+        execFileSync('sh', [join(repoRoot, 'packaging', 'install.sh')], {
+          encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+          env: { HOME: box.home, TMPDIR: tmpdir(), TANDEM_HOME: box.state, TANDEM_ARCHIVE: nodeless, SERVICE_LOG: box.serviceLog, PATH: `${stubDir}:${bare}` },
+        })
+        output = 'installed'
+      } catch (error) { output = String((error as { stderr?: string }).stderr ?? error) }
+      expect(output).toContain('needs Node on the machine')
+      expect(existsSync(box.state)).toBe(false)
+    } finally {
+      box.cleanup()
+      for (const directory of [built, bare]) rmSync(directory, { recursive: true, force: true })
+    }
   })
 })
 
@@ -220,6 +270,21 @@ describe('upgrading and removing', { timeout: 300_000 }, () => {
       if (onMac) expect(log).toContain('launchctl bootout')
       else expect(log).toContain('systemctl --user stop tandem.service')
       expectServiceInstalled(box)
+    } finally { box.cleanup() }
+  })
+
+  it('refuses to go back to an older version over a newer one', () => {
+    const box = sandbox()
+    try {
+      box.run('install.sh', [], bumpedArchive('9.9.9'))
+
+      // Going back is repointing `current` at a kept version, never installing
+      // an old release over a new one: a replayed old release is still signed.
+      let output = ''
+      try { box.run('install.sh'); output = 'installed' } catch (error) { output = String((error as { stderr?: string }).stderr ?? error) }
+      expect(output).toContain('older than the one installed')
+      expect(readdirSync(join(box.state, 'versions'))).toEqual(['9.9.9'])
+      expect(realpathSync(join(box.state, 'current'))).toBe(realpathSync(join(box.state, 'versions', '9.9.9')))
     } finally { box.cleanup() }
   })
 
@@ -285,9 +350,13 @@ describe('upgrading and removing', { timeout: 300_000 }, () => {
       mkdirSync(join(box.state, 'fabric'), { recursive: true })
       writeFileSync(join(box.state, 'fabric', 'fabric.sqlite3'), 'a project memory')
 
+      // Purging removes Tandem's own paths, not whatever else is in the folder.
+      writeFileSync(join(box.state, 'notes.txt'), 'not the installer\'s')
+
       const output = box.run('uninstall.sh', ['--purge'])
       expect(output).toContain('have been removed')
       expect(existsSync(join(box.state, 'fabric'))).toBe(false)
+      expect(readFileSync(join(box.state, 'notes.txt'), 'utf8')).toBe('not the installer\'s')
       expectServiceRemoved(box)
     } finally { box.cleanup() }
   })

@@ -107,10 +107,23 @@ function install(installer: string, archive: string, extraEnv: Record<string, st
   return { ok, output, home, log: readFileSync(serviceLog, 'utf8') }
 }
 
-/** A refused release must leave no service behind and no service manager touched. */
+/** A refused release must leave nothing behind: no service, no state folder, no command. */
 function expectNoService(result: Result): void {
   expect(existsSync(serviceFile(result.home))).toBe(false)
   expect(result.log).toBe('')
+  expect(existsSync(join(result.home, '.tandem')), 'a refused release wrote into the state folder').toBe(false)
+  expect(existsSync(join(result.home, '.local', 'bin', 'tandem'))).toBe(false)
+}
+
+/** Rewrites the digest list and the manifest's digest of it to agree with the tree's contents. */
+function rebuildDigests(directory: string): void {
+  execFileSync('sh', ['-c',
+    `cd "${directory}" && find . -type f ! -name manifest.json ! -name FILES.sha256 ! -name manifest.json.sig -exec shasum -a 256 {} + | ` +
+    'sed "s|^\\([0-9a-f]*\\)  \\./|\\1  |" | LC_ALL=C sort -k 2 > FILES.sha256',
+  ], { stdio: 'pipe' })
+  const digest = execFileSync('shasum', ['-a', '256', join(directory, 'FILES.sha256')], { encoding: 'utf8' }).split(/\s+/)[0]!
+  const manifestPath = join(directory, 'manifest.json')
+  writeFileSync(manifestPath, readFileSync(manifestPath, 'utf8').replace(/"filesSha256": "[0-9a-f]*"/, `"filesSha256": "${digest}"`))
 }
 
 describe('a signed release', { timeout: 300_000 }, () => {
@@ -177,17 +190,14 @@ describe('a signed release', { timeout: 300_000 }, () => {
     execFileSync('cp', ['-R', tree, forged], { stdio: 'pipe' })
     writeFileSync(join(forged, 'runtime', 'src', 'server.ts'), 'console.log("not tandem")\n')
 
-    // Rebuilt so the digests agree with the new contents. Without a signature
+    // Rebuilt so every digest agrees with the new contents. Without a signature
     // this is indistinguishable from a real release.
-    execFileSync('sh', ['-c',
-      `cd "${forged}" && find . -type f ! -name manifest.json ! -name FILES.sha256 ! -name manifest.json.sig -exec shasum -a 256 {} + | ` +
-      'sed "s|^\\([0-9a-f]*\\)  \\./|\\1  |" | LC_ALL=C sort -k 2 > FILES.sha256',
-    ], { stdio: 'pipe' })
+    rebuildDigests(forged)
 
     const result = install(installerWith(publicKey), pack(forged))
     try {
       expect(result.ok).toBe(false)
-      expect(result.output).toMatch(/not signed by Tandem|do not match its manifest/)
+      expect(result.output).toContain('not signed by Tandem')
       expectNoService(result)
     } finally {
       rmSync(result.home, { recursive: true, force: true })
@@ -220,6 +230,64 @@ describe('a signed release', { timeout: 300_000 }, () => {
       rmSync(result.home, { recursive: true, force: true })
       rmSync(served, { recursive: true, force: true })
       rmSync(unsigned, { recursive: true, force: true })
+    }
+  })
+
+  it('refuses a local archive with no signature when the installer carries a key', () => {
+    // An installer that carries a key is a published one, and what it installs
+    // is signed or it is not Tandem. Otherwise stripping the signature and
+    // rebuilding the digests would turn any changed tree into an installable one.
+    const stripped = join(mkdtempSync(join(tmpdir(), 'tandem-stripped-')), tree.split('/').pop()!)
+    execFileSync('cp', ['-R', tree, stripped], { stdio: 'pipe' })
+    rmSync(join(stripped, 'manifest.json.sig'), { force: true })
+    writeFileSync(join(stripped, 'runtime', 'src', 'server.ts'), 'console.log("not tandem")\n')
+    rebuildDigests(stripped)
+
+    const result = install(installerWith(publicKey), pack(stripped))
+    try {
+      expect(result.ok, 'an unsigned local archive was installed by a keyed installer').toBe(false)
+      expect(result.output).toContain('carries no signature')
+      expectNoService(result)
+    } finally {
+      rmSync(result.home, { recursive: true, force: true })
+      rmSync(stripped, { recursive: true, force: true })
+    }
+  })
+
+  it('ships an installer copy that carries the key the release was signed with', () => {
+    // The repository's installer keeps the placeholder; the copy the build
+    // writes beside a signed release carries that release's public key.
+    expect(readFileSync(join(repoRoot, 'packaging', 'install.sh'), 'utf8')).toContain('TANDEM_RELEASE_PUBLIC_KEY')
+    const shipped = join(releaseDir, 'install.sh')
+    const text = readFileSync(shipped, 'utf8')
+    expect(text).toContain(readFileSync(publicKey, 'utf8').trim())
+    expect(text).not.toContain('TANDEM_RELEASE_PUBLIC_KEY')
+
+    const result = install(shipped, pack(tree))
+    try {
+      expect(result.output).toContain('is installed and running')
+    } finally { rmSync(result.home, { recursive: true, force: true }) }
+  })
+
+  it('refuses a release whose listed file was replaced by a link, before reading through it', () => {
+    // The link points at different contents. An installer that hashed first
+    // would read the outside file and report a digest mismatch; the link is
+    // refused before anything in the tree is read.
+    const swapped = join(mkdtempSync(join(tmpdir(), 'tandem-swap-')), tree.split('/').pop()!)
+    execFileSync('cp', ['-R', tree, swapped], { stdio: 'pipe' })
+    const outside = join(workDir, 'outside.ts')
+    writeFileSync(outside, 'console.log("outside the release")\n')
+    rmSync(join(swapped, 'runtime', 'src', 'server.ts'))
+    execFileSync('ln', ['-s', outside, join(swapped, 'runtime', 'src', 'server.ts')], { stdio: 'pipe' })
+
+    const result = install(installerWith(publicKey), pack(swapped))
+    try {
+      expect(result.ok).toBe(false)
+      expect(result.output).toContain('contains a link')
+      expectNoService(result)
+    } finally {
+      rmSync(result.home, { recursive: true, force: true })
+      rmSync(swapped, { recursive: true, force: true })
     }
   })
 

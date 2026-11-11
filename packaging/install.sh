@@ -34,8 +34,6 @@ case "$(uname -s)" in
 esac
 
 umask 077
-mkdir -p "$versions" "$agents" "$state/run"
-chmod 0700 "$state" "$versions" "$agents" "$state/run"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/tandem-install.XXXXXX")
 # Staging directories are cleaned up too. Without this an interrupted install
@@ -88,6 +86,17 @@ tar -xzf "$work/tandem.tar.gz" -C "$work" || fail "the download could not be unp
 tree_count=$(find "$work" -mindepth 1 -maxdepth 1 -type d -name 'tandem-*' | wc -l | tr -d ' ')
 [ "$tree_count" = "1" ] || fail "the download does not look like a Tandem release"
 tree=$(find "$work" -mindepth 1 -maxdepth 1 -type d -name 'tandem-*')
+
+# A release contains no symlinks - the build removes them - so any link here
+# was added afterwards. Links are invisible to a file listing and would carry
+# an added file's attack through a different inode type: a link at
+# runtime/bridge/node_modules resolves for every bare import from that
+# directory and runs whatever is at its target. Refused before anything in the
+# tree is read, so no check below reads through a link to a file outside it.
+if [ -n "$(find "$tree" -type l | head -n 1)" ]; then
+  fail "the release contains a link it should not"
+fi
+
 [ -f "$tree/manifest.json" ] || fail "the release has no manifest"
 
 version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$tree/manifest.json" | head -n 1)
@@ -98,10 +107,22 @@ case "$version" in
   *[!0-9A-Za-z._-]*|*..*|'') fail "the release manifest names an implausible version" ;;
 esac
 
+# Going back to an older version is repointing `current` at one that was kept,
+# never installing an old release over a newer one: an old release is still
+# validly signed, so accepting it would let anyone replay a superseded build.
+# The same version again is allowed; that is how an install is repaired.
+if [ -f "$current/manifest.json" ]; then
+  installed=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$current/manifest.json" | head -n 1)
+  if [ -n "$installed" ] && [ "$installed" != "$version" ] &&
+     [ "$(printf '%s\n%s\n' "$version" "$installed" | sort -V | head -n 1)" = "$version" ]; then
+    fail "this release ($version) is older than the one installed ($installed)"
+  fi
+fi
+
 # A release that carries its own Node installs onto a machine that has nothing.
 # One that does not is refused here rather than at the first start, so nobody
 # ends up with a runtime that cannot run.
-if [ "$(sed -n 's/.*"requiresSystemNode": *\(true\|false\).*/\1/p' "$tree/manifest.json" | head -n 1)" = "true" ]; then
+if grep -q '"requiresSystemNode": *true' "$tree/manifest.json"; then
   command -v node >/dev/null 2>&1 ||
     fail "this build needs Node on the machine; use a release that bundles it"
 fi
@@ -120,13 +141,18 @@ PUBKEY
 # Asks whether this installer carries a real key, rather than whether a
 # placeholder is still present - the placeholder's own name would otherwise be
 # substituted along with it when a release bakes the key in.
-if [ -f "$tree/manifest.json.sig" ] && grep -q "BEGIN PUBLIC KEY" "$signing_key"; then
+if grep -q "BEGIN PUBLIC KEY" "$signing_key"; then
+  # An installer that carries a key takes signed releases and nothing else,
+  # local archive or not: otherwise removing the signature and rebuilding the
+  # digests would make any changed tree installable.
+  [ -f "$tree/manifest.json.sig" ] || fail "this release carries no signature"
   command -v openssl >/dev/null 2>&1 || fail "openssl is required to verify this release"
   openssl dgst -sha256 -verify "$signing_key" -signature "$tree/manifest.json.sig" "$tree/manifest.json" \
     >/dev/null 2>&1 || fail "this release is not signed by Tandem"
 elif [ -z "$archive" ]; then
-  # A downloaded release must be signed. A local one may not be, which is how a
-  # build from source is installed, and the warning above says so.
+  # A downloaded release must be signed. Only the repository's own installer,
+  # which carries no key, takes an unsigned local archive: that is how a build
+  # from source is installed.
   fail "this release carries no signature"
 fi
 
@@ -147,15 +173,6 @@ actual_files=$(shasum -a 256 "$tree/FILES.sha256" | cut -d' ' -f1)
 # so an added `runtime/src/node_modules/<name>` shadows the real dependency and
 # runs as the owner at every boot. A release is what its manifest lists, and
 # nothing else.
-# A release contains no symlinks - the build removes them - so any link here
-# was added afterwards. Links are invisible to a file listing and would carry
-# the same attack through a different inode type: a link at
-# runtime/bridge/node_modules resolves for every bare import from that
-# directory and runs whatever is at its target.
-if [ -n "$(find "$tree" -type l -print -quit)" ]; then
-  fail "the release contains a link it should not"
-fi
-
 # The three names below are excluded by path, not by basename: a basename match
 # would leave an unverified slot anywhere in the tree for a file that happened
 # to be called one of them.
@@ -181,8 +198,11 @@ say "installing $version"
 # copy that then failed would leave a dangling `current` with nothing to fall
 # back to. The runtime loads parts of itself lazily, so it is reading from that
 # directory the whole time.
+# Nothing is written under the state folder before this point, so a refused
+# release leaves the machine as it found it.
+mkdir -p "$versions" "$agents" "$state/run"
+chmod 0700 "$state" "$versions" "$agents" "$state/run"
 rm -rf "$staging"
-mkdir -p "$(dirname "$target")"
 cp -R "$tree" "$staging" || { rm -rf "$staging"; fail "the release could not be unpacked into place"; }
 chmod -R go-rwx "$staging"
 
@@ -240,10 +260,10 @@ After=network-online.target
 
 [Service]
 Type=simple
-ExecStart=$current/bin/tandem run
+ExecStart="$current/bin/tandem" run
 Restart=on-failure
 RestartSec=10
-Environment=TANDEM_HOME=$state
+Environment="TANDEM_HOME=$state"
 StandardOutput=append:$state/runtime.log
 StandardError=append:$state/runtime.log
 
