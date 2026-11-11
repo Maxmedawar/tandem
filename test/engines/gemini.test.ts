@@ -131,13 +131,13 @@ describe("gemini: the built-in harness file", () => {
     expect(h.skip_prompts_args).toEqual(["--yolo"]);
     expect(h.keys).toEqual({ interrupt: ["Escape"], approve: "Enter", deny: "Escape" });
     expect(h.states?.waiting_for_approval).toEqual([
-      "(?i)waiting for user confirmation",
-      "│ (?:Apply this change|Allow execution|Do you want to proceed)",
-      "(?i)(?:allow execution|do you want to|apply this change)[\\s\\S]*?\\n+[\\s\\S]*?\\byes\\b",
-      "No, suggest changes \\(esc\\)",
+      "(?i)waiting for user confirmation[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│>*\\n][^\\n]*|│[ \\t]*(?:[^ \\t>*\\n][^\\n]*)?|(?:│[ \\t]*)?[>*][ \\t]*)?)*\\z",
+      "│ (?:Apply this change|Allow execution|Do you want to proceed)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│>*\\n][^\\n]*|│[ \\t]*(?:[^ \\t>*\\n][^\\n]*)?|(?:│[ \\t]*)?[>*][ \\t]*)?)*\\z",
+      "(?i)(?:allow execution|do you want to|apply this change)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│>*\\n][^\\n]*|│[ \\t]*(?:[^ \\t>*\\n][^\\n]*)?|(?:│[ \\t]*)?[>*][ \\t]*)?)*?\\n[ \\t]*(?:│[ \\t]*)?(?:[^ \\t│>*\\n][^\\n]*)?\\byes\\b[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│>*\\n][^\\n]*|│[ \\t]*(?:[^ \\t>*\\n][^\\n]*)?|(?:│[ \\t]*)?[>*][ \\t]*)?)*\\z",
+      "No, suggest changes \\(esc\\)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│>*\\n][^\\n]*|│[ \\t]*(?:[^ \\t>*\\n][^\\n]*)?|(?:│[ \\t]*)?[>*][ \\t]*)?)*\\z",
     ]);
-    expect(h.states?.working).toEqual(["(?i)esc to cancel"]);
-    expect(h.states?.idle).toEqual(["(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file"]);
+    expect(h.states?.working).toEqual(["(?i)esc to cancel[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│>*\\n][^\\n]*|│[ \\t]*(?:[^ \\t>*\\n][^\\n]*)?|(?:│[ \\t]*)?[>*][ \\t]*)?){0,3}(?:\\n ?(?:│ )?[>*] [^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t│>*\\n][^\\n]*|│[ \\t]*(?:[^ \\t>*\\n][^\\n]*)?|(?:│[ \\t]*)?[>*][ \\t]*)?)*\\z"]);
+    expect(h.states?.idle).toEqual(["(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│>*\\n][^\\n]*)?)*\\z"]);
     expect(h.states?.debounce_ms).toBe(1500);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.hook).toBeUndefined();
