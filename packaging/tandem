@@ -1,0 +1,100 @@
+#!/bin/sh
+# The Tandem launcher.
+#
+# Most of what a person does with Tandem they do from an agent, not from here.
+# This exists for the few things an agent cannot do for itself: start or stop
+# the runtime, and say which version is installed.
+set -eu
+
+# Run through the link the installer puts on PATH, $0 is the link, and the tree
+# is beside the launcher it points at.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in
+    /*) self=$link ;;
+    *) self="$(dirname -- "$self")/$link" ;;
+  esac
+done
+here=$(CDPATH='' cd -- "$(dirname -- "$self")/.." && pwd)
+runtime="$here/runtime"
+state="${TANDEM_HOME:-$HOME/.tandem}"
+label="com.tandem.runtime"
+# The bundled Node is preferred over anything on PATH: a release that carries
+# its own runtime should not start behaving differently because the machine
+# happens to have another one, or a different version of it.
+if [ -x "$here/libexec/node" ]; then
+  node="${TANDEM_NODE:-$here/libexec/node}"
+else
+  node="${TANDEM_NODE:-node}"
+fi
+
+# Configuration lives beside the rest of Tandem's state.
+if [ -f "$state/tandem.env" ]; then
+  set -a
+  . "$state/tandem.env"
+  set +a
+fi
+
+usage() {
+  cat <<'USAGE'
+tandem - one agent fabric across your computers
+
+  tandem run                 run the runtime in the foreground (the service uses this)
+  tandem start               start the background runtime
+  tandem stop                stop it
+  tandem restart             stop, then start
+  tandem version             what is installed
+
+Everything else happens from your agent.
+USAGE
+}
+
+need_node() {
+  if ! command -v "$node" >/dev/null 2>&1; then
+    echo "tandem: the bundled runtime is missing; reinstall Tandem" >&2
+    exit 1
+  fi
+}
+
+case "${1:-}" in
+  run)
+    # What the service manager starts. It stays in the foreground; launchd or
+    # systemd is the supervisor, so there is no second process here deciding
+    # when to restart.
+    need_node
+    exec "$node" --experimental-strip-types "$runtime/src/server.ts"
+    ;;
+  start)
+    if [ "$(uname -s)" = "Darwin" ]; then
+      launchctl bootstrap "gui/$(id -u)" "$state/agents/$label.plist" 2>/dev/null ||
+        launchctl kickstart "gui/$(id -u)/$label"
+    else
+      systemctl --user start tandem.service
+    fi
+    echo "tandem: runtime started"
+    ;;
+  stop)
+    if [ "$(uname -s)" = "Darwin" ]; then
+      launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    else
+      systemctl --user stop tandem.service 2>/dev/null || true
+    fi
+    echo "tandem: runtime stopped"
+    ;;
+  restart)
+    "$self" stop >/dev/null 2>&1 || true
+    "$self" start
+    ;;
+  version)
+    "$node" -e "process.stdout.write(require(process.argv[1]).version + '\n')" "$runtime/package.json"
+    ;;
+  ''|-h|--help|help)
+    usage
+    ;;
+  *)
+    echo "tandem: unknown command '$1'" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
