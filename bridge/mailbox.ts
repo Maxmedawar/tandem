@@ -178,8 +178,9 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   const insert = db.prepare(`INSERT INTO mail (id, from_id, to_name, level, text, sent_at_ms, reply_by_ms, state, state_at_ms)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)`)
   const pendingRows = db.prepare(`SELECT level, count(*) AS n FROM mail WHERE to_name = ? AND state = 'queued' GROUP BY level`)
-  const claimRows = db.prepare(`UPDATE mail SET state = 'delivering', state_at_ms = ?
-    WHERE to_name = ? AND state = 'queued' AND level IN (SELECT value FROM json_each(?)) RETURNING *`)
+  // LIMIT -1 is no limit in SQLite.
+  const claimRows = db.prepare(`UPDATE mail SET state = 'delivering', state_at_ms = ? WHERE seq IN
+    (SELECT seq FROM mail WHERE to_name = ? AND state = 'queued' AND level IN (SELECT value FROM json_each(?)) ORDER BY seq LIMIT ?) RETURNING *`)
   const ackRows = db.prepare(`UPDATE mail SET state = 'delivered', state_at_ms = ?
     WHERE state = 'delivering' AND id IN (SELECT value FROM json_each(?))`)
   const readRows = db.prepare(`UPDATE mail SET state = 'delivered', state_at_ms = ? WHERE seq IN
@@ -225,10 +226,10 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
       for (const r of pendingRows.all(checkName(to)) as { level: Level; n: number }[]) counts[r.level] = Number(r.n)
       return counts
     },
-    /** The queued messages due at `point`, oldest first, now delivering. */
-    claim(to: string, point: Point): Message[] {
+    /** The queued messages due at `point` (the oldest `limit`, 1 to 500, when given), oldest first, now delivering. */
+    claim(to: string, point: Point, limit?: number): Message[] {
       const levels = (['fyi', 'ask', 'interrupt'] as const).filter((l) => due(l, point))
-      return oldestFirst(claimRows.all(now(), checkName(to), JSON.stringify(levels)))
+      return oldestFirst(claimRows.all(now(), checkName(to), JSON.stringify(levels), limit === undefined ? -1 : checkLimit(limit)))
     },
     /** Delivering -> delivered; returns the number moved. */
     ack(ids: string[]): number {

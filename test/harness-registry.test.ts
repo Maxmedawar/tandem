@@ -199,7 +199,7 @@ describe("loadHarnesses: one load over every fixture", () => {
         debounce_ms: 800, precedence: ["working", "waiting_for_approval", "idle"],
       },
       keys: { approve: "y", deny: ["Escape", "n"], interrupt: ["C-c", "C-c"] },
-      delivery: "hook", hook: "fake-agent-notify --quiet", permission_hook: true, reports_context: true,
+      delivery: "hook", hook: "--fake-notify", permission_hook: true, reports_context: true,
       logo: "fake-agent.svg", source: "owner", file: join(s.owner, "fake-agent.toml"), kind: "agent",
     });
   });

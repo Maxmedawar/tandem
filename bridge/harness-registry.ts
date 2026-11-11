@@ -18,6 +18,7 @@ import { basename, delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
 import { RE2JS } from 're2js'
+import { HOOK_OPTION } from './delivery-hooks.ts'
 import type { DrivableSession, EngineDescriptor } from './drivable.ts'
 import { openHermes } from './engines/hermes.ts'
 
@@ -229,6 +230,7 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
   if (delivery !== 'hook' && delivery !== 'notice') fail('bad delivery: "hook" or "notice"')
   const hook = str(raw, 'hook')
   if (delivery === 'hook' && !hook) fail('delivery = "hook" needs hook')
+  if (hook !== undefined && !HOOK_OPTION.test(hook)) fail('bad hook: the option that loads a settings file, such as --settings')
   const logo = str(raw, 'logo')
   if (logo !== undefined && !LOGO.test(logo)) fail('bad logo')
 

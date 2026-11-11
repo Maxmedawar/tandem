@@ -50,11 +50,18 @@ TOML. Every field not listed here is refused, at the top level and inside `state
 | `keys` | table | unset | see below |
 | `dialogs` | array of tables (`[[dialogs]]`) | none | see below |
 | `delivery` | `"hook"` or `"notice"` | `"notice"` | `"hook"` needs `hook` |
-| `hook` | string | unset | hook command |
+| `hook` | string | unset | the option that loads a per-session settings file Tandem writes, `^--[a-z][a-z0-9-]{0,31}$` |
 | `permission_hook` | boolean | `false` | |
 | `reports_context` | boolean | `false` | |
 | `adapter` | string | unset | a built-in adapter's name (`hermes`), built-in files only; such an agent has no program and the terminal fields go unused |
 | `logo` | string | unset | `^[a-z0-9-]+\.(svg\|png)$` |
+
+With `delivery = "hook"`, mail reaches the agent through hooks, never as keystrokes: at each start
+Tandem writes one settings file for that session under `<TANDEM_HOME>/delivery/` (folder 0700, file
+0600) and adds `hook` and that file's path to the agent's arguments. The hook command is always
+Tandem's own (bridge/delivery-hooks.ts); no harness file names a hook program, and the agent's own
+settings are never read or written. Its hooks hand over due mail at a tool call or turn end, labelled
+as untrusted data with its sender, and tell Tandem when a turn starts and ends.
 
 ### `states`
 
