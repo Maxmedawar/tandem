@@ -43,6 +43,8 @@ const FILES: Record<string, string> = {
   "fake-rules": `program = "${FAKE}"\nargs = ["two words", "*"]\nhas_prompts = true\n${RULES}`,
   "fake-trust": `program = "${FAKE}"\nargs = ["trust"]\nhas_prompts = true\n${RULES}`,
   "fake-plain": `program = "${FAKE}"\nhas_prompts = false\n`,
+  // Prints claude's prompt mark (as its argument) but never its own idle prompt.
+  "fake-chevron": `program = "${FAKE}"\nargs = ["\u276F"]\nhas_prompts = true\n[states]\nidle = ['^never idle>\\z']\n`,
   "fake-bash": `program = "bash"\nhas_prompts = false\n`,
   "fake-missing": `program = "${join(BOX, "missing-cli")}"\nhas_prompts = false\n`,
   claude: `program = "${FAKE}"\nhas_prompts = true\n`,
@@ -270,6 +272,16 @@ describe("harness engine: a fake CLI through the MCP tools (private tmux socket)
     expect((await call("close_session", { name })).body).toMatchObject({ ok: true });
     expect(tmuxHas(name)).toBe(false);
   }, 120_000);
+
+  it("a harness agent showing claude's \u276F but never its own idle rule opens not ready (positive idle only)", async () => {
+    process.env.TANDEM_ENABLED_ENGINES = "fake-chevron";
+    const name = "r1a10-chevron";
+    const open = await call("open_session", { engine: "fake-chevron", name });
+    expect(pane(name)).toContain("arg=[\u276F]");
+    expect(open.body).toMatchObject({ name, ready: false, warning: expect.stringMatching(/did not reach the prompt/) });
+    expect((await call("close_session", { name })).body).toMatchObject({ ok: true });
+    expect(tmuxHas(name)).toBe(false);
+  }, 60_000);
 
   it("a harness agent showing 'trust this folder' gets no key at warmup", async () => {
     process.env.TANDEM_ENABLED_ENGINES = "fake-trust";

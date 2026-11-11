@@ -727,7 +727,12 @@ export class TerminalSession {
     // can surface an actionable message instead of silently driving a blank pane —
     // the #1 "sessions not working" symptom (a CPU-starved TUI under heavy load).
     const finalPane = await this.capture()
-    const warning = describeReadiness(finalPane, loadavg()[0], cpus().length, this._name)
+    // Claude keeps its `❯` check; any other agent is ready only on its own positive idle.
+    const warning = isClaude
+      ? describeReadiness(finalPane, loadavg()[0], cpus().length, this._name)
+      : isReady(finalPane) && !this.isWorking(finalPane)
+        ? null
+        : describeMarkerlessReadiness(finalPane, loadavg()[0], cpus().length, this._name)
     if (warning === null) {
       // Became ready right at the deadline.
       this._ready = true
