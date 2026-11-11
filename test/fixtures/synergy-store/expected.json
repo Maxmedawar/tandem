@@ -1,0 +1,336 @@
+{
+  "synergyCommit": "8fc22da",
+  "clock": {
+    "start": "2026-11-11T00:00:00.000Z",
+    "stepMs": 1,
+    "end": "2026-11-11T00:00:00.286Z"
+  },
+  "subject": "fixture-owner",
+  "sha256": "3467e752e61622f6d9f98c4bdff5d10b7cebbce7136a143999dd77a262c47fd0",
+  "projects": [
+    {
+      "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+      "displayName": "Fixture garden watering plan",
+      "archived": false
+    },
+    {
+      "projectId": "project-da589ad6-4c9c-4e34-8aa2-ddead458ab3b",
+      "displayName": "Fixture pantry restock list",
+      "archived": false
+    },
+    {
+      "projectId": "project-7bbb9644-80dd-4229-be20-55d5e017398c",
+      "displayName": "Fixture shed tidy up",
+      "archived": true
+    }
+  ],
+  "rooms": [
+    {
+      "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+      "room": "fixture-room-watering",
+      "eventIds": [
+        "event-0742603f-628a-432c-ad6b-65bca2ed547e",
+        "event-79343dc4-61a7-47e5-a48a-eabe19b0c899",
+        "event-14b1b155-f323-4179-b80e-9e4b42372c54",
+        "event-db128063-a067-42cd-ae89-8900826e07a4",
+        "event-4b5e5a37-8e0d-4b22-b215-e64544bcd701",
+        "event-fbb25cf1-8784-4da4-982d-eac716b65f84",
+        "event-15646a92-fb7e-4f38-abfa-94eeb91a2bfb",
+        "event-b757ee43-4cae-426f-9645-253f63c5c93c",
+        "event-79cdbfc1-a817-44b3-927f-b052e23f40e7",
+        "event-c1099a50-5fc1-487f-a6e0-cd7167729cba"
+      ]
+    },
+    {
+      "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+      "room": "fixture-room-seedlings",
+      "eventIds": [
+        "event-4ce3cf2d-2ff1-4488-85b9-fde04cda4140",
+        "event-f1e1fc00-49ea-4057-aa33-4a733c56450d",
+        "event-feff146c-48ad-446c-b590-b816fa060967",
+        "event-f134db06-0529-4834-b0d4-a2486d5d92f8",
+        "event-7c7f6f3f-fd6e-493e-a34a-ae82792e716c",
+        "event-e30c30eb-1475-42fa-ac89-6423bc724ed2",
+        "event-bbb46658-3446-4973-8513-bcb5fc0c7b9e",
+        "event-0b267936-d710-4e46-b62a-d1863a890454",
+        "event-00093d0b-129e-47ed-b590-999f3d16dfd1",
+        "event-ca20e03e-f4a3-49fa-90fc-658a90398cbc"
+      ]
+    },
+    {
+      "projectId": "project-da589ad6-4c9c-4e34-8aa2-ddead458ab3b",
+      "room": "fixture-room-restock",
+      "eventIds": [
+        "event-a7667929-82ef-4745-a31a-1ccdef460240",
+        "event-588b3d3a-1823-4036-98d2-f491ce65275e",
+        "event-2231f84b-16df-41d8-b820-7fa43d4b07c9",
+        "event-193de342-80db-4fb6-a3be-ccfaa75876c5",
+        "event-9aa6161c-7bf8-4c2e-9a84-2c6f45a6fc5d",
+        "event-6824535a-cf4c-4a83-a45b-7e8d5e4726c1",
+        "event-71e1a3d3-3300-49f4-809d-f0c610ee1985",
+        "event-c998358a-e8e5-428a-a170-d886bc2732b6",
+        "event-c6a87bc4-ab5e-4ef4-b716-82cf988d8f00",
+        "event-3c2af18a-17ce-4728-8771-732605779a10"
+      ]
+    },
+    {
+      "projectId": "project-da589ad6-4c9c-4e34-8aa2-ddead458ab3b",
+      "room": "fixture-room-shelves",
+      "eventIds": [
+        "event-4d26472e-fa3c-4e45-b87d-00099141c159",
+        "event-641516c1-b9d1-47b5-93c5-e3b6adef6d9f",
+        "event-628edf1f-5dff-4953-aa25-4fcfc4b5f48b",
+        "event-14cc3586-de93-4b28-97b8-cbcc41d204c1",
+        "event-e470b828-e385-4a9d-a36e-34ccf436d4ed",
+        "event-1ee91932-e076-47e2-a5c6-4d70e4ee8b7c",
+        "event-219057f8-f642-4562-b87f-721e04da4359",
+        "event-9e2ce0c4-10a0-4a54-97a1-0e78c201af24",
+        "event-5d6d6dff-44d1-4d02-ae03-027ac3a4a577",
+        "event-d8a19632-7d2a-46ae-a3d9-5ac4217904f5"
+      ]
+    }
+  ],
+  "memories": {
+    "live": 29,
+    "forgotten": 1
+  },
+  "searches": [
+    {
+      "input": {
+        "query": "frost date for planting"
+      },
+      "top5": [
+        "memory-8900eaba-1fbc-4380-9184-8ebaf6cf74a6",
+        "memory-e41e11a1-3346-42fd-9592-50cd767389f1",
+        "memory-6e4f6155-8a8d-403e-b621-0a32c54635f6",
+        "memory-883e9005-71e8-437b-a681-90b405d1a3ff",
+        "memory-6c2cc441-8273-45fd-9496-aa1adb4153a2"
+      ]
+    },
+    {
+      "input": {
+        "query": "irrigation timer reset button"
+      },
+      "top5": [
+        "memory-883e9005-71e8-437b-a681-90b405d1a3ff",
+        "memory-e41e11a1-3346-42fd-9592-50cd767389f1",
+        "memory-6c2cc441-8273-45fd-9496-aa1adb4153a2",
+        "memory-887345b4-d58f-412f-8526-26f62db6d9af"
+      ]
+    },
+    {
+      "input": {
+        "query": "slugs hostas coffee grounds"
+      },
+      "top5": [
+        "memory-beee1c33-7e0d-47a4-a2da-c5be21ab65d2",
+        "memory-6e4f6155-8a8d-403e-b621-0a32c54635f6",
+        "memory-8900eaba-1fbc-4380-9184-8ebaf6cf74a6",
+        "memory-5dfe9e0e-8c58-4a78-909e-d7bcc4f163e8",
+        "memory-e41e11a1-3346-42fd-9592-50cd767389f1"
+      ]
+    },
+    {
+      "input": {
+        "query": "house sitter cat ferns"
+      },
+      "top5": [
+        "memory-8fe7e2af-dc4c-48ea-acd4-f10eb6e537ed",
+        "memory-8900eaba-1fbc-4380-9184-8ebaf6cf74a6",
+        "memory-6c2cc441-8273-45fd-9496-aa1adb4153a2"
+      ]
+    },
+    {
+      "input": {
+        "query": "metric units measurement"
+      },
+      "top5": [
+        "memory-6e4f6155-8a8d-403e-b621-0a32c54635f6",
+        "memory-5dfe9e0e-8c58-4a78-909e-d7bcc4f163e8",
+        "memory-e41e11a1-3346-42fd-9592-50cd767389f1",
+        "memory-8900eaba-1fbc-4380-9184-8ebaf6cf74a6",
+        "memory-beee1c33-7e0d-47a4-a2da-c5be21ab65d2"
+      ]
+    },
+    {
+      "input": {
+        "query": "old hose leaks at the coupling"
+      },
+      "top5": [
+        "memory-8fe7e2af-dc4c-48ea-acd4-f10eb6e537ed",
+        "memory-2d7226e1-930d-47d2-a20c-c4fd9472d4de",
+        "memory-883e9005-71e8-437b-a681-90b405d1a3ff",
+        "memory-8900eaba-1fbc-4380-9184-8ebaf6cf74a6",
+        "memory-beee1c33-7e0d-47a4-a2da-c5be21ab65d2"
+      ]
+    },
+    {
+      "input": {
+        "scope": "agent",
+        "query": "planning session open chores"
+      },
+      "top5": [
+        "memory-6c2cc441-8273-45fd-9496-aa1adb4153a2"
+      ]
+    },
+    {
+      "input": {
+        "scope": "user",
+        "query": "outdoor chores on weekend mornings",
+        "limit": 5
+      },
+      "top5": [
+        "memory-e41e11a1-3346-42fd-9592-50cd767389f1",
+        "memory-5dfe9e0e-8c58-4a78-909e-d7bcc4f163e8",
+        "memory-6e4f6155-8a8d-403e-b621-0a32c54635f6",
+        "memory-2d7226e1-930d-47d2-a20c-c4fd9472d4de",
+        "memory-883e9005-71e8-437b-a681-90b405d1a3ff"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+        "query": "drip irrigation sprinkler"
+      },
+      "top5": [
+        "memory-ca53db71-9594-4499-8c47-e93ff42dc51c",
+        "memory-31518403-ae7a-41f7-a424-e97c9ac06716",
+        "memory-23ce89d1-1797-4833-8c06-8660a9c82912",
+        "memory-70402163-995c-44a6-bd9d-6f3ce5ca325f",
+        "memory-de522591-69cb-4273-b34d-b1ce325f80b6"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+        "query": "hours of sun on the north bed"
+      },
+      "top5": [
+        "memory-95ced21e-e3bc-404a-a709-5ad1f699ab96",
+        "memory-6373a007-868d-4c69-b487-5adceda2208c",
+        "memory-ca53db71-9594-4499-8c47-e93ff42dc51c",
+        "memory-18df316f-23f2-4e99-8307-91d035a20f3c",
+        "memory-daa9cb26-8cce-4bc7-8f38-dbb5c1b6ea51"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+        "query": "water usage drought limit"
+      },
+      "top5": [
+        "memory-5c4d3033-3261-4f8a-bcf2-1cf4bbc65476",
+        "memory-daa9cb26-8cce-4bc7-8f38-dbb5c1b6ea51",
+        "memory-31518403-ae7a-41f7-a424-e97c9ac06716",
+        "memory-18df316f-23f2-4e99-8307-91d035a20f3c",
+        "memory-6373a007-868d-4c69-b487-5adceda2208c"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+        "query": "aphids marigolds peppers"
+      },
+      "top5": [
+        "memory-daa9cb26-8cce-4bc7-8f38-dbb5c1b6ea51",
+        "memory-23ce89d1-1797-4833-8c06-8660a9c82912",
+        "memory-de522591-69cb-4273-b34d-b1ce325f80b6"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+        "query": "moisture meter calibration"
+      },
+      "top5": [
+        "memory-de522591-69cb-4273-b34d-b1ce325f80b6",
+        "memory-ca53db71-9594-4499-8c47-e93ff42dc51c",
+        "memory-5c4d3033-3261-4f8a-bcf2-1cf4bbc65476",
+        "memory-31518403-ae7a-41f7-a424-e97c9ac06716",
+        "memory-23ce89d1-1797-4833-8c06-8660a9c82912"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+        "scope": "project",
+        "query": "rain barrel weekly watering"
+      },
+      "top5": [
+        "memory-18df316f-23f2-4e99-8307-91d035a20f3c",
+        "memory-6373a007-868d-4c69-b487-5adceda2208c",
+        "memory-31518403-ae7a-41f7-a424-e97c9ac06716",
+        "memory-70402163-995c-44a6-bd9d-6f3ce5ca325f"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-cdf0ba54-a0f0-40e9-9dd8-7e9b4ae6a624",
+        "query": "water the raised beds at six"
+      },
+      "top5": [
+        "memory-6373a007-868d-4c69-b487-5adceda2208c",
+        "memory-5c4d3033-3261-4f8a-bcf2-1cf4bbc65476",
+        "memory-23ce89d1-1797-4833-8c06-8660a9c82912",
+        "memory-18df316f-23f2-4e99-8307-91d035a20f3c",
+        "memory-ca53db71-9594-4499-8c47-e93ff42dc51c"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-da589ad6-4c9c-4e34-8aa2-ddead458ab3b",
+        "query": "shop for the pantry on saturday"
+      },
+      "top5": [
+        "memory-40cebb95-b9f1-4563-b6e1-d50f4eab7f69",
+        "memory-30c286c5-8952-4f5c-b218-ad5972e9fc63",
+        "memory-4a8d1538-bdc2-4672-a399-58865b772e92",
+        "memory-8a1dcca8-1faa-4f71-8c37-6a172589d55a",
+        "memory-5fd3e84b-a920-4520-bc14-5a0a7e1230b9"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-da589ad6-4c9c-4e34-8aa2-ddead458ab3b",
+        "query": "peanut products top shelf"
+      },
+      "top5": [
+        "memory-30c286c5-8952-4f5c-b218-ad5972e9fc63",
+        "memory-f00c39ae-5da0-43ac-8577-f551add5f73b",
+        "memory-4a8d1538-bdc2-4672-a399-58865b772e92",
+        "memory-8a1dcca8-1faa-4f71-8c37-6a172589d55a"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-da589ad6-4c9c-4e34-8aa2-ddead458ab3b",
+        "query": "rotate older cans"
+      },
+      "top5": [
+        "memory-f00c39ae-5da0-43ac-8577-f551add5f73b",
+        "memory-30c286c5-8952-4f5c-b218-ad5972e9fc63",
+        "memory-5fd3e84b-a920-4520-bc14-5a0a7e1230b9",
+        "memory-4a8d1538-bdc2-4672-a399-58865b772e92",
+        "memory-8a1dcca8-1faa-4f71-8c37-6a172589d55a"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-da589ad6-4c9c-4e34-8aa2-ddead458ab3b",
+        "query": "grains low canned goods spices"
+      },
+      "top5": [
+        "memory-5fd3e84b-a920-4520-bc14-5a0a7e1230b9"
+      ]
+    },
+    {
+      "input": {
+        "projectId": "project-da589ad6-4c9c-4e34-8aa2-ddead458ab3b",
+        "query": "restock list cleaning supplies"
+      },
+      "top5": [
+        "memory-8a1dcca8-1faa-4f71-8c37-6a172589d55a"
+      ]
+    }
+  ]
+}
