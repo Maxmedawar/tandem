@@ -35,6 +35,15 @@
  *   - Only ccm-* tmux sessions (claude/codex/shell) or an allowlisted Hermes
  *     agent id are drivable.
  *   - tmux send-keys is injection-safe (-l literal + -- end-of-options).
+ *   - INPUT GATE (input-gate.ts): typed input (send text with its per-send model/effort, and
+ *     interrupt keys) enters a session only as the input gate allows, by who is typing:
+ *     RpcRequest.from, set on the request by the in-process caller and read once in route(),
+ *     never from the body; no value is the owner (every caller today is the owner's client or
+ *     cannot be told apart from one; a per-session caller token arrives with U-R1A-36). The
+ *     owner types at any time except while the session waits for approval (409); an agent types
+ *     only at a settled idle prompt, else it is held (200, status held, nothing typed or queued),
+ *     and never interrupts (403). Poll mode, read, open, close and the relay routes type nothing
+ *     and are not gated. What the gate does not stop is listed where it runs, in handleSend.
  *   - Audit log: every spawn / send / read / interrupt / close / relay control appends
  *     metadata only to a private ~/.tandem/bridge.log. Prompt, command, task,
  *     goal, context, report, output, and request-body values are replaced with
@@ -47,7 +56,7 @@
 
 import { homedir } from 'node:os'
 import { validateModel, validateEffort, TerminalSession } from './terminal-session.ts'
-import type { EngineId } from './drivable.ts'
+import type { DrivableSession, EngineId } from './drivable.ts'
 import type { Harness } from './harness-registry.ts'
 import {
   resolveEngine,
@@ -70,6 +79,8 @@ import * as relay from './relay.ts'
 import { emitCompletion, summarize } from './events.ts'
 import { audit } from './audit.ts'
 import { limitsGate } from './limits.ts'
+import { admitInput, type InputAction, type InputFrom, type InputVerdict } from './input-gate.ts'
+import type { ReadState } from './harness-detect.ts'
 
 // ---- config ---------------------------------------------------------------
 
@@ -111,6 +122,9 @@ export interface RpcRequest {
   path: string
   query: URLSearchParams
   body: Record<string, unknown>
+  /** Who is typing, for the input gate (input-gate.ts): set by the in-process caller, never taken
+   *  from the body. No value is the owner. */
+  from?: InputFrom
 }
 
 export interface RpcResult {
@@ -159,6 +173,8 @@ export async function routeForTest(
 export async function route(req: RpcRequest): Promise<RpcResult> {
   const parts = pathParts(req.path)
   const m = req.method.toUpperCase()
+  // Who is typing, read once here for the input gate; nothing in the body can say it.
+  const from: InputFrom = req.from ?? 'owner'
 
   // GET /sessions, optionally one agent's rows (?engine=); the limit applies after the filter.
   if (m === 'GET' && parts.length === 1 && parts[0] === 'sessions') {
@@ -184,15 +200,20 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
       audit({ route: `${m} /sessions/:name/${action}`, name, denied: 'relay-owned' })
       return err(409, `session "${name}" is relay-owned; use the relay routes`)
     }
+    // Typed input takes a JSON object for a body: any other value (null, an array, a string, a
+    // number) is refused here, before a handler reads a key of it.
+    if (m === 'POST' && (action === 'send' || action === 'interrupt')) {
+      if (typeof req.body !== 'object' || req.body === null || Array.isArray(req.body)) return err(400, 'body must be a JSON object')
+    }
     // Reads are audited once, live or not, never with text. A send with empty text is the
     // poll mode (it returns the transcript), so it is a read.
     if (m === 'POST' && action === 'send' && !String(req.body?.['text'] ?? '')) {
       audit({ route: 'POST /sessions/:name/send', name, read: true })
     }
     if (m === 'GET' && action === 'read') audit({ route: 'GET /sessions/:name/read', name })
-    if (m === 'POST' && action === 'send') return handleSend(name, req)
+    if (m === 'POST' && action === 'send') return handleSend(name, req, from)
     if (m === 'GET' && action === 'read') return handleRead(name, req)
-    if (m === 'POST' && action === 'interrupt') return handleInterrupt(name)
+    if (m === 'POST' && action === 'interrupt') return handleInterrupt(name, from)
     if (m === 'POST' && action === 'close') return handleClose(name)
   }
 
@@ -437,7 +458,27 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
 }
 
-async function handleSend(name: string, req: RpcRequest): Promise<RpcResult> {
+const WAITING_FOR_APPROVAL = 'waiting_for_approval: the session waits for a person to approve or deny; nothing was typed'
+const AGENT_INTERRUPT = 'input gate: an agent may not interrupt a session'
+
+/** The answer when the input gate keeps input out, with its one audit line (`line` carries from and state). */
+function inputGateAnswer(
+  verdict: Exclude<InputVerdict, 'enter'>,
+  action: InputAction,
+  name: string,
+  session: DrivableSession,
+  line: Record<string, unknown> & { from: InputFrom; state: ReadState },
+): RpcResult {
+  if (verdict === 'held') {
+    audit({ ...line, held: true })
+    return ok({ status: 'held', name, engine: session.engine, state: line.state, attachHint: session.attachHint() })
+  }
+  audit({ ...line, denied: 'input-gate' })
+  if (line.from !== 'owner' && action === 'interrupt') return { status: 403, body: { error: AGENT_INTERRUPT, state: line.state } }
+  return { status: 409, body: { error: WAITING_FOR_APPROVAL, state: line.state } }
+}
+
+async function handleSend(name: string, req: RpcRequest, from: InputFrom): Promise<RpcResult> {
   const session = getLive(name)
   if (!session) return err(409, `session "${name}" is not live; call open_session first`)
   const text = String(req.body['text'] ?? '')
@@ -468,7 +509,16 @@ async function handleSend(name: string, req: RpcRequest): Promise<RpcResult> {
     }
   }
 
-  audit({ route: 'POST /sessions/:name/send', name, engine: session.engine, cwd: session.cwd, text, model, effort })
+  // THE INPUT GATE (input-gate.ts), after the 409 and 400 checks above and before anything is
+  // typed; a per-send model/effort control is typed input, so it is gated with its text. Not
+  // stopped here: text sent a moment before a prompt appears; a prompt the rules miss or read as
+  // working; an unrecognized screen of an agent with rules (an update or trust menu reads
+  // unknown, so owner text enters it; U-R1A-18B answers those at warmup); the relay's own lead
+  // and worker sends, which call TerminalSession, not route() (both run with prompts off; U-R1B-54).
+  const { verdict, state } = await admitInput(session, from, 'type')
+  const line = { route: 'POST /sessions/:name/send', name, engine: session.engine, cwd: session.cwd, text, model, effort, from, state }
+  if (verdict !== 'enter') return inputGateAnswer(verdict, 'type', name, session, line)
+  audit(line)
 
   try {
     // session.send() is already BOUNDED by the engine's soft cap (TANDEM_WAIT_MS):
@@ -520,10 +570,14 @@ async function handleRead(name: string, req: RpcRequest): Promise<RpcResult> {
   return readSession(name, cursor)
 }
 
-async function handleInterrupt(name: string): Promise<RpcResult> {
+async function handleInterrupt(name: string, from: InputFrom): Promise<RpcResult> {
   const session = getLive(name)
   if (!session) return err(409, `session "${name}" is not live`)
-  audit({ route: 'POST /sessions/:name/interrupt', name, engine: session.engine, cwd: session.cwd })
+  // Interrupt keys are typed input: they can answer a prompt (a deny key is often Escape).
+  const { verdict, state } = await admitInput(session, from, 'interrupt')
+  const line = { route: 'POST /sessions/:name/interrupt', name, engine: session.engine, cwd: session.cwd, from, state }
+  if (verdict !== 'enter') return inputGateAnswer(verdict, 'interrupt', name, session, line)
+  audit(line)
   await session.interrupt()
   return ok({ ok: true, name, engine: session.engine })
 }
