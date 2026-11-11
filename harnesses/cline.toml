@@ -46,6 +46,8 @@ waiting_for_approval = [
 working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to cancel\)', '(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ']
 debounce_ms = 5000
 idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)']
+# U-R1A-18D: an agent's text enters only an empty prompt (the ❯ row shows only its placeholder, the rule right under it).
+empty_prompt = ['^[ \t]*❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[ \t]*\n[ \t]*─{20,}[ \t]*(?:\n[ \t]*(?:[^ \t─❯\n][^\n]*)?)*\z']
 
 [keys]
 interrupt = ["Escape"]

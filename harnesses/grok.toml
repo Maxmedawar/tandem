@@ -26,6 +26,8 @@ working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ', 'Ctrl\+c:cancel']
 # screen; empty when ready (grok-idle-real.txt), or holding the prompt grok puts back after Ctrl+C
 # cancels a turn (grok-idle-real2.txt). A ❯ box higher up, or with more rows, is not the composer.
 idle = ['^[ \t]*╭─[^\n]*╮[ \t]*\n[ \t]*│ ❯[^\n]*│[ \t]*\n[ \t]*╰─[^\n]*╯[ \t]*(?:\n[^\n]*){0,3}\z']
+# U-R1A-18D: an agent's text enters only an empty prompt (the composer box's ❯ row holds nothing).
+empty_prompt = ['^[ \t]*╭─[^\n]*╮[ \t]*\n[ \t]*│ ❯[ \t]*│[ \t]*\n[ \t]*╰─[^\n]*╯[ \t]*(?:\n[^\n]*){0,3}\z']
 
 [keys]
 interrupt = ["Escape", "C-c"]

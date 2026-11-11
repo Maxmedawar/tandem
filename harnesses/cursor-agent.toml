@@ -23,6 +23,8 @@ delivery = "notice"
 waiting_for_approval = ['Run (?:outside sandbox )?\(once\)', '\(esc or n(?: or p)?\)', 'Keep \(n\)']
 working = ['(?i)ctrl\+c to stop']
 idle = ['→ (?:Plan, search, build anything|Add a follow-up)']
+# U-R1A-18D: an agent's text enters only an empty prompt (the → row, boxed or padded, shows only its placeholder, and no later row is a prompt).
+empty_prompt = ['^(?:│ |[ \t]*)→ (?:Plan, search, build anything|Add a follow-up(?: — /plan to review and build)?)[ \t]*(?:│[ \t]*)?(?:\n[ \t]*(?:[^ \t│→\n][^\n]*)?)*\z']
 
 [keys]
 interrupt = ["C-c"]

@@ -28,6 +28,8 @@ waiting_for_approval = [
 ]
 working = ['(?i)esc to cancel']
 idle = ['(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file']
+# U-R1A-18D: an agent's text enters only an empty prompt (the input row shows only its `Type your message` placeholder).
+empty_prompt = ['^ ?(?:│ )?[>*] +Type your message or @path/to/file[ \t]*(?:│[ \t]*)?(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*)?)*\z']
 
 [keys]
 interrupt = ["Escape"]

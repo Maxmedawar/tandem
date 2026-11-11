@@ -31,6 +31,8 @@ delivery = "notice"
 waiting_for_approval = ['[◆*]  (?:Goose would like to call the above tool, do you allow|Do you allow this tool call)\?\n[│|]  [●○> ] Allow[^\n]*(?:\n[│|]  [^\n]*){1,3}\n[└—][^\n]*\z']
 working = ['\(Ctrl\+C to interrupt\)[ \t]*\z']
 idle = ['> (?:Enter to send · Ctrl\+\S newline|Interrupted, what should goose work on instead\?|Press Ctrl\+C again to exit, or type new instructions to continue)[ \t]*\z']
+# U-R1A-18D: an agent's text enters only an empty prompt (the last line is `> ` and one of its three hints).
+empty_prompt = ['^> (?:Enter to send · Ctrl\+\S newline|Interrupted, what should goose work on instead\?|Press Ctrl\+C again to exit, or type new instructions to continue)[ \t]*\z']
 
 [keys]
 interrupt = ["C-c"]
