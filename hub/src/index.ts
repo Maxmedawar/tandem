@@ -11,9 +11,11 @@
  *   - The MCP server (Streamable HTTP at /mcp, SSE at /sse) is the OAuth-protected
  *     API; tokens are minted by the provider and required to reach it.
  *   - GET /__tunnel/connect is a RAW websocket route guarded by a shared secret
- *     (TANDEM_HUB_LINK_TOKEN); it forwards to the singleton TunnelDO. It is NOT behind
- *     OAuth — it is the Mac bridge's own outbound channel.
- *   - POST /__tunnel/fabric-rpc/fabric/<op> (same secret): a computer with no memory
+ *     (TANDEM_HUB_LINK_TOKEN) and the computer's own device proof (`tandem-proof`, ./devices:
+ *     the id is bound to the first key that proves it); it forwards to the singleton TunnelDO.
+ *     It is NOT behind OAuth — it is the Mac bridge's own outbound channel.
+ *   - POST /__tunnel/fabric-rpc/fabric/<op> (same secret and proof, from an id already bound
+ *     on the tunnel): a computer with no memory
  *     store passes a fabric call here; the TunnelDO sends it to the memory home. The hub
  *     sets the caller itself (its one owner); a caller in the body is never used.
  *   - GET / is an unauthenticated health check.
@@ -30,6 +32,7 @@ import { TUNNEL_SINGLETON_NAME, type Env } from './types'
 import { handleAuthorize, timingSafeEqual, createRegistrationGuardedFetch, SINGLE_USER_ID } from './auth-gate'
 import { WS_MAX_FRAME_BYTES } from './frame-size'
 import { fabricCallerFor } from '../../src/fabric/mcp-tools.ts'
+import { EMPTY_SHA256, PROOF_HEADER, sha256Hex } from './devices'
 
 /** Env as seen by the default handler: the provider injects OAUTH_PROVIDER. */
 type HandlerEnv = Env & { OAUTH_PROVIDER: OAuthHelpers }
@@ -84,12 +87,20 @@ function bearerToken(request: Request): string | undefined {
   return auth.slice('bearer '.length).trim() || undefined
 }
 
+/** The plain-text answer to a refused device proof. */
+function deviceRefusal(status: 401 | 409 | 503): Response {
+  const body = status === 409 ? 'machine id taken' : status === 503 ? 'device table full' : 'unauthorized'
+  return new Response(body, { status })
+}
+
 /**
  * RAW websocket route for the Mac bridge. Checks the shared secret from
- * `Authorization: Bearer` only, then forwards the upgrade request to the
- * singleton TunnelDO. Rejects with 401 on a bad/absent token.
+ * `Authorization: Bearer` (401 on a bad/absent token), then the device proof for
+ * `GET /__tunnel/connect` whose id must be exactly the `bridge_id` query value (an id
+ * proved here for the first time is bound to its key), then forwards the upgrade request
+ * to the singleton TunnelDO.
  */
-function handleTunnelConnect(request: Request, env: HandlerEnv): Response | Promise<Response> {
+async function handleTunnelConnect(request: Request, env: HandlerEnv): Promise<Response> {
   const presented = bearerToken(request)
 
   if (!env.TANDEM_HUB_LINK_TOKEN || !presented || !timingSafeEqual(presented, env.TANDEM_HUB_LINK_TOKEN)) {
@@ -98,6 +109,16 @@ function handleTunnelConnect(request: Request, env: HandlerEnv): Response | Prom
 
   const id = env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME)
   const stub = env.TUNNEL.get(id)
+  const url = new URL(request.url)
+  const { status } = await stub.checkDevice(request.headers.get(PROOF_HEADER), {
+    host: url.host,
+    method: 'GET',
+    path: '/__tunnel/connect',
+    bodySha256: EMPTY_SHA256,
+    queryId: url.searchParams.get('bridge_id') ?? '',
+    mayBind: true,
+  })
+  if (status !== 200) return deviceRefusal(status)
   return stub.fetch(request)
 }
 
@@ -105,7 +126,9 @@ const FABRIC_LINK_PREFIX = '/__tunnel/fabric-rpc'
 
 /**
  * The link route for fabric calls. Order: a `token` query 401, not POST 405, a missing or
- * wrong bearer 401, a body over WS_MAX_FRAME_BYTES 413 (readCapped: never held past the cap), a body that is not an object with
+ * wrong bearer 401, a body over WS_MAX_FRAME_BYTES 413 (readCapped: never held past the cap),
+ * a device proof that is not over these exact bytes or not from an id already bound on the
+ * tunnel 401 (409/503 as checkDevice says), a body that is not an object with
  * an object `input` 400; then the TunnelDO's answer as it is. Only `input` is kept: the
  * caller is the hub's own owner, derived here as TandemMcp derives it.
  */
@@ -118,6 +141,15 @@ async function handleFabricLink(request: Request, env: HandlerEnv, url: URL): Pr
   }
   const bytes = await readCapped(request, WS_MAX_FRAME_BYTES)
   if (!bytes) return jsonResponse({ error: 'payload_too_large' }, 413)
+  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME))
+  const { status } = await stub.checkDevice(request.headers.get(PROOF_HEADER), {
+    host: url.host,
+    method: 'POST',
+    path: url.pathname,
+    bodySha256: await sha256Hex(bytes),
+    mayBind: false,
+  })
+  if (status !== 200) return deviceRefusal(status)
   let input: unknown
   try {
     input = (JSON.parse(new TextDecoder().decode(bytes)) as { input?: unknown }).input
@@ -127,7 +159,6 @@ async function handleFabricLink(request: Request, env: HandlerEnv, url: URL): Pr
   if (typeof input !== 'object' || input === null || Array.isArray(input)) {
     return jsonResponse({ error: 'fabric_request_invalid' }, 400)
   }
-  const stub = env.TUNNEL.get(env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME))
   return stub.fetch(`https://do/__fabric-rpc${url.pathname.slice(FABRIC_LINK_PREFIX.length)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

@@ -75,6 +75,7 @@ describe('a published release', () => {
       'runtime/bridge/hub-link.ts',
       'runtime/hub/src/protocol.ts',
       'runtime/hub/src/bridge-id.ts',
+      'runtime/hub/src/devices.ts',
       'runtime/harnesses/SCHEMA.md',
       'THIRD_PARTY_NOTICES.md',
     ]) {
@@ -225,7 +226,7 @@ describe('the npm package', () => {
       cwd: repoRoot, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
     })) as Array<{ files: Array<{ path: string }> }>
     const paths = packed!.files.map(file => file.path)
-    for (const path of ['hub/src/protocol.ts', 'hub/src/bridge-id.ts', 'harnesses/SCHEMA.md']) {
+    for (const path of ['hub/src/protocol.ts', 'hub/src/bridge-id.ts', 'hub/src/devices.ts', 'harnesses/SCHEMA.md']) {
       expect(paths, `npm pack omits ${path}`).toContain(path)
     }
   })

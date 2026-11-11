@@ -6,6 +6,7 @@
  * `Authorization: Bearer`.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
+import { generateKeyPairSync, randomBytes, sign } from 'node:crypto'
 import { once } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { createServer, type AddressInfo } from 'node:net'
@@ -15,11 +16,22 @@ import { fileURLToPath } from 'node:url'
 import WebSocket from 'ws'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { CCM_TUNNEL_SUBPROTOCOL } from '../src/protocol.ts'
+import { EMPTY_SHA256, proofText } from '../src/devices.ts'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const run = `${process.pid}-${Date.now()}`
 const T = `url-tunnel-${run}`
 const E = `url-ext-${run}`
+
+/** U-R1A-31B: a valid `tandem-proof` for a tunnel dial to `base` as `id`, signed by this file's own key. */
+const device = generateKeyPairSync('ed25519')
+function tunnelProof(base: string, id: string): string {
+  const key = device.publicKey.export({ format: 'jwk' }).x as string
+  const ts = Date.now()
+  const nonce = randomBytes(16).toString('base64url')
+  const text = proofText({ host: new URL(base).host, method: 'GET', path: '/__tunnel/connect', id, key, ts, nonce, bodySha256: EMPTY_SHA256 })
+  return `v1 ${id} ${key} ${ts} ${nonce} ${sign(null, Buffer.from(text, 'utf8'), device.privateKey).toString('base64url')}`
+}
 
 async function freePort(): Promise<number> {
   const probe = createServer()
@@ -133,7 +145,7 @@ describe('kept: the header and body secrets still work', () => {
     const openTunnelSocket = (base: string, token: string, bridgeId: string) => new WebSocket(
       `${base}/__tunnel/connect?bridge_id=${encodeURIComponent(bridgeId)}`,
       CCM_TUNNEL_SUBPROTOCOL,
-      { headers: { Authorization: `Bearer ${token}` } },
+      { headers: { Authorization: `Bearer ${token}`, 'tandem-proof': tunnelProof(base, bridgeId) } },
     )
     expect(await dial(openTunnelSocket(`ws://127.0.0.1:${port}`, T, 'probe'))).toBe('open')
     const wrong = await dial(openTunnelSocket(`ws://127.0.0.1:${port}`, 'not-the-token', 'probe-wrong'))

@@ -3,15 +3,18 @@
  *
  * Dials `<hub>/__tunnel/connect?bridge_id=<id>` with the secret only in an
  * `Authorization: Bearer` header (a URL lands in proxy and request logs; a frame
- * or a log line is no better), registers, heartbeats, drops a socket that has gone
- * silent, and redials with backoff. Inbound frames over MAX_FRAME_BYTES close the
+ * or a log line is no better) and a fresh `tandem-proof` signed by this computer's
+ * device key (hub/src/devices.ts: the hub binds the id to the first key that proves
+ * it), registers, heartbeats, drops a socket that has gone silent, and redials with backoff. Inbound frames over MAX_FRAME_BYTES close the
  * socket before any handler sees them. Only `wss://` is dialled, except on loopback.
  *
  * Settings: TANDEM_HUB_LINK_URL (hub origin), TANDEM_HUB_LINK_TOKEN (16+ chars,
  * required with the URL), TANDEM_HUB_LINK_ID (optional; else the hostname).
  */
+import { createHash, randomBytes } from 'node:crypto'
 import { hostname } from 'node:os'
 import WebSocket from 'ws'
+import { DeviceKeyError, openDeviceKey, type DeviceKey } from './device-keys.ts'
 import {
   CCM_FRAME_TYPES,
   CCM_TUNNEL_SUBPROTOCOL,
@@ -22,6 +25,7 @@ import {
   type CcmHttpResponseFrame,
 } from '../hub/src/protocol.ts'
 import { DEFAULT_BRIDGE_ID, slugifyBridgeId } from '../hub/src/bridge-id.ts'
+import { PROOF_HEADER, proofText } from '../hub/src/devices.ts'
 
 /** Inbound frame ceiling; the hub's WS_MAX_FRAME_BYTES (hub/src/frame-size.ts) is the same number. */
 export const MAX_FRAME_BYTES = 1_048_576
@@ -115,6 +119,24 @@ export interface HubLinkConfig {
   bridgeId: string
   /** This computer holds the memory store: the dial adds `memory_home=1` so the hub sends memory calls here. */
   memoryHome?: boolean
+  /** The device key that signs each proof (tests); default openDeviceKey() at each dial. */
+  key?: DeviceKey
+}
+
+/**
+ * The `tandem-proof` value for one hub request: `v1 <id> <key> <ts> <nonce> <sig>`, ts = `now`
+ * (default this clock), a fresh random nonce on every call, sig over proofText with the host of
+ * `url`, METHOD, `path` (no query) and the SHA-256 of `body` (none: zero bytes).
+ */
+export function hubProofHeader(
+  key: Pick<DeviceKey, 'publicKey' | 'sign'>,
+  p: { url: string; method: string; path: string; id: string; body?: string | Uint8Array; now?: number },
+): string {
+  const ts = p.now ?? Date.now()
+  const nonce = randomBytes(16).toString('base64url')
+  const bodySha256 = createHash('sha256').update(p.body ?? '').digest('hex')
+  const text = proofText({ host: new URL(p.url).host, method: p.method.toUpperCase(), path: p.path, id: p.id, key: key.publicKey, ts, nonce, bodySha256 })
+  return `v1 ${p.id} ${key.publicKey} ${ts} ${nonce} ${key.sign(text)}`
 }
 
 const BAD_CONFIG = 'hub link: bad configuration'
@@ -218,8 +240,18 @@ export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): 
   // path goes through settle(), which clears the timers once.
   const connectOnce = (): Promise<boolean> =>
     new Promise<boolean>((resolve) => {
+      let proof: string
+      try {
+        proof = hubProofHeader(config.key ?? openDeviceKey(), { url: origin, method: 'GET', path: '/__tunnel/connect', id: config.bridgeId })
+      } catch (error) {
+        if (!(error instanceof DeviceKeyError)) throw error
+        // A failed dial: backoff as for any other.
+        log(`hub link: device key: ${error.message}`)
+        resolve(false)
+        return
+      }
       const ws = new WebSocket(dialUrl, CCM_TUNNEL_SUBPROTOCOL, {
-        headers: { Authorization: `Bearer ${config.token}` },
+        headers: { Authorization: `Bearer ${config.token}`, [PROOF_HEADER]: proof },
         maxPayload: MAX_FRAME_BYTES,
       })
       log(`hub link: dialing ${origin} as ${config.bridgeId}`)
@@ -299,6 +331,16 @@ export function startHubLink(config: HubLinkConfig, opts: HubLinkOptions = {}): 
       })
       ws.on('close', () => {
         if (!settled) log('hub link: closed')
+        settle()
+      })
+      // A listener here means ws leaves the refused handshake to us: settle() aborts it.
+      ws.on('unexpected-response', (_request, response) => {
+        if (settled) return
+        if (response.statusCode === 409) {
+          log(`hub link: the hub holds another key for ${config.bridgeId}; this computer cannot connect as ${config.bridgeId}`)
+        } else {
+          log(`hub link: error: Unexpected server response: ${response.statusCode}`)
+        }
         settle()
       })
       ws.on('error', (error) => {

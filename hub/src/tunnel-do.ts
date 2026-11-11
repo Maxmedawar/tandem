@@ -9,7 +9,8 @@
  * disconnect, fail all in-flight requests.
  *
  * Routes (Worker forwards here via a stub):
- *   /__tunnel/connect   -> bridge WebSocket upgrade (token already checked by Worker)
+ *   /__tunnel/connect   -> bridge WebSocket upgrade (token and device proof already checked by
+ *                          the Worker through checkDevice, so the id is bound to this key)
  *   /__rpc/<path>       -> forward to the bridge as an HTTP request frame
  *   /__fabric-rpc/fabric/<path> -> the same, marked with trusted_surface, always to the
  *                          memory home (the one socket tagged memory-home; any other path
@@ -42,6 +43,7 @@ import {
   type SocketInfo,
 } from './tunnel-routing'
 import { HubQueue, type PutResult, type QueuedCopy, type QueueMessage } from './queue'
+import { HubDevices, PROOF_WINDOW_MS, parseProof, verifyProof, type ProofContext } from './devices'
 import type { Env } from './types'
 import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
@@ -130,6 +132,44 @@ export class TunnelDO extends DurableObject<Env> {
 
   queueAck(to: string, uptoSeq: number): void {
     this.hubQueue().ack(to, uptoSeq)
+  }
+
+  /* ---- Per-computer hub credentials (./devices) ---- */
+
+  private devices?: HubDevices
+
+  private hubDevices(): HubDevices {
+    return (this.devices ??= new HubDevices(this.ctx.storage.sql, Date.now, (fn) => this.ctx.storage.transactionSync(fn)))
+  }
+
+  /**
+   * The one check of a `tandem-proof` header for both link routes (index.ts), in this order:
+   * no header or a malformed one, a `queryId` that is not exactly the proof's id, a ts more than
+   * PROOF_WINDOW_MS from the hub's clock, or a bad signature: 401. Then, synchronously after the
+   * signature check so a check-and-bind never interleaves with another: admit. 'ok'/'bound' 200,
+   * 'replay'/'unknown' 401, 'taken' 409, 'full' 503.
+   */
+  async checkDevice(
+    value: string | null,
+    ctx: ProofContext & { queryId?: string; mayBind: boolean },
+  ): Promise<{ status: 200 | 401 | 409 | 503 }> {
+    const proof = parseProof(value)
+    if (!proof) return { status: 401 }
+    if (ctx.queryId !== undefined && ctx.queryId !== proof.id) return { status: 401 }
+    if (Math.abs(Date.now() - proof.ts) > PROOF_WINDOW_MS) return { status: 401 }
+    const { host, method, path, bodySha256 } = ctx
+    if (!(await verifyProof(proof, { host, method, path, bodySha256 }))) return { status: 401 }
+    switch (this.hubDevices().admit(proof.id, proof.key, proof.nonce, ctx.mayBind)) {
+      case 'ok':
+      case 'bound':
+        return { status: 200 }
+      case 'taken':
+        return { status: 409 }
+      case 'full':
+        return { status: 503 }
+      default:
+        return { status: 401 }
+    }
   }
 
   /* ---- Mac side: accept the bridge's outbound WebSocket ---- */

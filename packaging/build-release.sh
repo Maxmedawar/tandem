@@ -75,7 +75,7 @@ echo "  runtime"
 ( cd "$repo_root" && find bridge src -type f -name '*.ts' ! -name '*.test.ts' -exec sh -c '
     for file do mkdir -p "$0/${file%/*}" && cp "$file" "$0/$file" || exit 1; done' "$stage/runtime" {} + )
 mkdir -p "$stage/runtime/hub/src"
-cp "$repo_root/hub/src/protocol.ts" "$repo_root/hub/src/bridge-id.ts" "$stage/runtime/hub/src/"
+cp "$repo_root/hub/src/protocol.ts" "$repo_root/hub/src/bridge-id.ts" "$repo_root/hub/src/devices.ts" "$stage/runtime/hub/src/"
 cp -R "$repo_root/harnesses" "$stage/runtime/harnesses"
 cp "$repo_root/package.json" "$stage/runtime/package.json"
 
