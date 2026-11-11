@@ -133,10 +133,13 @@ describe("copilot: the built-in harness file", () => {
     expect(h.keys).toEqual({ interrupt: ["C-c"], approve: "Enter", deny: "Escape" });
     expect(h.states?.waiting_for_approval).toEqual([
       ", and tell Copilot (?:what to do differently|why)",
-      "Do you want to (?:run|use|allow|approve|modify|read|create|delete|edit|write|update|move|perform|ignore)\\b",
+      "Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\\b(?:[^\\n]*\\n){0,20}?[^\\n]*\\(Esc",
+      "ctrl\\+e explain",
+      'Extension "[^"\\n]*" wants (?:elevated permissions|to read \\d+ sensitive environment variables?)',
       "Accept plan and continue in (?:Autopilot|Interactive) execution mode",
+      "Exit to Interactive execution mode without running the plan",
     ]);
-    expect(h.states?.working).toEqual(["ctrl\\+c (?:interrupt|stop agents|clear input|exit shell mode)", "esc again to "]);
+    expect(h.states?.working).toEqual(["ctrl\\+c (?:interrupt|stop agents|clear input|exit shell mode)", "esc (?:interrupt|stop agents|edit prompt)", "esc again to "]);
     expect(h.states?.idle).toEqual(["/ commands"]);
     expect(h.states?.debounce_ms).toBe(1500);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
@@ -193,13 +196,19 @@ describe("copilot: the built-in harness file", () => {
     expect(readScreen(builtinCopilot(), edited)).toBe("idle");
   });
 
-  // D2: every verb of the question-line rule, alone.
-  it.each(["run", "use", "allow", "approve", "modify", "read", "create", "delete", "edit", "write", "update", "move", "perform", "ignore"])(
-    "the line `Do you want to %s x?` alone reads waiting_for_approval",
-    (verb) => {
-      expect(readScreen(builtinCopilot(), `\nDo you want to ${verb} x?\n`)).toBe("waiting_for_approval");
-    },
-  );
+  // D2: every verb of the question-line rule, with a menu row that Esc takes below it (every
+  // Copilot dialog that asks `Do you want to ...` draws one: `(Esc)` or `(Esc to stop)`).
+  const VERBS = ["run", "re-run", "use", "allow", "approve", "modify", "read", "list", "create", "delete", "edit", "write", "update", "move", "perform", "ignore"];
+  it.each(VERBS)("`Do you want to %s x?` above a menu with an Esc row reads waiting_for_approval", (verb) => {
+    expect(readScreen(builtinCopilot(), `\nDo you want to ${verb} x?\n\n❯ 1. Yes\n  2. No (Esc)\n`)).toBe("waiting_for_approval");
+  });
+
+  // Audit (U-R1B-COPILOT): a reply that asks `Do you want to ...?` is not a dialog. Read as
+  // waiting_for_approval it would refuse the owner's answer (input gate) until it scrolled away.
+  it.each(VERBS)("a reply line `● Do you want to %s x?` above an empty prompt reads idle", (verb) => {
+    const text = `● Do you want to ${verb} the README too?\n\n` + screen(IDLE_SRC);
+    expect(readScreen(builtinCopilot(), text)).toBe("idle");
+  });
 
   it.each([
     "Do you want to remember screen reader mode for future sessions?",
@@ -208,6 +217,37 @@ describe("copilot: the built-in harness file", () => {
   ])("the line `%s` alone is not waiting_for_approval", (line) => {
     expect(readScreen(builtinCopilot(), `\n${line}\n`)).not.toBe("waiting_for_approval");
   });
+
+  // Audit (U-R1B-COPILOT): dialogs with no `, and tell Copilot` row (cli-main.js 1.0.109).
+  const BOX = (rows: string[]) => ["╭" + "─".repeat(58) + "╮", ...rows.map((r) => `│ ${r}`.padEnd(59) + "│"), "╰" + "─".repeat(58) + "╯"].join("\n");
+  it.each([
+    [
+      "an Assisted Permissions dialog (reject row `No (Esc)`, question `What would you like to do?`)",
+      BOX(["Read files", "What would you like to do?", "", "❯ 1. Yes", "  2. No (Esc)", "", "↑/↓ navigate · ctrl+e explain · enter select · esc cancel"]),
+    ],
+    [
+      "the extension elevated-permission dialog",
+      BOX(['Extension "acme" wants elevated permissions', "This extension wants to: observe permission requests.", "Denying will prevent this extension from loading.", "", "❯ 1. Yes", "  2. No (Esc)"]),
+    ],
+    [
+      "the extension environment-variable dialog",
+      BOX(['Extension "acme" wants to read 2 sensitive environment variables', "API_URL", "", "❯ 1. Yes", "  2. No (Esc)"]),
+    ],
+    [
+      "the plan approval offering only exit_only",
+      BOX(["Plan Ready for Review", "", "❯ 1. Exit to Interactive execution mode without running the plan", "  2. Suggest changes"]),
+    ],
+  ])("%s reads waiting_for_approval", (_label, text) => {
+    expect(readScreen(builtinCopilot(), text)).toBe("waiting_for_approval");
+  });
+
+  // Audit (U-R1B-COPILOT): the busy hint's Escape forms (activity indicator, cli-main.js 1.0.109).
+  it.each(["esc interrupt", "esc stop agents", "esc edit prompt", "esc again to edit prompt", "ctrl+c stop agents"])(
+    "working-src with the busy hint `%s` reads working",
+    (hint) => {
+      expect(readScreen(builtinCopilot(), screen(WORKING_SRC).replace("ctrl+c interrupt", hint))).toBe("working");
+    },
+  );
 
   it("never idle: every approval and unknown screen and every other agent's idle screen in the screens folder", () => {
     const h = builtinCopilot();

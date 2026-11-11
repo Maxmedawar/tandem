@@ -14,15 +14,15 @@ idle-src.txt: a reply line, the prompt row (rail `┃`, glyph `❯ `, nothing ty
 idle-typed-src.txt: idle-src.txt with text typed in the prompt row and no hint row.
 working-src.txt: idle-src.txt with the busy row `◐ Thinking  ctrl+c interrupt` above the prompt.
 unknown-exitwarn-src.txt: idle-src.txt with the hint row replaced by the exit warning after one
-Ctrl+C at an empty prompt.
+Ctrl+C at an empty prompt (`ctrl+c again to exit`).
 waiting_for_approval-shell-src.txt, waiting_for_approval-edit-src.txt: a command and a file edit
 approval in a round-border box (`╭─╮`, `│`, `╰─╯`), first row `❯ 1. Yes` selected, the reject row
 `No, and tell Copilot what to do differently (Esc to stop)` last. The box is 60 columns; rows
 longer than that run past its right edge here.
 waiting_for_approval-url-src.txt: a URL access approval (`Do you want to allow this access?`,
 reject row `Something else, and tell Copilot what to do differently (Esc to stop)`).
-waiting_for_approval-plan-src.txt: the plan approval (`Accept plan and continue in ... execution
-mode` rows).
+waiting_for_approval-plan-src.txt: the plan approval (title `Plan Ready for Review`, `Accept plan
+and continue in ... execution mode` rows, last row `Suggest changes`).
 unknown-trust-src.txt: the folder-trust menu (`Confirm folder trust`) in a round-border box.
 unknown-login-src.txt: the sign-in account picker (`What account do you want to log into?`).
 

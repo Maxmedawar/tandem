@@ -2,5 +2,5 @@
 
 ┃ ❯ 
 
-ctrl+c again to exit CLI · esc cancel
+ctrl+c again to exit
 ~/work  main  claude-sonnet-4.5
