@@ -83,12 +83,14 @@ const MAX_LIST = 500
 const LEVELS: readonly string[] = ['fyi', 'ask', 'interrupt']
 /** A session name on this computer. */
 const NAME = /^[A-Za-z0-9._-]{1,256}$/
-/** Every C0 control character except tab and newline, and DEL. */
-const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f]/
+/** Every C0 control character except tab and newline, DEL, and the C1 controls (U+009B is an 8-bit CSI, U+0085 a line break). */
+const CONTROL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/
 /** Half of a surrogate pair on its own: not UTF-8. */
 const LONE_SURROGATE = /\p{Cs}/u
 /** Bidi controls: they can reorder what a person sees around the text (the label included). */
 const BIDI = /[\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/
+/** Tag characters: invisible on a screen, yet a model reads them as the ASCII text they shadow. */
+const TAG = /[\u{e0000}-\u{e007f}]/u
 /** The most message text one claim may weigh. */
 const MAX_CLAIM_BYTES = 1024 * 1024
 
@@ -120,6 +122,7 @@ function checkSend({ from, to, level, text, replyByMinutes }: SendInput): number
   }
   if (CONTROL.test(text)) throw new MailError(400, 'text: a control character (only newline and tab are allowed); nothing was saved')
   if (BIDI.test(text)) throw new MailError(400, 'text: a bidi control character; nothing was saved')
+  if (TAG.test(text)) throw new MailError(400, 'text: an invisible tag character; nothing was saved')
   let minutes: number | undefined
   if (level === 'ask') {
     minutes = replyByMinutes ?? 10
@@ -317,6 +320,7 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
      * message, across every process. Only a message whose sender the limits file's interrupt_from
      * lists now counts: checked at send, and again here, so a sender taken out later presses no key.
      * With `gapMs`, false (nothing written) until that long after the last key: the message waits.
+     * A clock stepped back less than `gapMs` still waits; one stepped further back counts as past.
      */
     interruptFor(to: string, gapMs = 0): boolean {
       checkName(to)
@@ -326,7 +330,7 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
         const last = interruptedSeq.get(to) as { seq: number; at_ms: number } | undefined
         const stored = Number(last?.seq ?? 0)
         const age = last === undefined ? Infinity : now() - Number(last.at_ms)
-        const out = top !== null && Number(top) > stored && !(age >= 0 && age < gapMs)
+        const out = top !== null && Number(top) > stored && !(Math.abs(age) < gapMs)
         if (out) interruptedSet.run(to, Number(top), now())
         db.exec('COMMIT')
         return out
