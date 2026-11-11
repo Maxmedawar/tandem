@@ -7,9 +7,10 @@
 # command approval's `Run (once)` / `(esc or n)` rows, a file write's `(esc or n or p)` row and a
 # delete's `Keep (n)` row (one approval list, its own keys); approve is `y`, deny is `n`. interrupt is
 # one C-c; a second C-c exits. account_env is unset: the login follows HOME, not
-# CURSOR_CONFIG_DIR. No dialog row: the workspace-trust menu's `▶` marker and `[a]` key prefix are
-# not SCHEMA forms. delivery is `notice`: Cursor's hooks live in its own config, which Tandem never
-# writes.
+# CURSOR_CONFIG_DIR. The dialog row `workspace-trust` answers the workspace-trust menu with its
+# `[a]` key, `Trust this workspace`, which trusts this folder only; it is typed only during start and
+# only where the limits file allows `trust`. delivery is `notice`: Cursor's hooks live in its own
+# config, which Tandem never writes.
 name = "cursor-agent"
 program = "cursor-agent"
 has_prompts = true
@@ -27,3 +28,10 @@ idle = ['→ (?:Plan, search, build anything|Add a follow-up)']
 interrupt = ["C-c"]
 approve = "y"
 deny = "n"
+
+[[dialogs]]
+name = "workspace-trust"
+kind = "trust"
+match = ['Workspace Trust Required', 'Do you trust the contents of this directory\?']
+answer = "Trust this workspace"
+key = "a"
