@@ -20,11 +20,19 @@
 #   C  .env.example's TANDEM_ENABLED_ENGINES= line has a value: no agent is on by default.
 #   D  a harness file's `adapter = "<x>"` line whose bridge/engines/<x>.ts is missing (or whose
 #      x is not such a name): "D harnesses/<file>:<line>".
+#   E  an agent harness file (every harnesses/*.toml except shell.toml and a file with an
+#      `adapter =` line) with no `empty_prompt` key inside its [states] table (after the
+#      `[states]` line, before the next line starting with `[`; a comment never counts):
+#      "E harnesses/<file>:<line of [states], or 1 when it has none>". So a new agent cannot ship
+#      without an empty-prompt rule.
+#   F  an agent harness file whose [states] `empty_prompt` holds a pattern that does not end at
+#      \z (a '...' string ending \z, or a "..." string ending \\z): "F harnesses/<file>:<line of
+#      the empty_prompt key>", one per key; the array may span lines.
 # ALLOW (below): one "path|fixed text|owner" per line. A hit passes when an entry has its path
 # and its line contains that text. An entry that matches nothing prints
 # "lint-agents: stale <entry>" and does not fail.
 #
-# Output: "<A|B|C|D> <path>:<line>" per failure, then "lint-agents: PASS" (exit 0) or
+# Output: "<A|B|C|D|E|F> <path>:<line>" per failure, then "lint-agents: PASS" (exit 0) or
 # "lint-agents: FAIL (<n>)" (exit 1). ROOT or ROOT/harnesses missing:
 # "lint-agents: ERROR <what>" (exit 2).
 set -u
@@ -63,6 +71,70 @@ $hits
 HITS
 done
 export ADAPTERS LINT_D
+
+# LINT_E and LINT_F (one E or F line per finding, E lines of all files first): rules E and F.
+# The awk reads one file; its strings are scanned by hand so a bracket or # inside a quoted
+# pattern is pattern text.
+LINT_E=''
+LINT_F=''
+for f in harnesses/*.toml; do
+  [ -f "$f" ] || continue
+  [ "${f##*/}" = shell.toml ] && continue
+  hits=$(awk -v f="$f" '
+  BEGIN { q = sprintf("%c", 39); dq = sprintf("%c", 34); bs = sprintf("%c", 92) }
+  /^[ \t]*adapter[ \t]*=/ { adapter = 1 }
+  # inside the empty_prompt value: scan chars from pos on this line until the array closes
+  col {
+    s = $0; i = 1
+  }
+  !col && /^[ \t]*\[/ {
+    st = ($0 ~ /^[ \t]*\[states\][ \t]*(#.*)?$/)
+    if (st && !hdr) hdr = FNR
+    next
+  }
+  !col && st && /^[ \t]*empty_prompt[ \t]*=/ {
+    has = 1; key = FNR; bad = 0; depth = 0; col = 1
+    s = $0; sub(/^[^=]*=/, "", s); i = 1
+  }
+  col {
+    n = length(s)
+    while (i <= n && col) {
+      c = substr(s, i, 1)
+      if (c == "#") break
+      if (c == "[") depth++
+      else if (c == "]") { depth--; if (depth <= 0) col = 0 }
+      else if (c == q || c == dq) {
+        j = i + 1; v = ""
+        while (j <= n && substr(s, j, 1) != c) {
+          if (c == dq && substr(s, j, 1) == bs) { v = v substr(s, j, 1); j++ }
+          v = v substr(s, j, 1); j++
+        }
+        if (c == q) { if (substr(v, length(v) - 1) != bs "z") bad = 1 }
+        else if (substr(v, length(v) - 2) != bs bs "z") bad = 1
+        i = j
+        if (depth <= 0) col = 0
+      }
+      i++
+    }
+    if (!col && bad) fl = fl "F " f ":" key "\n"
+  }
+  END {
+    if (adapter) exit
+    if (!has) print "E " f ":" (hdr ? hdr : 1)
+    printf "%s", fl
+  }' "$f")
+  while IFS= read -r line; do
+    case $line in
+      E*) LINT_E="${LINT_E}$line
+" ;;
+      F*) LINT_F="${LINT_F}$line
+" ;;
+    esac
+  done <<HITS
+$hits
+HITS
+done
+export LINT_E LINT_F
 
 allow() {
   cat <<'EOF'
@@ -143,6 +215,8 @@ function sentenceB(line,    s, n, i, parts) {
 }
 END {
   nd = split(ENVIRON["LINT_D"], dl, "\n")
+  for (i = 1; i <= nd; i++) if (dl[i] != "") { print dl[i]; fails++ }
+  nd = split(ENVIRON["LINT_E"] ENVIRON["LINT_F"], dl, "\n")
   for (i = 1; i <= nd; i++) if (dl[i] != "") { print dl[i]; fails++ }
   for (i = 1; i <= na; i++) if (rows[i] != "" && !used[i]) print "lint-agents: stale " rows[i]
   if (fails) { print "lint-agents: FAIL (" fails ")"; exit 1 }
