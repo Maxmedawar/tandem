@@ -44,6 +44,7 @@
 import { homedir } from 'node:os'
 import { validateModel, validateEffort, TerminalSession } from './terminal-session.ts'
 import type { EngineId } from './drivable.ts'
+import type { Harness } from './harness-registry.ts'
 import {
   resolveEngine,
   UnknownEngineError,
@@ -53,6 +54,7 @@ import {
 import { ClaudeSession } from './engines/claude.ts'
 import { CodexSession } from './engines/codex.ts'
 import { ShellSession } from './engines/shell.ts'
+import { HarnessSession } from './engines/harness-engine.ts'
 import { HermesSession, loadHermesConfig } from './engines/hermes.ts'
 import {
   buildAllowlist,
@@ -220,8 +222,9 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
   // TANDEM_ENABLED_ENGINES.
   const rawEngine = req.body['engine'] !== undefined ? String(req.body['engine']) : undefined
   let engine: EngineId
+  let harness: Harness | undefined
   try {
-    ;({ id: engine } = await resolveEngine(rawEngine))
+    ;({ id: engine, harness } = await resolveEngine(rawEngine))
   } catch (e) {
     if (e instanceof UnknownEngineError) return err(400, e.message)
     if (e instanceof EngineDisabledError) return err(403, e.message)
@@ -240,7 +243,7 @@ async function handleOpen(req: RpcRequest): Promise<RpcResult> {
   if (engine === 'hermes') {
     return handleOpenHermes(name, req)
   }
-  return handleOpenTmux(engine, name, req)
+  return handleOpenTmux(engine, name, req, harness)
 }
 
 /** open_session for the `hermes` engine: attach to an existing, explicitly
@@ -300,9 +303,9 @@ async function handleOpenHermes(name: string, req: RpcRequest): Promise<RpcResul
   }
 }
 
-/** open_session for claude/codex/shell: the shared tmux lifecycle, generalized
- *  from Phase 1's Claude-only path. model/effort remain Claude-only. */
-async function handleOpenTmux(engine: 'claude' | 'codex' | 'shell', name: string, req: RpcRequest): Promise<RpcResult> {
+/** open_session for claude/codex/shell and harness engines: the shared tmux lifecycle,
+ *  generalized from Phase 1's Claude-only path. model/effort remain Claude-only. */
+async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, harness?: Harness): Promise<RpcResult> {
   // Per-session model/effort (optional, Claude only — binding Phase 2 correction
   // C: no silent option loss for codex/shell). Validated up front so a bad value
   // fails as a clean 400 rather than a generic 500 from spawn.
@@ -349,8 +352,9 @@ async function handleOpenTmux(engine: 'claude' | 'codex' | 'shell', name: string
 
   // Re-adopt a ccm-* session that survived a bridge restart (re-validates
   // provenance tags + cwd).
-  const adopted =
-    engine === 'claude'
+  const adopted = harness
+    ? await HarnessSession.attachExisting(harness, name, ALLOWLIST)
+    : engine === 'claude'
       ? await ClaudeSession.attachExisting(name, ALLOWLIST)
       : engine === 'codex'
         ? await CodexSession.attachExisting(name, ALLOWLIST)
@@ -360,8 +364,9 @@ async function handleOpenTmux(engine: 'claude' | 'codex' | 'shell', name: string
     audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, adopted: true })
     return ok({ name: adopted.id, engine, cwd: adopted.cwd, attachHint: adopted.attachHint(), reused: true })
   }
-  const stillExists =
-    engine === 'claude'
+  const stillExists = harness
+    ? await HarnessSession.exists(name)
+    : engine === 'claude'
       ? await ClaudeSession.exists(name)
       : engine === 'codex'
         ? await CodexSession.exists(name)
@@ -375,8 +380,9 @@ async function handleOpenTmux(engine: 'claude' | 'codex' | 'shell', name: string
   }
 
   try {
-    const session =
-      engine === 'claude'
+    const session = harness
+      ? await HarnessSession.spawn(harness, { name, cwd, allowlist: ALLOWLIST })
+      : engine === 'claude'
         ? await ClaudeSession.spawn({ name, cwd, allowlist: ALLOWLIST, model, effort })
         : engine === 'codex'
           ? await CodexSession.spawn({ name, cwd, allowlist: ALLOWLIST })

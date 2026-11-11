@@ -1,7 +1,33 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterAll, beforeEach } from "vitest";
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { buildMcpServer } from "../src/mcp-server.ts";
+import { resetHarnessCache } from "../bridge/engine-registry.ts";
+
+// Owner harness files load from $TANDEM_HOME/harnesses: an empty home here, so only the
+// harness test below adds an engine name.
+const TANDEM_HOME = mkdtempSync(join(tmpdir(), "r1a10-mcp-"));
+process.env.TANDEM_HOME = TANDEM_HOME;
+beforeEach(() => resetHarnessCache());
+afterAll(() => {
+  resetHarnessCache();
+  rmSync(TANDEM_HOME, { recursive: true, force: true });
+});
+
+async function engineEnum(): Promise<string[] | undefined> {
+  const server = buildMcpServer();
+  const client = new Client({ name: "test", version: "0.0.0" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+  const { tools } = await client.listTools();
+  await client.close();
+  await server.close();
+  const open = tools.find((t) => t.name === "open_session");
+  return ((open?.inputSchema as { properties?: Record<string, { enum?: string[] }> }).properties?.["engine"])?.enum;
+}
 
 // The ONE tool surface shared by both transports (HTTP and stdio). If either
 // transport's view of the tools drifts, this locks it down.
@@ -53,5 +79,20 @@ describe("buildMcpServer (shared tool surface)", () => {
 
     await client.close();
     await server.close();
+  });
+
+  it("open_session's engine enum adds the name of each loaded harness file", async () => {
+    const owner = join(TANDEM_HOME, "harnesses");
+    mkdirSync(owner);
+    chmodSync(owner, 0o700);
+    writeFileSync(join(owner, "r1a10-agent.toml"), 'name = "r1a10-agent"\nprogram = "/usr/bin/true"\nhas_prompts = false\n', { mode: 0o600 });
+    try {
+      resetHarnessCache();
+      expect((await engineEnum())?.slice().sort()).toEqual(["claude", "codex", "hermes", "r1a10-agent", "shell"]);
+    } finally {
+      rmSync(owner, { recursive: true, force: true });
+    }
+    resetHarnessCache();
+    expect((await engineEnum())?.slice().sort()).toEqual(["claude", "codex", "hermes", "shell"]);
   });
 });

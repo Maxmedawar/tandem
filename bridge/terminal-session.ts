@@ -505,7 +505,10 @@ export class TerminalSession {
     // pre-spawn, so a bad value fails clearly instead of launching a
     // misconfigured session.
     const engineArgv: string[] = []
-    if (descriptor.executable) {
+    if (descriptor.argv) {
+      // A harness engine: its argv verbatim, never one command string (decision D7).
+      engineArgv.push(...descriptor.argv)
+    } else if (descriptor.executable) {
       engineArgv.push(descriptor.executable)
       if (descriptor.id === 'claude') {
         warnLegacySkipPermissionsIfSet()
@@ -650,6 +653,11 @@ export class TerminalSession {
     }
   }
 
+  /** The pane's current screen (what a harness engine's state rules read). */
+  screen(): Promise<string> {
+    return this.capture()
+  }
+
   /** capture-pane current visible content (ANSI already resolved by tmux -p). */
   private async capture(): Promise<string> {
     try {
@@ -680,12 +688,14 @@ export class TerminalSession {
 
   private async warmupMarkerBased(isReady: (pane: string) => boolean): Promise<void> {
     const deadline = Date.now() + SPAWN_WARMUP_MS
+    // Claude's own dialogs only: another agent's trust dialog never gets a key it was not sent.
+    const isClaude = this.descriptor.id === 'claude'
     let trusted = false
     let bypassAccepted = false
     while (Date.now() < deadline) {
       const pane = await this.capture()
       const lower = pane.toLowerCase()
-      if (!trusted && lower.includes(TRUST_PROMPT_MARKER)) {
+      if (isClaude && !trusted && lower.includes(TRUST_PROMPT_MARKER)) {
         // Confirm "Yes, I trust this folder" (the highlighted default) with Enter.
         await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
         trusted = true
@@ -697,7 +707,7 @@ export class TerminalSession {
       // before / lacks settings.skipDangerousModePermissionPrompt). Best-effort:
       // the affirmative ("Yes, I accept") sits below the default "No, exit", so
       // move down once and confirm. Hosts that auto-skip this never hit it.
-      if (!bypassAccepted && lower.includes(BYPASS_ACCEPT_MARKER)) {
+      if (isClaude && !bypassAccepted && lower.includes(BYPASS_ACCEPT_MARKER)) {
         await tmux(['send-keys', '-t', this.tmuxTarget, 'Down'])
         await sleep(150)
         await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
