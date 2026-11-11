@@ -17,8 +17,16 @@ resume = ["--session", "{id}"]
 delivery = "notice"
 
 [states]
-waiting_for_approval = ['△ Permission required', 'esc (?:dismiss|close)']
-working = ['(?i)esc.*interrupt']
+waiting_for_approval = [
+  # U-R1B-ANCHOR: the permission prompt ends the screen: no composer bottom edge (╹▀) after it, then \z.
+  '△ Permission required[^\n]*(?:\n[ \t]*(?:[^ \t╹\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR: the dialog's own key hint, then no composer bottom edge (╹▀) after it, to \z.
+  'esc (?:dismiss|close)[^\n]*(?:\n[ \t]*(?:[^ \t╹\n][^\n]*)?)*\z',
+]
+working = [
+  # U-R1B-ANCHOR: the marker, at most 4 lines, then the composer's bottom edge (╹▀) and its footer to \z, or the marker in that footer; no other edge between.
+  '(?i)esc[^\n]*interrupt[^\n]*(?:\n[ \t]*(?:[^ \t╹\n][^\n]*)?){0,4}(?:\n[ \t]*╹▀+[^\n]*)?(?:\n[ \t]*(?:[^ \t╹\n][^\n]*)?)*\z',
+]
 idle = ['╹▀+\n[^\n]*ctrl\+p commands']
 # U-R1A-18D: an agent's text enters only an empty prompt (the composer shows only its `Ask anything… "..."` placeholder).
 empty_prompt = ['^[ \t]*┃[ \t]*\n[ \t]*┃[ \t]+Ask anything… "[^"\n]*"[ \t]*\n[ \t]*┃[ \t]*\n[ \t]*┃[^\n]*\n[ \t]*╹▀+[ \t]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z']

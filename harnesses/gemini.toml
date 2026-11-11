@@ -21,13 +21,21 @@ delivery = "notice"
 
 [states]
 waiting_for_approval = [
-  '(?i)waiting for user confirmation',
-  '│ (?:Apply this change|Allow execution|Do you want to proceed)',
-  '(?i)(?:allow execution|do you want to|apply this change)[\s\S]*?\n+[\s\S]*?\byes\b',
-  'No, suggest changes \(esc\)',
+  # U-R1B-ANCHOR: the confirmation ends the screen: no input row holding text (the prompt is hidden) after it, then \z.
+  '(?i)waiting for user confirmation[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
+  # U-R1B-ANCHOR: the confirmation ends the screen: no input row holding text (the prompt is hidden) after it, then \z.
+  '│ (?:Apply this change|Allow execution|Do you want to proceed)[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
+  # U-R1B-ANCHOR: the confirmation ends the screen: no input row holding text (the prompt is hidden) after it, then \z.
+  '(?i)(?:allow execution|do you want to|apply this change)[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*?\n[ \t]*(?:│[ \t]*)?(?:[^ \t│>*\n][^\n]*)?\byes\b[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
+  # U-R1B-ANCHOR: the confirmation ends the screen: no input row holding text (the prompt is hidden) after it, then \z.
+  'No, suggest changes \(esc\)[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
 ]
-working = ['(?i)esc to cancel']
-idle = ['(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file']
+working = [
+  # U-R1B-ANCHOR: the marker, at most 3 lines, then the input row in use and its footer to \z (no other input row between or after).
+  '(?i)esc to cancel[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?){0,3}(?:\n ?(?:│ )?[>*] [^\n]*)?(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
+]
+# U-R1B-ANCHOR: the placeholder row in use, then only lines that are not an input row, to \z (as empty_prompt).
+idle = ['(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*)?)*\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (the input row shows only its `Type your message` placeholder).
 empty_prompt = ['^ ?(?:│ )?[>*] +Type your message or @path/to/file[ \t]*(?:│[ \t]*)?(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*)?)*\z']
 

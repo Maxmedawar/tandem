@@ -13,15 +13,26 @@ history = "~/.grok/sessions"
 
 [states]
 waiting_for_approval = [
-  '\d/\d:select',
-  '\([○●]\) No, reject \(type to add feedback\)',
-  ':next answer',
-  ':accept / toggle',
-  '◆ (?:Waiting on answers for|Waiting on plan approval|No plan written)',
-  'Do you trust the contents of this directory',
+  # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
+  '\d/\d:select[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
+  '\([○●]\) No, reject \(type to add feedback\)[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
+  ':next answer[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
+  ':accept / toggle[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
+  '◆ (?:Waiting on answers for|Waiting on plan approval|No plan written)[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR: the menu ends the screen: no box opens after it (the composer box is gone), then \z.
+  'Do you trust the contents of this directory[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
 ]
 # grok 1.0.77 mid-turn (grok-working-real*.txt): a spinner line and `Ctrl+c:cancel` in the footer.
-working = ['^\s*[⠋⠙⠹⠸⠼⠴⠦⠧] ', 'Ctrl\+c:cancel']
+working = [
+  # U-R1B-ANCHOR: the spinner, at most 4 lines, then the one-row composer box and at most 3 footer lines to \z (or no box at all); no other box between.
+  '^[ \t]*[⠋⠙⠹⠸⠼⠴⠦⠧] [^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?){0,4}(?:\n[ \t]*╭─[^\n]*╮[ \t]*\n[ \t]*│ ❯[^\n]*│[ \t]*\n[ \t]*╰─[^\n]*╯[ \t]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?){0,3})?\z',
+  # U-R1B-ANCHOR: the footer key hint, then no box opens after it, to \z.
+  'Ctrl\+c:cancel[^\n]*(?:\n[ \t]*(?:[^ \t╭\n][^\n]*)?)*\z',
+]
 # grok 1.0.77's composer: a one-row ❯ box with at most 3 footer lines below it, at the bottom of the
 # screen; empty when ready (grok-idle-real.txt), or holding the prompt grok puts back after Ctrl+C
 # cancels a turn (grok-idle-real2.txt). A ❯ box higher up, or with more rows, is not the composer.

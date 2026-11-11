@@ -18,7 +18,10 @@ waiting_for_approval = [
   '│ (?:Apply this change|Allow execution|Do you want to proceed)',
   '(?i)(?:allow execution|do you want to|apply this change)[\s\S]*?\n+[\s\S]*?\byes\b',
 ]
-working = ['(?i)esc to cancel']
+working = [
+  # U-R1B-ANCHOR: the footer marker, then no line that starts a rule or the > prompt (no prompt box after it), to \z.
+  '(?i)esc to cancel[^\n]*(?:\n(?:[^─>\n][^\n]*)?)*\z',
+]
 idle = ['\? for shortcuts']
 # U-R1A-18D: an agent's text enters only an empty prompt (a bare > row between the two rules above `? for shortcuts`).
 empty_prompt = ['^─{20,}[ \t]*\n>[ \t]*\n─{20,}[ \t]*\n\? for shortcuts[^\n]*(?:\n(?:[^─>\n][^\n]*)?)*\z']
