@@ -24,14 +24,13 @@
  *     "/srv/code-evil" (prefix-confusion guard).
  */
 
-import { execFile } from 'node:child_process'
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import type { DrivableSession, EngineId } from './drivable.ts'
 import { enabledEngineIds, loadedHarnesses } from './engine-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
-import { readSessionProvenance } from './terminal-session.ts'
+import { attachCommand, readSessionProvenance, tmux, TMUX_FIELD_SEP } from './terminal-session.ts'
 
 const HOME = homedir()
 const SESSION_PREFIX = 'ccm-'
@@ -140,18 +139,7 @@ export function liveSessionNames(): string[] {
 }
 
 // ---- tmux live listing (provenance-checked) --------------------------------
-
-function tmux(args: string[]): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    execFile('tmux', args, { maxBuffer: 4 * 1024 * 1024 }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(`tmux ${args[0]} failed: ${stderr || error.message}`))
-        return
-      }
-      resolve(stdout)
-    })
-  })
-}
+// tmux runs through terminal-session.ts's one runner, on Tandem's own socket.
 
 export interface LiveListingDependencies {
   ownerIdProvider?: OwnerIdProvider
@@ -184,14 +172,18 @@ export async function listLiveTmuxSessions(
   const provenanceReader = deps.provenanceReader ?? readSessionProvenance
   let raw: string
   try {
-    raw = await tmuxFn(['list-sessions', '-F', '#{session_name}\t#{session_created}\t#{pane_current_path}'])
+    raw = await tmuxFn(['list-sessions', '-F', ['#{session_name}', '#{session_created}', '#{pane_current_path}'].join(TMUX_FIELD_SEP)])
   } catch {
     return [] // tmux absent or no server running
   }
   const candidates: { name: string; created: string; cwd: string }[] = []
   for (const line of raw.split('\n')) {
     if (!line.trim()) continue
-    const [name, created, cwd] = line.split('\t')
+    // The cwd is last and takes the rest of the line (a folder name may hold the separator).
+    const parts = line.split(TMUX_FIELD_SEP)
+    if (parts.length < 3) continue
+    const [name, created] = parts
+    const cwd = parts.slice(2).join(TMUX_FIELD_SEP)
     if (!name || !name.startsWith(SESSION_PREFIX)) continue
     const bareName = name.slice(SESSION_PREFIX.length)
     if (!SESSION_NAME_RE.test(bareName) || RELAY_NAME_RE.test(bareName)) continue
@@ -275,7 +267,7 @@ export async function listSessions(
       cwd: s.cwd,
       live: true,
       updatedAt: s.createdAt,
-      attachHint: `tmux attach -t '=${s.target}'`,
+      attachHint: attachCommand(s.name),
     }))
 
   const all = [...registered, ...adoptedCandidates]

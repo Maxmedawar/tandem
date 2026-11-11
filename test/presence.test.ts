@@ -32,7 +32,7 @@ async function guarded<T>(step: () => T | Promise<T>): Promise<T> {
 const box = () => { const dir = mkdtempSync("/tmp/r1a29-"); BOXES.push(dir); return dir; };
 const BOX = box();
 const STDIO_BOX = await guarded(box);
-const SOCK = join(BOX, `tmux-${process.getuid!()}`, "default");
+const SOCK = join(BOX, "tandem", "tmux", "tandem"); // U-R1A-19: Tandem's own socket under TANDEM_HOME
 const WORK = join(BOX, "work");
 const TANDEM_HOME = join(BOX, "tandem");
 const OWNER = join(TANDEM_HOME, "harnesses");

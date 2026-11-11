@@ -27,13 +27,14 @@ export const missing = [existsSync(wranglerBin) ? '' : 'hub/node_modules/.bin/wr
 export const rand = (chars: number) => randomBytes(chars).toString('hex').slice(0, chars)
 export const LINK_TOKEN = rand(32)
 const HUB_PASSWORD = rand(32)
-const uid = process.getuid?.() ?? 0
 
 export interface Bridge {
   id: string
   base: string
   home: string
   tmuxDir: string
+  /** U-R1A-19: Tandem's own tmux socket, <its TANDEM_HOME, else HOME/.tandem>/tmux/tandem. */
+  socket: string
   folder: string
   child?: ChildProcess
   stderr: string
@@ -111,6 +112,7 @@ export async function startBridge(id: string, extraEnv: Record<string, string> =
     base,
     home: join(base, 'home'),
     tmuxDir: join(base, 'tmux'),
+    socket: join(base, 'home', '.tandem', 'tmux', 'tandem'),
     folder: join(base, 'work'),
     stderr: '',
   }
@@ -140,6 +142,7 @@ export async function startBridge(id: string, extraEnv: Record<string, string> =
     // HOME's .tandem), allowing what it already enables: its work folder, and the shell pinned to the
     // sh its PATH finds.
     const tandemHome = env.TANDEM_HOME || join(env.HOME!, '.tandem')
+    bridge.socket = join(tandemHome, 'tmux', 'tandem')
     const { agentEntry, writeLimits } = await import('../fixtures/limits.ts')
     const { loadHarnesses } = await import('../../bridge/harness-registry.ts')
     const sh = loadHarnesses({ ownerDir: join(tandemHome, 'harnesses'), path: env.PATH ?? '' }).harnesses.get('shell')!
@@ -177,7 +180,7 @@ export async function stopBridge(bridge: Bridge | undefined): Promise<void> {
 }
 
 export function socketOf(bridge: Bridge): string {
-  return join(bridge.tmuxDir, `tmux-${uid}`, 'default')
+  return bridge.socket
 }
 
 const decodeHtml = (value: string) =>

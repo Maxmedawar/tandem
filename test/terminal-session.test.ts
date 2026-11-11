@@ -1,10 +1,13 @@
 import { describe, it, expect, afterEach, beforeAll, afterAll, beforeEach, vi } from "vitest";
-import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { appendFileSync, chmodSync, existsSync, lstatSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import {
   TerminalSession,
+  tmux as runTmux,
+  tmuxSocketPath,
+  type TmuxExec,
   canAdoptTerminalSession,
   describeReadiness,
   describeMarkerlessReadiness,
@@ -30,7 +33,17 @@ const testEnv = await vi.hoisted(async () => {
   delete process.env.TANDEM_NTFY_TOPIC;
   delete process.env.TANDEM_DONE_WEBHOOK;
   if (os.homedir() !== home) throw new Error("HOME override did not take; refusing to touch the real ~/.tandem");
-  return { home };
+  // U-R1A-19: TMUX unset, a private default socket folder and a private TANDEM_HOME (so Tandem's
+  // own socket is <it>/tmux/tandem), both set before the bridge modules load.
+  delete process.env.TMUX;
+  const tmuxTmp = fs.mkdtempSync(path.join(os.tmpdir(), "r1a19-"));
+  const tandemHome = fs.mkdtempSync(path.join(os.tmpdir(), "r1a19-"));
+  const work = path.join(tmuxTmp, "work");
+  fs.mkdirSync(work);
+  process.env.TMUX_TMPDIR = tmuxTmp;
+  process.env.TANDEM_HOME = tandemHome;
+  process.env.CCM_CWD_ALLOWLIST = work;
+  return { home, tmuxTmp, tandemHome, work };
 });
 afterAll(() => rmSync(testEnv.home, { recursive: true, force: true }));
 
@@ -139,7 +152,7 @@ describe("describeReadiness", () => {
     const msg = describeReadiness("", 1.0, 8, "myname");
     expect(msg).not.toBeNull();
     expect(msg).not.toContain("overloaded");
-    expect(msg).toContain("tmux attach -t ccm-myname");
+    expect(msg).toContain(`tmux -S ${shq(tmuxSocketPath())} attach -t '=ccm-myname'`);
   });
 
   it("treats load just above 1.5x CPUs as overloaded, and at/below as not", () => {
@@ -288,6 +301,45 @@ type Internals = { capture(): Promise<string>; injectMultiline(text: string): Pr
 /** A markerless descriptor that is ready as soon as `cat` echoes its warmup line. */
 const CAT_DESCRIPTOR: EngineDescriptor = { id: "shell", executable: "cat", warmupPrompt: "ready", minStableMs: 0 };
 
+const HINT_SHELLS = ["/bin/sh", "/bin/bash", "/bin/zsh"];
+
+/** Ends the server on `sock` and waits until the socket answers "no server": kill-server returns
+ *  before the server stops listening, and a client in that window (the next test's first tmux
+ *  call) gets "server exited unexpectedly" (seen on Linux, tmux 3.4). */
+async function endServer(sock: string): Promise<void> {
+  const env = { ...process.env };
+  delete env.TMUX;
+  delete env.TMUX_PANE;
+  if (!existsSync(sock)) return;
+  spawnSync(REAL_TMUX, ["-S", sock, "kill-server"], { env });
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const r = spawnSync(REAL_TMUX, ["-S", sock, "list-sessions"], { encoding: "utf8", env });
+    if (r.status !== 0 && /no server running|error connecting/.test(r.stderr)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+const onPath = (program: string): boolean => spawnSync("/bin/sh", ["-c", `command -v ${program}`]).status === 0;
+/** Pastes an attachHint() command into `shell` with a stand-in for `tmux` first: it checks the
+ *  argv is `-S <socket> attach -t <target>`, resolves the target as a session on that socket and
+ *  prints its name. */
+function pasteHint(shell: string, hint: string, dir: string): string {
+  const shim = join(dir, "attach-shim");
+  writeFileSync(
+    shim,
+    [
+      "#!/bin/sh",
+      '[ "$1" = -S ] && [ "$3" = attach ] && [ "$4" = -t ] && [ $# -eq 5 ] || { echo "unexpected argv: $*" >&2; exit 2; }',
+      "unset TMUX TMUX_PANE",
+      `exec ${shq(REAL_TMUX)} -S "$2" list-windows -t "$5" -F '#{session_name}'`,
+      "",
+    ].join("\n"),
+    { mode: 0o700 },
+  );
+  expect(hint.startsWith("tmux ")).toBe(true);
+  return execFileSync(shell, ["-c", shq(shim) + hint.slice("tmux".length)], { encoding: "utf8" }).trim();
+}
+
 describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", () => {
   let box = "";
   let sock = "";
@@ -344,8 +396,11 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
   }
 
   beforeAll(() => {
+    savedPath = process.env.PATH;
     box = mkdtempSync(join(tmpdir(), "tandem-tmux-"));
-    sock = join(box, "sock");
+    // U-R1A-19: the bridge runs every tmux call on Tandem's own socket; the shim pins the same one.
+    sock = tmuxSocketPath();
+    mkdirSync(dirname(sock), { recursive: true, mode: 0o700 });
     callLog = join(box, "calls.log");
     const bin = join(box, "bin");
     mkdirSync(bin);
@@ -354,6 +409,7 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
       [
         "#!/bin/sh",
         "unset TMUX TMUX_PANE",
+        'if [ "$1" = -S ]; then shift 2; fi',
         `REAL=${shq(REAL_TMUX)}; SOCK=${shq(sock)}; export REAL SOCK`,
         '"$REAL" -S "$SOCK" "$@"',
         "rc=$?",
@@ -364,21 +420,16 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
       ].join("\n"),
       { mode: 0o700 },
     );
-    savedPath = process.env.PATH;
     process.env.PATH = `${bin}:${savedPath}`;
   });
   beforeEach(() => {
     writeFileSync(callLog, "");
     tx("new-session", "-d", "-s", "keeper", "sleep", "600");
   });
-  afterEach(() => {
+  afterEach(async () => {
     delete process.env.TB_AFTER;
     delete process.env.TB_HOOK;
-    try {
-      tx("kill-server");
-    } catch {
-      /* already gone */
-    }
+    await endServer(sock);
   });
   afterAll(() => {
     process.env.PATH = savedPath;
@@ -553,7 +604,8 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
     expect(r.status).toBe("done");
   }, 30_000);
 
-  it("h) a relay turn ending in 'quiet' advances to the next turn and passes on its report", async () => {
+  // The relay reads the built-in claude harness file, which needs a `claude` program on PATH.
+  it.skipIf(!onPath("claude"))("h) a relay turn ending in 'quiet' advances to the next turn and passes on its report (needs claude on PATH)", async () => {
     const quietEngine: EngineDescriptor = { id: "codex", executable: "codex", minStableMs: 0 };
     sink("h-lead");
     sink("h-worker");
@@ -590,33 +642,19 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
     expect(leadSaw[1]).toContain("step one finished");
   }, 30_000);
 
-  it("i) the target printed by attachHint() resolves to that exact session when pasted into sh, bash and zsh", () => {
-    sink("i-hint");
-    sink("i-hint-long");
-    const hint = session("i-hint", CLAUDE_DESCRIPTOR).attachHint();
-    expect(hint.startsWith("tmux attach -t ")).toBe(true);
-    // Stand-in for `tmux attach`: resolve the pasted target as a session, print its name.
-    const shim = join(box, "attach-shim");
-    writeFileSync(
-      shim,
-      [
-        "#!/bin/sh",
-        '[ "$1" = attach ] && [ "$2" = -t ] && [ $# -eq 3 ] || { echo "unexpected argv: $*" >&2; exit 2; }',
-        "unset TMUX TMUX_PANE",
-        `exec ${shq(REAL_TMUX)} -S ${shq(sock)} list-windows -t "$3" -F '#{session_name}'`,
-        "",
-      ].join("\n"),
-      { mode: 0o700 },
-    );
-    const cmd = shq(shim) + hint.slice("tmux".length);
-    for (const shell of ["/bin/sh", "/bin/bash", "/bin/zsh"].filter((p) => existsSync(p))) {
-      expect(execFileSync(shell, ["-c", cmd], { encoding: "utf8" }).trim(), `${shell}: ${hint}`).toBe("ccm-i-hint");
-    }
-  });
+  for (const shell of HINT_SHELLS) {
+    it.skipIf(!existsSync(shell))(`i) the attach command printed by attachHint() reaches that exact session when pasted into ${shell}`, () => {
+      sink("i-hint");
+      sink("i-hint-long");
+      const hint = session("i-hint", CLAUDE_DESCRIPTOR).attachHint();
+      expect(hint).toBe(`tmux -S ${shq(sock)} attach -t '=ccm-i-hint'`);
+      expect(pasteHint(shell, hint, box), `${shell}: ${hint}`).toBe("ccm-i-hint");
+    });
+  }
 
   it("j) the bridge's secret settings reach neither the tmux server nor a session's environment; process.env keeps them", async () => {
     // The keeper started this socket's server with the test's own environment: start clean.
-    tx("kill-server");
+    await endServer(sock);
     const secrets: Record<string, string> = {
       TANDEM_OWNER_PASSWORD: "r1a12-owner-password-value",
       TANDEM_HUB_LINK_TOKEN: "r1a12-hub-link-token-value",
@@ -750,4 +788,295 @@ describe("quiet completion events (TANDEM-B-SESSION-R1 review-fix)", () => {
       unregisterLive(name);
     }
   });
+});
+
+// ---- U-R1A-19: Tandem's own tmux socket ----------------------------------------
+// Every bridge tmux call runs on `<TANDEM_HOME, else ~/.tandem>/tmux/tandem` in an owner-only
+// folder, never on the user's default socket (gate A2.8). TMUX is unset and TMUX_TMPDIR and
+// TANDEM_HOME are private r1a19- folders (set in the hoisted block above, before any import), so the
+// "default socket" here is this run's own. afterAll ends every server this describe could start,
+// each through its own -S socket after `test -S`, then removes the folders.
+describe.skipIf(!REAL_TMUX)("U-R1A-19: Tandem's own tmux socket", () => {
+  const WORK = testEnv.work;
+  const OWNER = "r1a19-owner";
+  const owner = async () => OWNER;
+  const uid = process.getuid!();
+  const defaultSock = join(testEnv.tmuxTmp, `tmux-${uid}`, "default");
+  const tandemSock = join(testEnv.tandemHome, "tmux", "tandem");
+  const homeSock = join(testEnv.home, ".tandem", "tmux", "tandem");
+  const quoteHome = join(testEnv.tmuxTmp, "it's here");
+  const quoteSock = join(quoteHome, "tmux", "tandem");
+  const extraDirs: string[] = [];
+  let savedShell: string | undefined;
+
+  const cleanEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => {
+    const env: NodeJS.ProcessEnv = { ...process.env, ...extra };
+    delete env.TMUX;
+    delete env.TMUX_PANE;
+    return env;
+  };
+  /** Raw tmux on an explicit socket (or this run's default socket when `sock` is ""). */
+  const raw = (sock: string, args: string[], extra: Record<string, string> = {}) =>
+    spawnSync(REAL_TMUX, sock ? ["-S", sock, ...args] : args, { encoding: "utf8", env: cleanEnv(extra) });
+  const killServer = (sock: string) => endServer(sock);
+  const shellSpawn = (name: string, cwd = WORK) =>
+    TerminalSession.spawn({ name, cwd, allowlist: [WORK], descriptor: SHELL_DESCRIPTOR, ownerIdProvider: owner });
+  async function withTandemHome<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const saved = process.env.TANDEM_HOME;
+    if (value === undefined) delete process.env.TANDEM_HOME;
+    else process.env.TANDEM_HOME = value;
+    try {
+      return await fn();
+    } finally {
+      if (saved === undefined) delete process.env.TANDEM_HOME;
+      else process.env.TANDEM_HOME = saved;
+    }
+  }
+  /** Types `echo "<mark>=[$(printenv NAME)]"` into a shell pane and returns what it printed between the brackets. */
+  async function paneValue(sock: string, name: string, varName: string): Promise<string> {
+    const mark = `r1a19v${Math.random().toString(36).slice(2, 8)}`;
+    raw(sock, ["send-keys", "-t", `=ccm-${name}:`, "-l", "--", `echo "${mark}=[$(printenv ${varName})]"`]);
+    raw(sock, ["send-keys", "-t", `=ccm-${name}:`, "Enter"]);
+    const re = new RegExp(`^${mark}=\\[(.*)\\]$`, "m");
+    const deadline = Date.now() + 15_000;
+    while (Date.now() < deadline) {
+      const m = re.exec(raw(sock, ["capture-pane", "-p", "-t", `=ccm-${name}:`]).stdout);
+      if (m) return m[1];
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    throw new Error(`no ${mark} line in ccm-${name}`);
+  }
+  const globalNames = (sock: string): string[] =>
+    raw(sock, ["show-environment", "-g"]).stdout.split("\n").map((l) => l.replace(/^-/, "").split("=")[0]);
+  /** Every entry under `dir` with its type and mode, to prove nothing was created or repaired. */
+  const snapshot = (dir: string): string[] =>
+    readdirSync(dir, { recursive: true }).map(String).sort().map((rel) => {
+      const st = lstatSync(join(dir, rel));
+      return `${rel} ${st.isSymbolicLink() ? "l" : st.isDirectory() ? "d" : st.isSocket() ? "s" : "f"} ${(st.mode & 0o7777).toString(8)}`;
+    });
+
+  beforeAll(() => {
+    savedShell = process.env.SHELL;
+    process.env.SHELL = "/bin/sh";
+  });
+  afterAll(async () => {
+    process.env.SHELL = savedShell;
+    for (const sock of [defaultSock, tandemSock, homeSock, quoteSock]) await killServer(sock);
+    for (const dir of [testEnv.tmuxTmp, testEnv.tandemHome, ...extraDirs]) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a) A2.8: a spawned session lives on Tandem's socket, the default socket lists no ccm- session, tmux/ is 0700, the socket has no group/world bit", async () => {
+    await shellSpawn("r1a19-a");
+    expect(tmuxSocketPath()).toBe(tandemSock);
+    expect(raw(tandemSock, ["has-session", "-t", "=ccm-r1a19-a"]).status).toBe(0);
+    const ls = raw("", ["ls"]);
+    expect(ls.stdout.split("\n").filter((l) => l.startsWith("ccm-"))).toEqual([]);
+    expect(statSync(dirname(tandemSock)).mode & 0o777).toBe(0o700);
+    expect(statSync(tandemSock).isSocket()).toBe(true);
+    expect(statSync(tandemSock).mode & 0o077).toBe(0);
+  }, 30_000);
+
+  it("a) with TANDEM_HOME unset the socket is under the test's temp HOME", async () => {
+    await withTandemHome(undefined, async () => {
+      expect(homedir()).toBe(testEnv.home);
+      expect(tmuxSocketPath()).toBe(join(resolve(testEnv.home), ".tandem", "tmux", "tandem"));
+      await shellSpawn("r1a19-ahome");
+    });
+    expect(raw(homeSock, ["has-session", "-t", "=ccm-r1a19-ahome"]).status).toBe(0);
+    expect(statSync(dirname(homeSock)).mode & 0o777).toBe(0o700);
+    expect(statSync(homeSock).mode & 0o077).toBe(0);
+    await killServer(homeSock);
+  }, 30_000);
+
+  const refusals: [string, (th: string) => void][] = [
+    ["tmux/ 0755", (th) => { mkdirSync(join(th, "tmux")); chmodSync(join(th, "tmux"), 0o755); }],
+    ["tmux/ a symlink to a 0700 folder", (th) => { mkdirSync(join(th, "real"), { mode: 0o700 }); symlinkSync(join(th, "real"), join(th, "tmux")); }],
+    ["tmux/ a regular file", (th) => writeFileSync(join(th, "tmux"), "")],
+  ];
+  it.each(refusals)("b) %s: refused, no server started, nothing made or repaired", async (_label, setup) => {
+    const th = mkdtempSync(join(testEnv.tmuxTmp, "b-"));
+    setup(th);
+    const before = snapshot(th);
+    await withTandemHome(th, async () => {
+      await expect(shellSpawn("r1a19-b")).rejects.toThrow(join(th, "tmux"));
+      const { listLiveTmuxSessions } = await import("../bridge/sessions.ts");
+      expect(await listLiveTmuxSessions({ ownerIdProvider: owner })).toEqual([]);
+      expect(await TerminalSession.attachExisting("r1a19-b", [WORK], SHELL_DESCRIPTOR, owner)).toBeUndefined();
+    });
+    expect(snapshot(th)).toEqual(before);
+  }, 30_000);
+
+  it("b) a TANDEM_HOME making the socket path over 100 bytes: refused by name, nothing made", async () => {
+    const th = join(testEnv.tmuxTmp, "x".repeat(110));
+    const sock = join(th, "tmux", "tandem");
+    expect(() => tmuxSocketPath(th)).toThrow(`tmux socket path too long: ${sock}`);
+    await withTandemHome(th, async () => {
+      await expect(shellSpawn("r1a19-long")).rejects.toThrow(`tmux socket path too long: ${sock}`);
+      const { listLiveTmuxSessions } = await import("../bridge/sessions.ts");
+      expect(await listLiveTmuxSessions({ ownerIdProvider: owner })).toEqual([]);
+      expect(await TerminalSession.attachExisting("r1a19-long", [WORK], SHELL_DESCRIPTOR, owner)).toBeUndefined();
+    });
+    expect(existsSync(th)).toBe(false);
+  });
+
+  it("c) clean env: a stale default server's environment and the bridge's secrets reach no Tandem pane or server", async () => {
+    // A server on this run's DEFAULT socket that carries R1A19_STALE.
+    expect(raw("", ["new-session", "-d", "-s", "r1a19-stale", "sleep", "600"], { R1A19_STALE: "1" }).status).toBe(0);
+    expect(globalNames("").includes("R1A19_STALE")).toBe(true);
+    await killServer(tandemSock);
+    const saved = process.env.TANDEM_OWNER_PASSWORD;
+    process.env.TANDEM_OWNER_PASSWORD = "r1a19-secret";
+    try {
+      await shellSpawn("r1a19-c1");
+      expect(await paneValue(tandemSock, "r1a19-c1", "R1A19_STALE")).toBe("");
+      expect(globalNames(tandemSock).includes("TANDEM_OWNER_PASSWORD")).toBe(false);
+      expect(process.env.TANDEM_OWNER_PASSWORD).toBe("r1a19-secret");
+    } finally {
+      if (saved === undefined) delete process.env.TANDEM_OWNER_PASSWORD;
+      else process.env.TANDEM_OWNER_PASSWORD = saved;
+    }
+    // A Tandem-socket server already running with an old secret in its global environment.
+    await killServer(tandemSock);
+    expect(raw(tandemSock, ["new-session", "-d", "-s", "r1a19-pre", "sleep", "600"], { TANDEM_OWNER_PASSWORD: "r1a19-old" }).status).toBe(0);
+    expect(raw(tandemSock, ["show-environment", "-g"]).stdout.includes("=r1a19-old")).toBe(true);
+    await shellSpawn("r1a19-c3");
+    expect(await paneValue(tandemSock, "r1a19-c3", "TANDEM_OWNER_PASSWORD")).toBe("");
+    expect(raw(tandemSock, ["show-environment", "-g"]).stdout.includes("=r1a19-old")).toBe(false);
+    await killServer(defaultSock);
+  }, 60_000);
+
+  it("d) separator: with tmux printing tabs as `_` provenance, adoption and listing still work; a `|:|` cwd lists right; a `shell|:|x` tag is refused", async () => {
+    const { listLiveTmuxSessions } = await import("../bridge/sessions.ts");
+    const pipeDir = join(WORK, "a|:|b");
+    mkdirSync(pipeDir, { recursive: true });
+    await shellSpawn("r1a19-d");
+    await shellSpawn("r1a19-dpipe", pipeDir);
+    await shellSpawn("r1a19-dx");
+    raw(tandemSock, ["set-option", "-t", "=ccm-r1a19-dx:", "@tandem_engine", "shell|:|x"]);
+    const shimDir = mkdtempSync(join(tmpdir(), "r1a19-shim-"));
+    extraDirs.push(shimDir);
+    writeFileSync(
+      join(shimDir, "tmux"),
+      [
+        "#!/bin/sh",
+        `out=$(${shq(REAL_TMUX)} "$@")`,
+        "rc=$?",
+        `[ -n "$out" ] && printf '%s\\n' "$out" | tr '\\t' '_'`,
+        "exit $rc",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${shimDir}:${savedPath}`;
+    try {
+      expect(await readSessionProvenance("r1a19-d")).toEqual({ engine: "shell", owner: OWNER });
+      const adopted = await TerminalSession.attachExisting("r1a19-d", [WORK], SHELL_DESCRIPTOR, owner);
+      expect(adopted?.name).toBe("r1a19-d");
+      const listed = await listLiveTmuxSessions({ ownerIdProvider: owner });
+      const byName = Object.fromEntries(listed.map((s) => [s.name, s]));
+      expect(byName["r1a19-d"]).toMatchObject({ engine: "shell", cwd: realpathSync(WORK) });
+      expect(byName["r1a19-dpipe"]).toMatchObject({ engine: "shell", cwd: realpathSync(pipeDir) });
+      expect(await readSessionProvenance("r1a19-dx")).toEqual({ engine: "", owner: "" });
+      expect(await TerminalSession.attachExisting("r1a19-dx", [WORK], SHELL_DESCRIPTOR, owner)).toBeUndefined();
+      expect(byName["r1a19-dx"]).toBeUndefined();
+    } finally {
+      process.env.PATH = savedPath;
+    }
+  }, 60_000);
+
+  it("e) real adoption through route(): open, drop from the registry, GET /sessions lists it, open again reuses it", async () => {
+    const { routeForTest } = await import("../bridge/router.ts");
+    const { unregisterLive } = await import("../bridge/sessions.ts");
+    const { applyLimits } = await import("../bridge/limits.ts");
+    const { agentEntry, writeLimits } = await import("./fixtures/limits.ts");
+    const { loadedHarnesses, resetHarnessCache } = await import("../bridge/engine-registry.ts");
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", "shell");
+    vi.stubEnv("PATH", `/usr/bin:/bin:${process.env.PATH ?? ""}`);
+    resetHarnessCache();
+    writeLimits(testEnv.tandemHome, { folders: [WORK], shell: true, agents: { shell: agentEntry(loadedHarnesses().get("shell")!) } });
+    applyLimits();
+    const name = "r1a19-e";
+    try {
+      const opened = await routeForTest("POST", "/sessions/open", { name, engine: "shell", cwd: WORK });
+      expect(opened.status).toBe(200);
+      expect(raw(tandemSock, ["has-session", "-t", `=ccm-${name}`]).status).toBe(0);
+      unregisterLive(name);
+      const listed = await routeForTest("GET", "/sessions");
+      expect(listed.status).toBe(200);
+      const rows = (listed.body as { sessions: { id: string; engine: string; attachHint: string }[] }).sessions;
+      expect(rows.find((s) => s.id === name)).toMatchObject({ engine: "shell", attachHint: `tmux -S ${shq(tandemSock)} attach -t '=ccm-${name}'` });
+      const again = await routeForTest("POST", "/sessions/open", { name, engine: "shell", cwd: WORK });
+      expect(again.status).toBe(200);
+      expect(again.body).toMatchObject({ name, engine: "shell", reused: true });
+      const after = await routeForTest("GET", "/sessions");
+      expect((after.body as { sessions: { id: string }[] }).sessions.map((s) => s.id)).toContain(name);
+      expect((await routeForTest("POST", `/sessions/${name}/close`)).status).toBe(200);
+    } finally {
+      unregisterLive(name);
+      vi.unstubAllEnvs();
+      resetHarnessCache();
+    }
+  }, 60_000);
+
+  it("f) a correctly tagged ccm-r1a19-x on the DEFAULT socket is never listed or adopted", async () => {
+    const { listLiveTmuxSessions } = await import("../bridge/sessions.ts");
+    expect(raw("", ["new-session", "-d", "-s", "ccm-r1a19-x", "-c", WORK, "sleep", "600"]).status).toBe(0);
+    raw("", ["set-option", "-t", "=ccm-r1a19-x:", "@tandem_engine", "shell"]);
+    raw("", ["set-option", "-t", "=ccm-r1a19-x:", "@tandem_owner", OWNER]);
+    try {
+      expect((await listLiveTmuxSessions({ ownerIdProvider: owner })).map((s) => s.name)).not.toContain("r1a19-x");
+      expect(await TerminalSession.exists("r1a19-x")).toBe(false);
+      expect(await TerminalSession.attachExisting("r1a19-x", [WORK], SHELL_DESCRIPTOR, owner)).toBeUndefined();
+    } finally {
+      await killServer(defaultSock);
+    }
+  }, 30_000);
+
+  describe("g) retry", () => {
+    const spawnError = (code: string) => Object.assign(new Error(`spawn tmux ${code}`), { code });
+    it("EAGAIN twice then success: one result after 3 calls, each with -S <socket> first and no bridge secret", async () => {
+      const seen: { argv: string[]; env?: NodeJS.ProcessEnv }[] = [];
+      vi.stubEnv("TANDEM_OWNER_PASSWORD", "r1a19-secret");
+      try {
+        const exec: TmuxExec = (argv, opts, cb) => {
+          seen.push({ argv, env: opts.env });
+          if (seen.length <= 2) cb(spawnError("EAGAIN"), "", "");
+          else cb(null, "ok\n", "");
+        };
+        expect(await runTmux(["list-sessions"], exec)).toBe("ok\n");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+      expect(seen).toHaveLength(3);
+      for (const call of seen) {
+        expect(call.argv).toEqual(["-S", tandemSock, "list-sessions"]);
+        expect(call.env?.TANDEM_OWNER_PASSWORD).toBeUndefined();
+      }
+    });
+    it("EAGAIN four times: throws after 4 calls", async () => {
+      let n = 0;
+      const exec: TmuxExec = (_argv, _opts, cb) => { n++; cb(spawnError("EAGAIN"), "", ""); };
+      await expect(runTmux(["list-sessions"], exec)).rejects.toThrow(/EAGAIN/);
+      expect(n).toBe(4);
+    });
+    it("a tmux that ran and exited non-zero: 1 call", async () => {
+      let n = 0;
+      const exec: TmuxExec = (_argv, _opts, cb) => { n++; cb(Object.assign(new Error("Command failed"), { code: 1 }), "", "no server running"); };
+      await expect(runTmux(["list-sessions"], exec)).rejects.toThrow(/no server running/);
+      expect(n).toBe(1);
+    });
+  });
+
+  for (const shell of HINT_SHELLS) {
+    it.skipIf(!existsSync(shell))(`h) attachHint() with a socket path holding ' reaches that exact session when pasted into ${shell}`, async () => {
+      mkdirSync(join(quoteHome, "tmux"), { recursive: true, mode: 0o700 });
+      if (raw(quoteSock, ["has-session", "-t", "=ccm-r1a19-q"]).status !== 0) {
+        expect(raw(quoteSock, ["new-session", "-d", "-s", "ccm-r1a19-q", "-c", WORK, "sleep", "600"]).status).toBe(0);
+      }
+      const hint = await withTandemHome(quoteHome, async () => new Ctor("r1a19-q", WORK, join(testEnv.tmuxTmp, "q.log"), SHELL_DESCRIPTOR).attachHint());
+      expect(hint).toBe(`tmux -S ${shq(quoteSock)} attach -t '=ccm-r1a19-q'`);
+      expect(pasteHint(shell, hint, testEnv.tmuxTmp)).toBe("ccm-r1a19-q");
+    });
+  }
 });
