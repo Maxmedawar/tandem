@@ -93,6 +93,11 @@ export class HarnessSession extends TerminalAdapterSession {
     return { state, screen, debounceMs: this.harness.states?.debounce_ms ?? 0 }
   }
 
+  /** How mail reaches this session (bridge/delivery-notice.ts): the file's `delivery`; a shell never gets mail typed. */
+  deliveryClass(): 'hook' | 'notice' | 'none' {
+    return this.harness.kind === 'shell' ? 'none' : this.harness.delivery
+  }
+
   /** Closes the terminal, then removes a hook agent's delivery files. */
   async close(): Promise<void> {
     await super.close()
