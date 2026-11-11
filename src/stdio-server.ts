@@ -43,6 +43,7 @@ const { buildMcpServer } = await import("./mcp-server.ts");
 const { getAllowlist } = await import("../bridge/router.ts");
 const { createFleetRuntime, buildDefaultDeviceIdFromEnv } = await import("../bridge/fleet-runtime.ts");
 const { capabilityReport } = await import("../bridge/engine-registry.ts");
+const { startFabric } = await import("../bridge/fabric/local-fabric-host.ts");
 
 const allowlist = getAllowlist();
 if (allowlist.length === 0) {
@@ -60,7 +61,11 @@ const fleet = createFleetRuntime({
   defaultDeviceId: buildDefaultDeviceIdFromEnv(),
   localEngines: localCapabilities.filter((entry) => entry.enabled && entry.available).map((entry) => entry.engine),
 });
-const server = buildMcpServer(fleet);
+// This process's own fabric store (only with CCM_FABRIC_ENABLED=1). The bridge process may
+// open the same SQLite file: SQLite's file locks serialise the writes. Its diagnostics and
+// audit lines go to stderr, since stdout is the wire.
+const fabric = await startFabric({ stdout: (value) => process.stderr.write(value) });
+const server = await buildMcpServer(fleet, fabric);
 await server.connect(new StdioServerTransport());
 
 console.error("tandem MCP bridge ready on stdio (local, no token)");

@@ -8,7 +8,13 @@
  * `internal_error`; its message goes to stderr only. A response frame over the
  * link cap is answered 413 `payload_too_large` instead of being sent. The agent filter and
  * the read log lines live in route(), so hub calls and local MCP calls get the same ones.
+ *
+ * A path starting `/fabric/` goes to the fabric router instead, with the frame's
+ * `trusted_surface` marker (only the hub's /__fabric-rpc route sets it; without it the
+ * answer is 403) and this process's fabric store, if one is open (none: 503).
  */
+import { routeFabricRpc } from './fabric/rpc-router.ts'
+import type { LocalFabricHost } from './fabric/local-fabric-host.ts'
 import { MAX_FRAME_BYTES } from './hub-link.ts'
 import { route } from './router.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
@@ -37,7 +43,21 @@ function response(requestId: string, status: number, body: unknown): CcmHttpResp
   return frame
 }
 
-export async function handleHubRequest(frame: CcmHttpRequestFrame): Promise<CcmHttpResponseFrame> {
+export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: LocalFabricHost): Promise<CcmHttpResponseFrame> {
+  if (frame.path.startsWith('/fabric/')) {
+    try {
+      const result = await routeFabricRpc({
+        trust: frame.trusted_surface,
+        client: fabric?.client,
+        method: frame.method.toUpperCase(),
+        path: frame.path,
+        body: parseBody(frame.body_base64),
+      })
+      return response(frame.request_id, result.status, result.body)
+    } catch {
+      return response(frame.request_id, 503, { error: 'fabric_unavailable' })
+    }
+  }
   try {
     const method = frame.method.toUpperCase()
     const query = new URLSearchParams(frame.raw_query ?? '')

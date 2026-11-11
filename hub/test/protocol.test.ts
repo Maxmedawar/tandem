@@ -7,6 +7,7 @@ import {
   type CcmBridgeToRelayFrame,
   type CcmFrame,
 } from '../src/protocol.ts'
+import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
 describe('protocol frame round-trip', () => {
   const frames: CcmFrame[] = [
@@ -105,5 +106,28 @@ describe('parseBridgeFrame round-trip (relay-receivable frames)', () => {
   it('returns undefined for malformed input', () => {
     expect(parseBridgeFrame('not json')).toBeUndefined()
     expect(parseBridgeFrame(JSON.stringify({ type: 'bogus' }))).toBeUndefined()
+  })
+})
+
+describe('trusted_surface on a request frame', () => {
+  const request = {
+    type: CCM_FRAME_TYPES.httpRequest,
+    request_id: 'f1',
+    method: 'POST',
+    path: '/fabric/project/list',
+    headers: {},
+  } as const
+
+  it('keeps the fabric marker literal through serialize -> parse', () => {
+    const frame: CcmFrame = { ...request, trusted_surface: FABRIC_MCP_TRUST }
+    expect(parseAnyFrame(serializeFrame(frame))).toEqual(frame)
+  })
+
+  it('a frame without it still parses', () => {
+    expect(parseAnyFrame(JSON.stringify(request))).toEqual(request)
+  })
+
+  it.each(['', 'oauth-mcp-fabric-v2', 'OAUTH-MCP-FABRIC-V1', 1, true, null])('rejects any other value (%j)', (value) => {
+    expect(parseAnyFrame(JSON.stringify({ ...request, trusted_surface: value }))).toBeUndefined()
   })
 })

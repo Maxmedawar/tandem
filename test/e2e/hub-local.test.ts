@@ -8,161 +8,28 @@
  * way claude.ai does (register, authorize with the password, token with PKCE)
  * and calls the hub's tools with the MCP SDK client.
  */
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { createHash, randomBytes } from 'node:crypto'
-import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
-import { createServer, type AddressInfo } from 'node:net'
-import { tmpdir } from 'node:os'
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+import {
+  LINK_TOKEN, hub, missing, rand, signIn, socketOf, startBridge, startHub, stopBridge, stopHub, type Bridge,
+} from './hub-harness.ts'
 
-const repo = fileURLToPath(new URL('../..', import.meta.url))
-const hubDir = join(repo, 'hub')
-const wranglerBin = join(hubDir, 'node_modules', '.bin', 'wrangler')
-const hasTmux = spawnSync('tmux', ['-V'], { stdio: 'ignore' }).status === 0
-const missing = [existsSync(wranglerBin) ? '' : 'hub/node_modules/.bin/wrangler', hasTmux ? '' : 'tmux']
-  .filter(Boolean)
-  .join(' and ')
 const title = missing
   ? `one local hub, two bridges (skipped: ${missing} missing)`
   : 'one local hub, two bridges'
 
-const rand = (chars: number) => randomBytes(chars).toString('hex').slice(0, chars)
-const LINK_TOKEN = rand(32)
-const HUB_PASSWORD = rand(32)
-const uid = process.getuid?.() ?? 0
 const WAIT = 120_000
 
 type Id = 'alpha' | 'beta'
-interface Bridge {
-  id: Id
-  base: string
-  home: string
-  tmuxDir: string
-  folder: string
-  child?: ChildProcess
-  stderr: string
-}
 type Json = Record<string, any>
 
-let wrangler: ChildProcess | undefined
-let hubLog = ''
-let port = 0
-let persist = ''
-let hub = ''
 let client: Client | undefined
 const bridges = {} as Record<Id, Bridge>
 const other = (id: Id): Id => (id === 'alpha' ? 'beta' : 'alpha')
-
-async function freePort(): Promise<number> {
-  const probe = createServer()
-  probe.listen(0, '127.0.0.1')
-  await once(probe, 'listening')
-  const { port: free } = probe.address() as AddressInfo
-  await new Promise((resolve) => probe.close(resolve))
-  return free
-}
-
-async function waitFor(check: () => boolean, ms: number, what: string): Promise<void> {
-  const end = Date.now() + ms
-  while (!check()) {
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
-    await new Promise((resolve) => setTimeout(resolve, 100))
-  }
-}
-
-async function startHub(): Promise<void> {
-  port = await freePort()
-  const inspectorPort = await freePort()
-  persist = mkdtempSync(join(tmpdir(), 'r1a07-wrangler-'))
-  wrangler = spawn(wranglerBin, [
-    'dev', '--local', '--port', String(port), '--ip', '127.0.0.1', '--inspector-port', String(inspectorPort),
-    '--var', `TANDEM_HUB_LINK_TOKEN:${LINK_TOKEN}`,
-    '--var', `TANDEM_HUB_PASSWORD:${HUB_PASSWORD}`,
-    '--persist-to', persist,
-  ], { cwd: hubDir, detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'] })
-  await new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`wrangler dev was not ready in 60 s:\n${hubLog}`)), 60_000)
-    const read = (chunk: Buffer) => {
-      hubLog += chunk.toString()
-      if (hubLog.includes('Ready on')) {
-        clearTimeout(timer)
-        resolve()
-      }
-    }
-    wrangler!.stdout!.on('data', read)
-    wrangler!.stderr!.on('data', read)
-    wrangler!.once('exit', (code) => { clearTimeout(timer); reject(new Error(`wrangler dev exited ${code}:\n${hubLog}`)) })
-  })
-  hub = `http://127.0.0.1:${port}`
-}
-
-async function startBridge(id: Id): Promise<void> {
-  // Under /tmp, not os.tmpdir(): the tmux socket path must stay under the 104-byte limit.
-  const base = realpathSync(mkdtempSync(`/tmp/r1a07-${id}-`))
-  const bridge: Bridge = {
-    id,
-    base,
-    home: join(base, 'home'),
-    tmuxDir: join(base, 'tmux'),
-    folder: join(base, 'work'),
-    stderr: '',
-  }
-  bridges[id] = bridge
-  for (const dir of [bridge.home, bridge.tmuxDir, bridge.folder, join(base, 'oauth')]) mkdirSync(dir, { mode: 0o700 })
-  const env: NodeJS.ProcessEnv = {}
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key === 'TMUX' || key === 'TMUX_PANE' || key.startsWith('TANDEM_') || key.startsWith('CCM_')) continue
-    env[key] = value
-  }
-  Object.assign(env, {
-    HOME: bridge.home,
-    TMUX_TMPDIR: bridge.tmuxDir,
-    SHELL: '/bin/sh',
-    TANDEM_PORT: '0',
-    TANDEM_PUBLIC_URL: 'https://e2e.example/mcp',
-    TANDEM_ISSUER_URL: 'https://e2e.example',
-    TANDEM_OWNER_PASSWORD: rand(32),
-    TANDEM_OAUTH_STATE_DIR: join(base, 'oauth'),
-    TANDEM_ENABLED_ENGINES: 'shell',
-    TANDEM_CWD_ALLOWLIST: bridge.folder,
-    TANDEM_HUB_LINK_URL: `ws://127.0.0.1:${port}`,
-    TANDEM_HUB_LINK_TOKEN: LINK_TOKEN,
-    TANDEM_HUB_LINK_ID: id,
-  })
-  const child = spawn(process.execPath, ['--experimental-strip-types', 'src/server.ts'], {
-    cwd: repo,
-    env,
-    detached: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  })
-  bridge.child = child
-  child.stdout!.on('data', () => {})
-  child.stderr!.on('data', (chunk: Buffer) => { bridge.stderr += chunk.toString() })
-  await waitFor(() => bridge.stderr.includes('hub link: connected') || child.exitCode !== null, 30_000, `${id} to connect`)
-  if (child.exitCode !== null) throw new Error(`${id} exited ${child.exitCode}:\n${bridge.stderr}`)
-}
-
-async function stopBridge(bridge: Bridge | undefined): Promise<void> {
-  if (!bridge) return
-  const child = bridge.child
-  if (child?.pid && child.exitCode === null && child.signalCode === null) {
-    const exited = once(child, 'exit')
-    try { process.kill(-child.pid, 'SIGTERM') } catch { /* already gone */ }
-    await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))])
-  }
-  spawnSync('tmux', ['-S', socketOf(bridge), 'kill-server'], { stdio: 'ignore' })
-  // Retries: a shell killed just now may still be writing its history file into this folder.
-  rmSync(bridge.base, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
-}
-
-function socketOf(bridge: Bridge): string {
-  return join(bridge.tmuxDir, `tmux-${uid}`, 'default')
-}
 
 function hasSession(bridge: Bridge, name: string): boolean {
   return spawnSync('tmux', ['-S', socketOf(bridge), 'has-session', '-t', `=ccm-${name}`], { stdio: 'ignore' }).status === 0
@@ -171,64 +38,6 @@ function hasSession(bridge: Bridge, name: string): boolean {
 function auditText(bridge: Bridge): string {
   const path = join(bridge.home, '.tandem', 'bridge.log')
   return existsSync(path) ? readFileSync(path, 'utf8') : ''
-}
-
-const decodeHtml = (value: string) =>
-  value.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&')
-
-/** OAuth as claude.ai does it: register, authorize (form, then password), token with PKCE. */
-async function signIn(): Promise<string> {
-  const redirect = `http://127.0.0.1:${await freePort()}/cb`
-  const registered = await fetch(`${hub}/register`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      client_name: 'r1a07-e2e',
-      redirect_uris: [redirect],
-      token_endpoint_auth_method: 'none',
-      grant_types: ['authorization_code', 'refresh_token'],
-      response_types: ['code'],
-    }),
-  })
-  if (registered.status !== 201) throw new Error(`register: ${registered.status} ${await registered.text()}`)
-  const { client_id: clientId } = (await registered.json()) as { client_id: string }
-
-  const verifier = randomBytes(32).toString('base64url')
-  const challenge = createHash('sha256').update(verifier).digest('base64url')
-  const query = new URLSearchParams({
-    response_type: 'code',
-    client_id: clientId,
-    redirect_uri: redirect,
-    code_challenge: challenge,
-    code_challenge_method: 'S256',
-    state: rand(16),
-  })
-  const page = await fetch(`${hub}/authorize?${query}`)
-  const html = await page.text()
-  if (page.status !== 200) throw new Error(`GET /authorize: ${page.status}`)
-  const fields = new URLSearchParams()
-  for (const match of html.matchAll(/<input type="hidden" name="([^"]*)" value="([^"]*)">/g)) {
-    fields.append(decodeHtml(match[1]), decodeHtml(match[2]))
-  }
-  fields.set('password', HUB_PASSWORD)
-  const authorized = await fetch(`${hub}/authorize`, { method: 'POST', body: fields, redirect: 'manual' })
-  if (authorized.status !== 302) throw new Error(`POST /authorize: ${authorized.status}`)
-  const code = new URL(authorized.headers.get('location') ?? '').searchParams.get('code')
-  if (!code) throw new Error('POST /authorize: no code in the redirect')
-
-  const token = await fetch(`${hub}/token`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      grant_type: 'authorization_code',
-      code,
-      redirect_uri: redirect,
-      client_id: clientId,
-      code_verifier: verifier,
-    }),
-  })
-  if (token.status !== 200) throw new Error(`POST /token: ${token.status} ${await token.text()}`)
-  return ((await token.json()) as { access_token: string }).access_token
 }
 
 /** One tool call; the bridge's JSON answer, or what went wrong at the MCP layer. */
@@ -247,8 +56,12 @@ const sessionIds = (listed: Json): string[] => ((listed.sessions ?? []) as { id:
 
 describe.skipIf(Boolean(missing))(title, () => {
   beforeAll(async () => {
-    await startHub()
-    await Promise.all([startBridge('alpha'), startBridge('beta')])
+    await startHub('/tmp/r1a07-')
+    // allSettled: a bridge that connects after its sibling failed is still recorded, so afterAll stops it.
+    const ids: Id[] = ['alpha', 'beta']
+    const started = await Promise.allSettled(ids.map((id) => startBridge(id)))
+    started.forEach((result, i) => { if (result.status === 'fulfilled') bridges[ids[i]] = result.value })
+    for (const result of started) if (result.status === 'rejected') throw result.reason
     const token = await signIn()
     client = new Client({ name: 'r1a07-e2e', version: '0.0.0' })
     await client.connect(
@@ -264,12 +77,7 @@ describe.skipIf(Boolean(missing))(title, () => {
       await Promise.all([stopBridge(bridges.alpha), stopBridge(bridges.beta)])
     } finally {
       // Always: a failed bridge cleanup must not leave the hub process running.
-      if (wrangler?.pid && wrangler.exitCode === null && wrangler.signalCode === null) {
-        const exited = once(wrangler, 'exit')
-        try { process.kill(-wrangler.pid, 'SIGTERM') } catch { /* already gone */ }
-        await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 5_000))])
-      }
-      if (persist) rmSync(persist, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
+      await stopHub()
     }
   }, 30_000)
 

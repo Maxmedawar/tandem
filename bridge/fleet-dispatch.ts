@@ -28,6 +28,7 @@ import { executeLocalOp, type DispatchResult } from './fleet-op-table.ts'
 import { DeviceOfflineError, InFlightLimitError, BackpressureError, RpcTimeoutError, RpcRejectedError } from './fleet-broker.ts'
 import { OPEN_SESSION_TIMEOUT_MS, type FleetOp } from './fleet-protocol.ts'
 import type { FleetRuntime } from './fleet-runtime.ts'
+import { filterSessionsByEngine } from './router.ts'
 
 export class DeviceConflictError extends Error {}
 export class DeviceNotFoundError extends Error {}
@@ -257,10 +258,20 @@ export async function dispatchSessionOp(
     : rewriteNameField(result, target.deviceId)
 }
 
+/** A remote device's rows, kept to one agent's here: the fleet frame carries no engine. */
+function filterRemoteRows(result: DispatchResult, engine: string | undefined): DispatchResult {
+  if (engine === undefined || result.status < 200 || result.status >= 300) return result
+  const body = result.body as { sessions?: unknown } | undefined
+  if (!body || !Array.isArray(body.sessions)) return result
+  const rows = body.sessions.filter((s): s is { engine?: string } => typeof s === 'object' && s !== null)
+  const sessions = filterSessionsByEngine(rows, engine, rows.length)
+  return { status: result.status, body: { ...body, sessions } }
+}
+
 export async function dispatchListSessions(
   runtime: FleetRuntime,
   explicitDevice: string | undefined,
-  payload: { limit?: number; project?: string },
+  payload: { limit?: number; project?: string; engine?: string },
 ): Promise<DispatchResult> {
   if (explicitDevice === undefined || explicitDevice === 'local') {
     const result = await executeLocalOp('list_sessions', payload)
@@ -271,11 +282,11 @@ export async function dispatchListSessions(
   }
   let result: DispatchResult
   try {
-    result = await runtime.broker.sendRequest(explicitDevice, 'list_sessions', payload)
+    result = await runtime.broker.sendRequest(explicitDevice, 'list_sessions', { limit: payload.limit, project: payload.project })
   } catch (e) {
     return brokerErrorToResult(e)
   }
-  return rewriteListSessionsResponse(result, explicitDevice)
+  return rewriteListSessionsResponse(filterRemoteRows(result, payload.engine), explicitDevice)
 }
 
 /** Pure local read of the registry's public list — never a wire round trip;

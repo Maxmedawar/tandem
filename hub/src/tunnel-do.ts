@@ -11,6 +11,8 @@
  * Routes (Worker forwards here via a stub):
  *   /__tunnel/connect   -> bridge WebSocket upgrade (token already checked by Worker)
  *   /__rpc/<path>       -> forward to the bridge as an HTTP request frame
+ *   /__fabric-rpc/fabric/<path> -> the same, marked with trusted_surface (TandemMcp's
+ *                          fabric tools only; any other path under it is 404, nothing sent)
  */
 
 import { DurableObject } from 'cloudflare:workers'
@@ -39,6 +41,7 @@ import {
 } from './tunnel-routing'
 import { HubQueue, type PutResult, type QueuedCopy, type QueueMessage } from './queue'
 import type { Env } from './types'
+import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
 // Re-exported so tests and other modules can reach the pure size policy via the
 // tunnel module too (the canonical home is ./frame-size).
@@ -84,6 +87,10 @@ export class TunnelDO extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url)
     if (url.pathname === '/__tunnel/connect') return this.handleTunnelUpgrade(request, url)
+    if (url.pathname.startsWith('/__fabric-rpc/')) {
+      if (!url.pathname.startsWith('/__fabric-rpc/fabric/')) return new Response('not found', { status: 404 })
+      return this.handleRpc(request, url, '/__fabric-rpc', FABRIC_MCP_TRUST)
+    }
     if (url.pathname.startsWith('/__rpc/')) return this.handleRpc(request, url, '/__rpc')
     // Read-only: which machines are connected. Backs MCP default resolution +
     // the list_machines tool. Only reachable via the DO stub (never forwarded by
@@ -203,7 +210,8 @@ export class TunnelDO extends DurableObject<Env> {
   private async handleRpc(
     request: Request,
     url: URL,
-    prefix: '/__rpc',
+    prefix: '/__rpc' | '/__fabric-rpc',
+    trustedSurface?: typeof FABRIC_MCP_TRUST,
   ): Promise<Response> {
     const path = url.pathname.slice(prefix.length) || '/'
 
@@ -238,6 +246,7 @@ export class TunnelDO extends DurableObject<Env> {
       raw_query: url.search ? url.search.replace(/^\?/, '') : undefined,
       headers: headersToTunnel(request.headers),
       ...(body !== undefined ? { body_base64: body } : {}),
+      ...(trustedSurface === undefined ? {} : { trusted_surface: trustedSurface }),
     }
     // Measured after base64 and serialization: a frame over the bridge's cap would
     // drop the bridge's socket and every session on it.

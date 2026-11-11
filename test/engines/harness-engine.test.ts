@@ -75,7 +75,7 @@ const tmuxHas = (name: string) => {
 };
 
 let client: Client;
-let server: ReturnType<typeof buildMcpServer>;
+let server: Awaited<ReturnType<typeof buildMcpServer>>;
 let stderrLines: string[] = [];
 const runtime = createFleetRuntime({ localEngines: ["claude"] });
 
@@ -85,7 +85,7 @@ beforeAll(async () => {
   loadedHarnesses();
   stderrLines = spy.mock.calls.map((c) => String(c[0]));
   spy.mockRestore();
-  server = buildMcpServer();
+  server = await buildMcpServer();
   client = new Client({ name: "r1a10", version: "0.0.0" });
   const [c, s] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(s), client.connect(c)]);

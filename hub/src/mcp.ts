@@ -35,6 +35,7 @@ import {
   formatAmbiguousMessage,
   isOfflineError,
 } from './machine-resolve'
+import { configureFabricTools, type FabricToolServer } from '../../src/fabric/mcp-tools.ts'
 
 /** Standing warning prepended to every tool description. */
 const BLAST_RADIUS =
@@ -57,7 +58,10 @@ const MACHINE_DESC =
   'connected machine, or the configured default when several are connected ' +
   '(call list_machines to see what is online).'
 
-export class TandemMcp extends McpAgent<Env> {
+/** OAuth props are set by the hub's own sign-in (auth-gate.ts), never by tool input. */
+interface FabricOAuthProps extends Record<string, unknown> { userId?: unknown }
+
+export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
   server = new McpServer({
     name: 'tandem',
     version: '0.1.0',
@@ -373,6 +377,21 @@ export class TandemMcp extends McpAgent<Env> {
         return this.toolResult({ connected, default: def, defaultOnline: connected.includes(def) })
       },
     )
+
+    /* ---- capability #4: rooms, memory and projects (the bridge's fabric store) ---- */
+
+    // The hub has no fabric setting: the tools are listed when the bridge answers the
+    // readiness probe (/fabric/_ready), which runs once per MCP session against the only
+    // connected machine or the configured one. The owner comes from the OAuth props only.
+    try {
+      await configureFabricTools(this.server as unknown as FabricToolServer, {
+        enabled: '1',
+        oauthSubject: this.props!.userId, // ! keeps the throw-then-fail-closed path if props are absent
+        rpc: (path, body, machine) => this.rpc(path, 'POST', body, machine, true),
+      })
+    } catch {
+      // A hashing or registration failure leaves the fabric tools out and keeps the session tools.
+    }
   }
 
   /**
@@ -386,13 +405,15 @@ export class TandemMcp extends McpAgent<Env> {
     method: RpcMethod,
     body?: unknown,
     machine?: string,
+    fabric = false,
   ): Promise<unknown> {
     // Decide which Mac this RPC targets BEFORE sending. Explicit machine -> let
     // the DO route (and reject with a rich body if offline). No machine ->
     // consult /__status and apply the default rule; a none/ambiguous outcome is
-    // returned as the tool result without sending any RPC.
+    // returned as the tool result without sending any RPC. A fabric call gets
+    // one generic answer for every way the bridge cannot be reached.
     const resolved = await this.resolveTarget(machine)
-    if ('error' in resolved) return resolved.error
+    if ('error' in resolved) return fabric ? { error: 'fabric_unavailable' } : resolved.error
 
     const stub = this.env.TUNNEL.get(this.env.TUNNEL.idFromName(TUNNEL_SINGLETON_NAME))
 
@@ -409,18 +430,22 @@ export class TandemMcp extends McpAgent<Env> {
     if (resolved.header) headers['x-ccm-bridge-id'] = resolved.header
     init.headers = headers
 
-    const res = await stub.fetch(`https://do/__rpc${path}`, init)
+    const prefix = fabric ? '/__fabric-rpc' : '/__rpc'
+    const res = await stub.fetch(`https://do${prefix}${path}`, init)
     const text = await res.text()
     let parsed: unknown
     try {
       parsed = text.length > 0 ? JSON.parse(text) : {}
     } catch {
       // Non-JSON (e.g. an upstream error body) — surface it verbatim.
-      parsed = { error: 'bad_bridge_response', status: res.status, body: text }
+      parsed = fabric
+        ? { error: 'fabric_unavailable' }
+        : { error: 'bad_bridge_response', status: res.status, body: text }
     }
     // UX: turn the DO's {error:'bridge_offline', requested, connected} into a
     // readable message naming the unknown machine and listing what IS connected.
     if (isOfflineError(parsed)) {
+      if (fabric) return { error: 'fabric_unavailable' }
       return {
         ...parsed,
         message: formatOfflineMessage(parsed.requested ?? machine ?? '', parsed.connected ?? []),

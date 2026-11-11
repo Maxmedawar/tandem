@@ -6,6 +6,9 @@
   "compatibility_date": "2025-01-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // One zod in the bundle (this package's): src/fabric files imported from the repo root
+  // would otherwise bring the root's own copy.
+  "alias": { "zod": "./node_modules/zod" },
 
   "durable_objects": {
     "bindings": [

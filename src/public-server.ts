@@ -6,6 +6,7 @@ import { requireBearerAuth } from "@modelcontextprotocol/sdk/server/auth/middlew
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { getAllowlist } from "../bridge/router.ts";
 import type { FleetRuntime } from "../bridge/fleet-runtime.ts";
+import type { LocalFabricHost } from "../bridge/fabric/local-fabric-host.ts";
 import { buildMcpServer } from "./mcp-server.ts";
 import { ICON_MIME, ICON_PNG } from "./icon.ts";
 import type { OAuthConfig } from "./auth-config.ts";
@@ -21,6 +22,8 @@ export interface PublicOAuthServerOptions {
   port: number;
   config: OAuthConfig;
   fleet?: FleetRuntime;
+  /** The process's fabric store (src/server.ts opens it); with it the fabric tools are listed. */
+  fabric?: LocalFabricHost;
   state?: OAuthStateStore;
 }
 
@@ -250,7 +253,7 @@ export async function createOAuthApp(options: PublicOAuthServerOptions): Promise
       resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(options.config.publicUrl),
     }),
     async (req: Request, res: Response) => {
-      const server = buildMcpServer(options.fleet);
+      const server = await buildMcpServer(options.fleet, options.fabric);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       let cleaned = false;
       const cleanup = () => {

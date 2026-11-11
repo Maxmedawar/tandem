@@ -10,12 +10,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
+import { FABRIC_MCP_TRUST } from '../src/fabric/rpc-contract.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'hub-rpc-home-'))
 const savedHome = process.env.HOME
 process.env.HOME = home
 const { handleHubRequest } = await import('../bridge/hub-rpc.ts')
 const { filterSessionsByEngine } = await import('../bridge/router.ts')
+const { createLocalFabricHost } = await import('../bridge/fabric/local-fabric-host.ts')
 
 afterAll(() => {
   process.env.HOME = savedHome
@@ -184,5 +186,49 @@ describe('the response frame', () => {
     const response = await handleHubRequest(frame('GET', '/no/such/route'))
     expect(response.status_code).toBe(404)
     expect(bodyOf(response)).toEqual({ error: 'no route for GET /no/such/route' })
+  })
+})
+
+describe('fabric paths', () => {
+  const caller = {
+    ownerId: `owner-${'a'.repeat(64)}`,
+    deviceId: `mcp-device-${'b'.repeat(64)}`,
+    agentId: `mcp-owner-${'c'.repeat(64)}`,
+  }
+  const listFrame = (marked: boolean): CcmHttpRequestFrame => ({
+    ...frame('POST', '/fabric/project/list', { body: { caller, input: {} } }),
+    ...(marked ? { trusted_surface: FABRIC_MCP_TRUST } : {}),
+  })
+
+  it('/fabric/project/list without the trusted marker answers 403 fabric_operation_denied', async () => {
+    const folder = mkdtempSync('/tmp/r1a22-hubrpc-')
+    const host = await createLocalFabricHost({ CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: join(folder, 'fabric.sqlite3') })
+    try {
+      const response = await handleHubRequest(listFrame(false), host)
+      expect(response.status_code).toBe(403)
+      expect(bodyOf(response)).toEqual({ error: 'fabric_operation_denied' })
+    } finally {
+      host?.close()
+      rmSync(folder, { recursive: true, force: true })
+    }
+  })
+
+  it('with the marker and no fabric host answers 503 fabric_unavailable', async () => {
+    const response = await handleHubRequest(listFrame(true))
+    expect(response.status_code).toBe(503)
+    expect(bodyOf(response)).toEqual({ error: 'fabric_unavailable' })
+  })
+
+  it('with the marker and a fabric host answers 200', async () => {
+    const folder = mkdtempSync('/tmp/r1a22-hubrpc-')
+    const host = await createLocalFabricHost({ CCM_FABRIC_ENABLED: '1', CCM_FABRIC_DB_PATH: join(folder, 'fabric.sqlite3') })
+    try {
+      const response = await handleHubRequest(listFrame(true), host)
+      expect(response.status_code).toBe(200)
+      expect(bodyOf(response)).toEqual([])
+    } finally {
+      host?.close()
+      rmSync(folder, { recursive: true, force: true })
+    }
   })
 })
