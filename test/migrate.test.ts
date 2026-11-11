@@ -212,6 +212,25 @@ describe('migrate-from-synergy (U-R1A-42)', () => {
     expect(sha(c.to)).toBe(shaBefore)
   })
 
+  it('(e) idempotent past retention: room events that expired (core drops them when it opens a store) do not make a second run differ', async () => {
+    const late = (): (() => number) => {
+      let t = Date.parse(expected.clock.end) + 31 * 86_400_000
+      return () => { const value = t; t += expected.clock.stepMs; return value }
+    }
+    // Migrated when every event is already past its retention: core's open keeps none of them.
+    const c = freshCase()
+    expect((await run(c, { now: late() })).status).toBe('migrated')
+    expect(count(c.to, 'SELECT count(*) AS n FROM room_events')).toBe(0)
+    expect(count(c.to, 'SELECT count(*) AS n FROM memories')).toBe(30)
+    expect((await run(c, { now: late() })).status).toBe('already migrated (no change)')
+    // Migrated in time, checked again after the events expired: the target file still holds them.
+    const d = freshCase()
+    expect((await run(d)).status).toBe('migrated')
+    const shaBefore = sha(d.to)
+    expect((await run(d, { now: late() })).status).toBe('already migrated (no change)')
+    expect(sha(d.to)).toBe(shaBefore)
+  })
+
   describe('(f) refusals leave --to absent (or unchanged) and the source unchanged', () => {
     async function refused(c: Case, overrides: Record<string, unknown>, reason: RegExp) {
       const from = (overrides.from as string | undefined) ?? c.from
@@ -281,6 +300,19 @@ describe('migrate-from-synergy (U-R1A-42)', () => {
       const c = freshCase()
       new SQLiteFabricClient({ databasePath: c.to, now: clock() }).close()
       await refused(c, {}, /^REFUSED target exists and differs; migrate into a new path/)
+      // A migrated target that has lost one event that is still within its retention differs too.
+      const lost = freshCase()
+      await run(lost)
+      const database = new DatabaseSync(lost.to)
+      database.exec('DELETE FROM room_events WHERE sequence = (SELECT max(sequence) FROM room_events)')
+      database.close()
+      await refused(lost, {}, /^REFUSED target exists and differs; migrate into a new path/)
+    })
+
+    it('(f) a --from-subject with a space or a line break around it', async () => {
+      for (const fromSubject of [` ${expected.subject}`, `${expected.subject} `, `${expected.subject}\n`]) {
+        await refused(freshCase(), { fromSubject }, /^REFUSED --from-subject has a space or a line break around it/)
+      }
     })
   })
 

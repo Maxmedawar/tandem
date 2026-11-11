@@ -176,17 +176,19 @@ function writeStore(partial: string, rows: ReadonlyMap<string, Row[]>, now: () =
   new SQLiteFabricClient({ databasePath: partial, now }).close()
 }
 
-/** Every copied source row, re-keyed, is present and equal in the store at `path`. */
-function holdsEveryRow(path: string, rows: ReadonlyMap<string, Row[]>): boolean {
+/** Every copied row of the store at `fresh` is present and equal in the store at `path`. */
+function holdsEveryRow(path: string, fresh: string): boolean {
   const database = new DatabaseSync(path, { readOnly: true })
+  const wanted = new DatabaseSync(fresh, { readOnly: true })
   try {
     for (const table of COPIED) {
       const present = new Set(rowsOf(database, table).map(canonical))
-      for (const row of rows.get(table) ?? []) if (!present.has(canonical(row))) return false
+      for (const row of rowsOf(wanted, table)) if (!present.has(canonical(row))) return false
     }
     return true
   } finally {
     database.close()
+    wanted.close()
   }
 }
 
@@ -195,6 +197,8 @@ export async function migrateFromSynergy(options: MigrateOptions): Promise<Migra
   for (const [flag, value] of [['--from', from], ['--to', to], ['--from-subject', fromSubject]] as const) {
     if (typeof value !== 'string' || value.trim() === '') refuse(`missing ${flag}`)
   }
+  // Every id derives from the exact subject; a padded one would only show up as "other owners".
+  if (fromSubject !== fromSubject.trim()) refuse('--from-subject has a space or a line break around it')
   const now = options.now ?? Date.now
   const paths = guard(from, to, options.liveHome ?? defaultLiveHome())
 
@@ -265,12 +269,18 @@ export async function migrateFromSynergy(options: MigrateOptions): Promise<Migra
       if (!toStat.isFile()) refuse('--to exists and is not a regular file')
       const targetCopy = join(scratch, 'target.sqlite3')
       step('read target', () => writeFileSync(targetCopy, readFileSync(paths.to), { mode: 0o600, flag: 'wx' }))
+      // Core's open drops room events past their retention and raises the room's replay floors, so the
+      // target is compared with what this migrate would write at one same instant, opened the same way.
+      const at = now()
+      const instant = () => at
       try {
-        new SQLiteFabricClient({ databasePath: targetCopy, now }).close()
+        new SQLiteFabricClient({ databasePath: targetCopy, now: instant }).close()
       } catch {
         refuse('target exists and is not a Tandem store; migrate into a new path')
       }
-      if (!step('compare target', () => holdsEveryRow(targetCopy, source.rows))) refuse('target exists and differs; migrate into a new path')
+      const fresh = join(scratch, 'fresh.sqlite3')
+      // ponytail: one open clears at most 65,536 expired events; a larger backlog reads as "differs" (still nothing written).
+      if (!step('compare target', () => { writeStore(fresh, source.rows, instant); return holdsEveryRow(targetCopy, fresh) })) refuse('target exists and differs; migrate into a new path')
       return { status: 'already migrated (no change)', ...result }
     }
 
