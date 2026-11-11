@@ -138,8 +138,8 @@ describe("cline: the built-in harness file", () => {
       "Cline Hub update required[^\\n]*(?:\\n[^\\n]*){1,24}?Press Enter to update now, Esc to keep the Hub running",
       "(?:Try ClinePass|Introducing Cline Desktop)[^\\n]*(?:\\n[^\\n]*){1,24}?Press Enter to open, any other key to close",
     ]);
-    expect(h.states?.working).toEqual(["(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\\.\\.\\. \\(esc to cancel\\)", "(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] "]);
-    expect(h.states?.idle).toEqual(["❯ +(?:What can I do for you\\?|Ask anything\\.\\.\\.|Plan something\\.\\.\\.)"]);
+    expect(h.states?.working).toEqual(["(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\\.\\.\\. \\(esc to cancel\\)[^\\n]*(?:\\n[ \\t│]*(?:[^ \\t│❯\\n][^\\n]*)?)*(?:\\n[ \\t│]*❯[^\\n]*(?:\\n[ \\t│]*(?:[^ \\t│❯\\n][^\\n]*)?)*)?\\z", "(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] [^\\n]*(?:\\n[ \\t│]*(?:[^ \\t│❯\\n][^\\n]*)?)*(?:\\n[ \\t│]*❯[^\\n]*(?:\\n[ \\t│]*(?:[^ \\t│❯\\n][^\\n]*)?)*)?\\z"]);
+    expect(h.states?.idle).toEqual(["❯ +(?:What can I do for you\\?|Ask anything\\.\\.\\.|Plan something\\.\\.\\.)[^\\n]*(?:\\n[ \\t│]*(?:[^ \\t│❯\\n][^\\n]*)?)*\\z"]);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     // Ruling R2: a 4 s model pause with the spinner scrolled out of view must not read idle.
     expect(h.states?.debounce_ms).toBe(5000);

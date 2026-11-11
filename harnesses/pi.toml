@@ -18,7 +18,10 @@ history = "~/.pi/agent/sessions"
 delivery = "notice"
 
 [states]
-working = ['Working\.\.\.']
+# U-R1B-ANCHOR: the working line counts only right above the editor in use: at most 4 lines with no
+# rule between (pi 0.79.7's loader and widget spacer draw a blank line there), then the editor's two
+# rules and the footer to the screen end with no other rule. A reply quoting it above the editor reads idle.
+working = ['Working\.\.\.[^\n]*(?:\n(?:[^─\n][^\n]*)?){0,4}\n─{3}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\n─{3}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z']
 idle = ['─{20,}\n[^\n]*\n─{20,}\n[^\n]*\n[^\n]*(?:\d%|\?)/\d']
 # U-R1A-18D: an agent's text enters only an empty prompt (a blank row between the two rules above the footer).
 empty_prompt = ['─{20,}\n[ \t]*\n─{20,}\n[^\n]*\n[^\n]*(?:\d%|\?)/\d[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z']

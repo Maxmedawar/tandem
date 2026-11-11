@@ -149,7 +149,7 @@ describe("droid: the built-in harness file", () => {
     expect(h.keys).toEqual({ interrupt: ["Escape"], approve: "Enter", deny: "Escape" });
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.states?.waiting_for_approval?.length).toBeGreaterThan(0);
-    expect(h.states?.working).toEqual(["\\((?:Press ESC to stop|Please wait)\\)"]);
+    expect(h.states?.working).toEqual(["\\((?:Press ESC to stop|Please wait)\\)[^\\n]*(?:\\n[^\\n╭╮╰╯│]*){0,4}\\n[ \\t]*╭[^\\n]*(?:\\n[ \\t]*│[^\\n]*)+\\n[ \\t]*╰[^\\n]*(?:\\n[ \\t]*(?:│[ \\t]*(?:[^ \\t>\\n][^\\n]*)?|[^ \\t│>\\n][^\\n]*)?)*\\z"]);
     expect(h.states?.idle?.length).toBeGreaterThan(0);
     expect(h.hook).toBeUndefined();
     expect(h.adapter).toBeUndefined();

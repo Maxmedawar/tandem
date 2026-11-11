@@ -132,15 +132,15 @@ describe("copilot: the built-in harness file", () => {
     expect(h.resume).toEqual(["--resume={id}"]);
     expect(h.keys).toEqual({ interrupt: ["C-c"], approve: "Enter", deny: "Escape" });
     expect(h.states?.waiting_for_approval).toEqual([
-      ", and tell Copilot (?:what to do differently|why)",
-      "Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\\b(?:[^\\n]*\\n){0,20}?[^\\n]*\\(Esc",
-      "ctrl\\+e explain",
-      'Extension "[^"\\n]*" wants (?:elevated permissions|to read \\d+ sensitive environment variables?)',
-      "Accept plan and continue in (?:Autopilot|Interactive) execution mode",
-      "Exit to Interactive execution mode without running the plan",
+      ", and tell Copilot (?:what to do differently|why)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
+      "Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\\b(?:[^\\n]*\\n){0,20}?[^\\n]*\\(Esc[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
+      "ctrl\\+e explain[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
+      'Extension "[^"\\n]*" wants (?:elevated permissions|to read \\d+ sensitive environment variables?)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z',
+      "Accept plan and continue in (?:Autopilot|Interactive) execution mode[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
+      "Exit to Interactive execution mode without running the plan[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
     ]);
-    expect(h.states?.working).toEqual(["ctrl\\+c (?:interrupt|stop agents|clear input|exit shell mode)", "esc (?:interrupt|stop agents|edit prompt)", "esc again to "]);
-    expect(h.states?.idle).toEqual(["/ commands"]);
+    expect(h.states?.working).toEqual(["ctrl\\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?){0,4}\\z", "esc (?:interrupt|stop agents|edit prompt)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?){0,4}\\z", "esc again to [^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?){0,4}\\z"]);
+    expect(h.states?.idle).toEqual(["/ commands[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z"]);
     expect(h.states?.debounce_ms).toBe(1500);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.hook).toBeUndefined();

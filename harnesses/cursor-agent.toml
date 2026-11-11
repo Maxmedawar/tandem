@@ -20,9 +20,13 @@ history = "~/.cursor/chats"
 delivery = "notice"
 
 [states]
-waiting_for_approval = ['Run (?:outside sandbox )?\(once\)', '\(esc or n(?: or p)?\)', 'Keep \(n\)']
-working = ['(?i)ctrl\+c to stop']
-idle = ['→ (?:Plan, search, build anything|Add a follow-up)']
+# U-R1B-ANCHOR: an open decision hides the prompt bar (2026.11.11 UI code, U-R1B-CURSOR audit), so an
+# approval row counts only when no bar or box opens after it (no `┌` or `▄` row) to the screen end.
+waiting_for_approval = ['Run (?:outside sandbox )?\(once\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄\n][^\n]*)?)*\z', '\(esc or n(?: or p)?\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄\n][^\n]*)?)*\z', 'Keep \(n\)[^\n]*(?:\n[ \t]*(?:[^ \t┌▄\n][^\n]*)?)*\z']
+# U-R1B-ANCHOR: the stop hint and the placeholder count only on the prompt row in use: no later row
+# opens a bar or box (`┌`, `▄`) or is a prompt row (`│`, `→`) to the screen end, like empty_prompt.
+working = ['(?i)ctrl\+c to stop[^\n]*(?:\n[ \t]*(?:[^ \t│→┌▄\n][^\n]*)?)*\z']
+idle = ['→ (?:Plan, search, build anything|Add a follow-up)[^\n]*(?:\n[ \t]*(?:[^ \t│→┌▄\n][^\n]*)?)*\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (the → row, boxed or padded, shows only its placeholder, and no later row is a prompt).
 empty_prompt = ['^(?:│ |[ \t]*)→ (?:Plan, search, build anything|Add a follow-up(?: — /plan to review and build)?)[ \t]*(?:│[ \t]*)?(?:\n[ \t]*(?:[^ \t│→\n][^\n]*)?)*\z']
 

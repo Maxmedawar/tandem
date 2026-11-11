@@ -43,9 +43,14 @@ waiting_for_approval = [
   'Cline Hub update required[^\n]*(?:\n[^\n]*){1,24}?Press Enter to update now, Esc to keep the Hub running',
   '(?:Try ClinePass|Introducing Cline Desktop)[^\n]*(?:\n[^\n]*){1,24}?Press Enter to open, any other key to close',
 ]
-working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to cancel\)', '(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] ']
+# U-R1B-ANCHOR: a spinner line counts only with at most one `❯` row (the input bar in use; a row may
+# start with spaces or `│`) after it to the screen end. Not tied by distance: a long reply can push
+# the spinner far up (CLINE audit R2).
+working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to cancel\)[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*(?:\n[ \t│]*❯[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*)?\z', '(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] [^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*(?:\n[ \t│]*❯[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*)?\z']
 debounce_ms = 5000
-idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)']
+# U-R1B-ANCHOR: the placeholder row counts only when no later row starts with `❯` (after spaces or `│`)
+# to the screen end.
+idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (the ❯ row shows only its placeholder, the rule right under it).
 empty_prompt = ['^[ \t]*❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[ \t]*\n[ \t]*─{20,}[ \t]*(?:\n[ \t]*(?:[^ \t─❯\n][^\n]*)?)*\z']
 

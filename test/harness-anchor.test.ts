@@ -33,9 +33,8 @@ afterAll(() => rmSync(BOX, { recursive: true, force: true }));
 const { harnesses, errors } = loadHarnesses({ installDir: BUILTIN, ownerDir: join(BOX, "no-owner") });
 
 const NAMES = readdirSync(BUILTIN).filter((f) => f.endsWith(".toml")).map((f) => f.slice(0, -5)).sort();
-const COVERED = ["claude", "codex", "grok", "antigravity", "opencode", "gemini", "goose", "hermes", "shell"];
-// U-R1B-ANCHOR-2 moves these to COVERED
-const PENDING = ["pi", "cursor-agent", "copilot", "cline", "droid"];
+const COVERED = ["claude", "codex", "grok", "antigravity", "opencode", "gemini", "goose", "hermes", "shell", "pi", "cursor-agent", "copilot", "cline", "droid"];
+const PENDING: string[] = [];
 
 const STATES: StateName[] = ["working", "waiting_for_approval", "idle"];
 const T = "delete the old bra";

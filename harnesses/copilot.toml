@@ -23,16 +23,23 @@ history = "~/.copilot/session-state"
 delivery = "notice"
 
 [states]
+# U-R1B-ANCHOR: every approval, plan and ask dialog replaces the composer, its hint row and footer
+# (1.0.109 cli-main.js: the dialog is returned instead of them), so a marker counts only when no
+# prompt row (`┃`) follows it to the screen end.
 waiting_for_approval = [
-  ', and tell Copilot (?:what to do differently|why)',
-  'Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\b(?:[^\n]*\n){0,20}?[^\n]*\(Esc',
-  'ctrl\+e explain',
-  'Extension "[^"\n]*" wants (?:elevated permissions|to read \d+ sensitive environment variables?)',
-  'Accept plan and continue in (?:Autopilot|Interactive) execution mode',
-  'Exit to Interactive execution mode without running the plan',
+  ', and tell Copilot (?:what to do differently|why)[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
+  'Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\b(?:[^\n]*\n){0,20}?[^\n]*\(Esc[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
+  'ctrl\+e explain[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
+  'Extension "[^"\n]*" wants (?:elevated permissions|to read \d+ sensitive environment variables?)[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
+  'Accept plan and continue in (?:Autopilot|Interactive) execution mode[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
+  'Exit to Interactive execution mode without running the plan[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
 ]
-working = ['ctrl\+c (?:interrupt|stop agents|clear input|exit shell mode)', 'esc (?:interrupt|stop agents|edit prompt)', 'esc again to ']
-idle = ['/ commands']
+# U-R1B-ANCHOR: the busy hint counts only next to the prompt in use: at most one prompt row (`┃`)
+# after it, with at most 1 line before that row and 4 after it to the screen end (1.0.109 draws the
+# hint row under the input; the -src fixtures draw it above).
+working = ['ctrl\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?){0,4}\z', 'esc (?:interrupt|stop agents|edit prompt)[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?){0,4}\z', 'esc again to [^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?){0,4}\z']
+# U-R1B-ANCHOR: the hint row counts only when no prompt row (`┃`) follows it to the screen end, like empty_prompt.
+idle = ['/ commands[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (a bare ❯ row, a blank line, then `/ commands`).
 empty_prompt = ['^┃ ❯[ \t]*\n[ \t]*\n/ commands[^\n]*(?:\n(?:[^┃\n][^\n]*)?)*\z']
 

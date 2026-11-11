@@ -132,9 +132,9 @@ describe("cursor-agent: the built-in harness file", () => {
     expect(h.skip_prompts_args).toEqual(["--force"]);
     expect(h.account_env).toBeUndefined();
     expect(h.keys).toEqual({ interrupt: ["C-c"], approve: "y", deny: "n" });
-    expect(h.states?.waiting_for_approval).toEqual(["Run (?:outside sandbox )?\\(once\\)", "\\(esc or n(?: or p)?\\)", "Keep \\(n\\)"]);
-    expect(h.states?.working).toEqual(["(?i)ctrl\\+c to stop"]);
-    expect(h.states?.idle).toEqual(["→ (?:Plan, search, build anything|Add a follow-up)"]);
+    expect(h.states?.waiting_for_approval).toEqual(["Run (?:outside sandbox )?\\(once\\)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┌▄\\n][^\\n]*)?)*\\z", "\\(esc or n(?: or p)?\\)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┌▄\\n][^\\n]*)?)*\\z", "Keep \\(n\\)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┌▄\\n][^\\n]*)?)*\\z"]);
+    expect(h.states?.working).toEqual(["(?i)ctrl\\+c to stop[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│→┌▄\\n][^\\n]*)?)*\\z"]);
+    expect(h.states?.idle).toEqual(["→ (?:Plan, search, build anything|Add a follow-up)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t│→┌▄\\n][^\\n]*)?)*\\z"]);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.hook).toBeUndefined();
     expect(h.adapter).toBeUndefined();
