@@ -80,7 +80,7 @@ commands, an Interrupt also ends the turn, and the agent's own config folder is 
 
 The defaults apply only when a `states` table is present.
 
-An agent's text (a send from an agent, Tandem's mail notice) is typed only into an empty prompt. With `empty_prompt`, the prompt is empty when one of its patterns matches the same last 40 lines the state patterns read: write them to match the input row holding nothing or only the agent's own placeholder. Without it, the prompt is empty only when the last line is a bare prompt: optional spaces, at most 32 characters that are not whitespace and not `❯`, `›` or `>`, then one of `❯`, `›`, `>`, and nothing after it. Any other idle screen holds the text (`prompt not empty`). The owner's own text is never checked.
+An agent's text (a send from an agent, Tandem's mail notice) is typed only into an empty prompt. With `empty_prompt`, the prompt is empty when one of its patterns matches the same last 40 lines the state patterns read: write them to match the input row holding nothing or only the agent's own placeholder. Tie each pattern to the prompt in use (the built-in files end theirs at `\z`): an older prompt still on the screen, or a text line under the row, must not match. Without it, the prompt is empty only when the last line is a bare prompt: optional spaces, at most 32 characters that are not whitespace and not `❯`, `›` or `>`, then one of `❯`, `›`, `>`, and nothing after it. Any other idle screen holds the text (`prompt not empty`). The owner's own text is never checked.
 
 A file with no `idle` pattern is markerless: a turn ends `quiet` once the screen holds still for
 `debounce_ms` (5000 ms when the file has no `states` table). With an `idle` pattern, the

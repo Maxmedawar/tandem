@@ -376,3 +376,35 @@ describe("(p) the loader", () => {
     expect(codex.states?.empty_prompt).toHaveLength(1);
   });
 });
+
+// Audit (U-R1A-18D-1): the empty box or composer must be the one in use, not an older one still
+// on the screen, and nothing a person typed may sit between it and the footer.
+describe("(q) audit: only the prompt in use counts", () => {
+  const RULE = CL.split("\n").find((l) => l.startsWith("─".repeat(20)))!;
+  const emptyBox = `${RULE}\n❯${N}\n${RULE}`;
+  /** CL with an older, empty box left above the box in use, whose row is `row`. */
+  const ghost = (row: string) => CL.replace(RULE, `${emptyBox}\n\n${RULE}`).replace(/^❯[^\n]*Try [^\n]*$/m, row);
+  /** The composer row, the blank line, the status line and the footer. */
+  const cxPane = (row: string) => cxRow(row).trimEnd().split("\n").slice(-4).join("\n");
+  const rows: [string, typeof claude, string][] = [
+    ["claude: an older empty box above the typed box", claude, ghost(`❯${N}delete the old bra`)],
+    ["claude: an older empty box above a box in shell mode", claude, ghost(`!${N}rm -rf half`)],
+    ["codex: text after a leading line break", codex, cxRow("› ", "  rm -rf half")],
+    ["codex: text after two leading line breaks", codex, cxRow("› ", "\n  rm -rf half")],
+    ["codex: a text line under the placeholder", codex, cxRow("› Ask Codex to do anything", "  more")],
+    ["codex: an empty row right above the typed composer", codex, cxRow("› ", "› delete the old bra")],
+    ["codex: an older empty composer above the typed one", codex, `${CX.trimEnd()}\n${cxPane("› delete the old bra")}`],
+  ];
+  it.each(rows)("%s: not empty; agent text is never admitted", async (_l, h, screen) => {
+    expect(detect.isPromptEmpty!(h, screen)).toBe(false);
+    expect((await gate.admitInput!(over(h, screen), "agent", "type")).verdict).toBe("held");
+  });
+  it("the helper screens hold the typed row", () => {
+    expect(cxPane("› delete the old bra").startsWith("› delete the old bra\n")).toBe(true);
+    expect(ghost(`❯${N}delete the old bra`).split("\n").filter((l) => l.startsWith("❯"))).toEqual([`❯${N}`, `❯${N}delete the old bra`]);
+  });
+  it("the older box alone above the empty box in use still reads empty", () => {
+    expect(detect.isPromptEmpty!(claude, ghost(`❯${N}`))).toBe(true);
+    expect(detect.isPromptEmpty!(codex, `${CX.trimEnd()}\n${cxPane("› ")}`)).toBe(true);
+  });
+});

@@ -18,4 +18,5 @@ waiting_for_approval = [
 working = ['(?i)esc.*interrupt']
 idle = ['^› [^\n]*\n(?:[^\n]*\n){0,4}[^\n]*\? for shortcuts']
 # U-R1A-18D: an agent's text enters only this composer empty: nothing typed, or codex 0.167.1's placeholder (first turn, follow-up).
-empty_prompt = ['^›(?:[ \t]*| (?:Ask Codex to do anything|Ask a follow-up question)[ \t]*)\n(?:[^\n]*\n){0,4}[^\n]*\? for shortcuts']
+# Only the composer in use counts: a blank line, at most one status line, then the footer as the last line (no text line under the row).
+empty_prompt = ['^›(?:[ \t]*| (?:Ask Codex to do anything|Ask a follow-up question)[ \t]*)\n[ \t]*\n(?:[^\n]*\n)?[^\n]*\? for shortcuts[^\n]*\z']
