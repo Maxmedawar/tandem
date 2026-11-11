@@ -86,9 +86,10 @@ describe("codex: the built-in harness file", () => {
       account_env: "CODEX_HOME",
       history: "~/.codex/sessions",
       keys: { interrupt: ["Escape"], approve: "Enter", deny: "Escape" },
-      delivery: "notice",
+      delivery: "hook",
+      hook: "--config",
+      hook_format: "config-overrides",
     });
-    expect(h.hook).toBeUndefined();
     expect(h.logo).toBeUndefined();
     const fixture = loadHarnesses({ installDir: join(SCREENS, "harnesses"), ownerDir: NO_OWNER }).harnesses.get("codex")!;
     const { debounce_ms, ...patterns } = h.states!;
@@ -149,11 +150,14 @@ describe("codex: spawn (injected spawn function)", () => {
     return spawnArgv(seen[0]!.descriptor!, seen[0]!);
   }
 
+  // U-R1A-26: the session's own delivery hooks follow the program as 5 --config values.
+  const HOOK = Array.from({ length: 10 }, (_, i) => (i % 2 === 0 ? "--config" : expect.stringMatching(/^hooks\./)));
+
   it("argv is /usr/bin/env -- <programPath> alone, also with TANDEM_ALLOW_BYPASS=1", async () => {
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "");
-    expect(await spawned({})).toEqual(["/usr/bin/env", "--", FAKE_CODEX]);
+    expect(await spawned({})).toEqual(["/usr/bin/env", "--", FAKE_CODEX, ...HOOK]);
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "1");
-    expect(await spawned({})).toEqual(["/usr/bin/env", "--", FAKE_CODEX]);
+    expect(await spawned({})).toEqual(["/usr/bin/env", "--", FAKE_CODEX, ...HOOK]);
   });
 
   it.each([[{ model: "opus" }], [{ effort: "high" }], [{ allowBypass: true }], [{ allowBypass: false }]])(

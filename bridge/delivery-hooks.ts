@@ -14,11 +14,14 @@
  * 10 messages per run, each labelled as untrusted data with its sender and a fresh nonce, then
  * acked. The hooks keep `<name>.turn` (working or idle), which the input gate reads through
  * turnState, so an agent that shows no marker while it streams is never read idle mid-reply.
+ * A harness file with `hook_format = "config-overrides"` (Codex, U-R1A-26) gets no settings file:
+ * the same commands, plus an Interrupt hook that ends the turn, come back as one `hook` option per
+ * value with the trust record Codex needs for them (its own config folder is never touched).
  * A hook run always exits 0; on any error it prints nothing to stdout and one line, with no
  * message text and no path, to stderr. A message claimed but not printed stays delivering
  * (mailbox recover() makes it maybe_delivered at the next bridge start).
  */
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -32,7 +35,7 @@ export const HOOK_OPTION = /^--[a-z][a-z0-9-]{0,31}$/
 const NAME = /^[A-Za-z0-9._-]{1,256}$/
 /** What a single-quoted shell word cannot hold safely. */
 const UNSAFE = /['\u0000-\u001f\u007f]/
-const EVENTS = ['UserPromptSubmit', 'PostToolUse', 'Stop'] as const
+const EVENTS = ['UserPromptSubmit', 'PostToolUse', 'Stop', 'Interrupt'] as const
 const PER_RUN = 10
 const MAX_STDIN = 1024 * 1024
 /** A turn file counts this long after the time it records: Stop does not run when a person interrupts a turn. */
@@ -101,6 +104,10 @@ export function installHook(harness: Harness, name: string): string[] {
   deliveryDir()
   const q = (s: string) => `'${s}'`
   const command = (event: string) => [q(process.execPath), '--experimental-strip-types', q(script), q(event), q(name), q(db), q(dir)].join(' ')
+  if (harness.hook_format === 'config-overrides') {
+    rmSync(turnFile(dir, name), { force: true })
+    return configOverrides(harness.hook, command)
+  }
   const hook = (event: string) => [{ type: 'command', command: command(event), timeout: 10 }]
   const settings = {
     hooks: {
@@ -113,6 +120,43 @@ export function installHook(harness: Harness, name: string): string[] {
   rmSync(turnFile(dir, name), { force: true })
   writeAtomic(file, `${JSON.stringify(settings, null, 2)}\n`)
   return [harness.hook, file]
+}
+
+/**
+ * Codex's trust hash for one command hook (codex-rs/hooks discovery.rs `hook_hash`): sha256 of the
+ * compact JSON, keys sorted, of the event label, the matcher when set and the one handler.
+ */
+export function codexHookHash(label: string, handler: { command: string; timeout: number; additionalContextLimit?: number }, matcher?: string): string {
+  const h = {
+    ...(handler.additionalContextLimit === undefined ? {} : { additionalContextLimit: handler.additionalContextLimit }),
+    async: false, command: handler.command, timeout: handler.timeout, type: 'command',
+  }
+  const id = { event_name: label, hooks: [h], ...(matcher === undefined ? {} : { matcher }) }
+  return `sha256:${createHash('sha256').update(JSON.stringify(id)).digest('hex')}`
+}
+
+/**
+ * The hooks as `--config` values, each after `option`, the last one trusting exactly these four
+ * handlers (key `/<session-flags>/config.toml:<label>:0:0`). A JSON string is a TOML basic string
+ * for every command part installHook lets through. PostToolUse's limit 0 keeps the mail inline.
+ */
+function configOverrides(option: string, command: (event: string) => string): string[] {
+  const rows = [
+    { event: 'UserPromptSubmit', label: 'user_prompt_submit', timeout: 10 },
+    { event: 'PostToolUse', label: 'post_tool_use', timeout: 10, matcher: '*', additionalContextLimit: 0 },
+    { event: 'Stop', label: 'stop', timeout: 10 },
+    { event: 'Interrupt', label: 'interrupt', timeout: 3 },
+  ]
+  const out: string[] = []
+  const trust: string[] = []
+  for (const { event, label, timeout, matcher, additionalContextLimit } of rows) {
+    const c = command(event)
+    const limit = additionalContextLimit === undefined ? '' : `,additionalContextLimit=${additionalContextLimit}`
+    out.push(option, `hooks.${event}=[{${matcher === undefined ? '' : `matcher=${JSON.stringify(matcher)},`}hooks=[{type="command",command=${JSON.stringify(c)},timeout=${timeout}${limit}}]}]`)
+    const hash = codexHookHash(label, { command: c, timeout, additionalContextLimit }, matcher)
+    trust.push(`${JSON.stringify(`/<session-flags>/config.toml:${label}:0:0`)}={trusted_hash=${JSON.stringify(hash)}}`)
+  }
+  return [...out, option, `hooks.state={${trust.join(',')}}`]
 }
 
 /** Removes the session's settings and turn files. */
@@ -207,8 +251,8 @@ async function runHook([event, name, db, dir]: string[]): Promise<void> {
       }
     }
   } finally {
-    // A Stop that handed over nothing ends the turn; anything else keeps it going.
-    const state = event === 'Stop' && !printed ? 'idle' : 'working'
+    // A Stop that handed over nothing, or an Interrupt, ends the turn; anything else keeps it going.
+    const state = (event === 'Stop' && !printed) || event === 'Interrupt' ? 'idle' : 'working'
     checkDir(dir)
     writeAtomic(turnFile(dir, name), JSON.stringify({ state, at: new Date().toISOString() }))
   }
