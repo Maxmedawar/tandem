@@ -12,7 +12,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { loadHarnesses, type Harness } from "../../bridge/harness-registry.ts";
 import { HarnessSession, harnessDescriptor, type HarnessTerminal } from "../../bridge/engines/harness-engine.ts";
-import { loadedHarnesses, resetHarnessCache, resolveEngine } from "../../bridge/engine-registry.ts";
+import {
+  EngineDisabledError,
+  EngineUnavailableError,
+  loadedHarnesses,
+  resetHarnessCache,
+  resolveEngine,
+} from "../../bridge/engine-registry.ts";
 import { spawnArgv, trustAnswerKey, type SpawnOptions } from "../../bridge/terminal-session.ts";
 
 const BUILTIN = fileURLToPath(new URL("../../harnesses/", import.meta.url));
@@ -21,10 +27,14 @@ const screen = (f: string) => readFileSync(join(SCREENS, f), "utf8");
 
 const tmp = mkdtempSync(join(tmpdir(), "r1a11-claude-"));
 const NO_OWNER = join(tmp, "no-owner");
+/** A PATH folder holding an executable fake `claude` (never run), never the real one. */
+const BIN = join(tmp, "bin");
+mkdirSync(BIN);
+writeFileSync(join(BIN, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
 
-/** The built-in claude file as the loader reads it (no owner files). */
-function builtinClaude(path?: string): Harness {
-  const { harnesses, errors } = loadHarnesses({ installDir: BUILTIN, ownerDir: NO_OWNER, ...(path === undefined ? {} : { path }) });
+/** The built-in claude file as the loader reads it (no owner files, the fake claude on PATH). */
+function builtinClaude(path = BIN): Harness {
+  const { harnesses, errors } = loadHarnesses({ installDir: BUILTIN, ownerDir: NO_OWNER, path });
   expect(errors).toEqual([]);
   return harnesses.get("claude")!;
 }
@@ -126,22 +136,25 @@ describe("claude: the built-in harness file", () => {
     ]);
   });
 
-  it("resolves (TANDEM_ENABLED_ENGINES unset) to the claude harness, and with an empty PATH still to /usr/bin/env -- claude", async () => {
+  it("is off by default and never the engine of an open with none; enabled with a claude on PATH it resolves to the claude harness, with none it is unavailable", async () => {
     vi.stubEnv("TANDEM_ENABLED_ENGINES", undefined);
     vi.stubEnv("TANDEM_HOME", join(tmp, "empty-home"));
+    vi.stubEnv("PATH", `${BIN}:/usr/bin:/bin`);
     resetHarnessCache();
-    for (const raw of [undefined, "claude"]) {
-      const r = await resolveEngine(raw);
-      expect(r.id).toBe("claude");
-      expect(r.harness?.file).toBe(join(BUILTIN, "claude.toml"));
-      expect(r.descriptor).toBeUndefined();
-    }
+    await expect(resolveEngine(undefined)).rejects.toThrow("engine is required. Enabled: none");
+    await expect(resolveEngine("claude")).rejects.toThrow(EngineDisabledError);
 
-    vi.stubEnv("PATH", "");
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", "claude");
+    const r = await resolveEngine("claude");
+    expect(r.id).toBe("claude");
+    expect(r.harness?.file).toBe(join(BUILTIN, "claude.toml"));
+    expect(r).not.toHaveProperty("descriptor");
+    expect(harnessDescriptor(r.harness!).argv).toEqual(["/usr/bin/env", "--", join(BIN, "claude")]);
+
+    vi.stubEnv("PATH", join(tmp, "no-such-bin"));
     resetHarnessCache();
-    const r = await resolveEngine("claude", { detectExecutable: async () => false });
-    expect(r.harness?.programPath).toBeUndefined();
-    expect(harnessDescriptor(r.harness!).argv).toEqual(["/usr/bin/env", "--", "claude"]);
+    await expect(resolveEngine("claude")).rejects.toThrow(EngineUnavailableError);
+    expect(() => harnessDescriptor(builtinClaude(join(tmp, "no-such-bin")))).toThrow(/program "claude" was not found/);
   });
 });
 

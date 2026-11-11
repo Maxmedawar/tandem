@@ -78,8 +78,8 @@ Safety rules:
 - Preserve unrelated files and working-tree changes.
 - Ask me which exact project folders Tandem may use. Never choose my home folder
   or a filesystem root. Do not continue until I answer.
-- Ask which extra engines I want. Claude is the only default. Do not enable
-  Codex, Hermes, shell, or Claude permission bypass unless I explicitly request it.
+- Ask which engines I want. No engine is on by default. Enable only the ones I
+  name, and never Claude permission bypass unless I explicitly request it.
 - Never print or paste a consent password, OAuth token, fleet credential,
   invitation token, private Tailscale address, or tailnet identity. You may report
   only the protected local file paths that setup intentionally prints, without
@@ -120,12 +120,12 @@ The same installation prompt lives in [SETUP-PROMPT.md](SETUP-PROMPT.md).
 
 | Engine | What Tandem controls | Default |
 |---|---|---:|
-| Claude Code | A real interactive Claude Code session | On |
+| Claude Code | A real interactive Claude Code session | Off until enabled |
 | Codex | A real interactive Codex session | Off until enabled |
 | Hermes | An explicitly approved Hermes agent | Off until enabled |
 | Shell | A terminal running as your OS user | Off until enabled |
 
-Claude is enabled by default. Enable only the additional engines you intend to expose:
+No engine is on by default. Enable only the engines you intend to expose:
 
 ```bash
 TANDEM_ENABLED_ENGINES=codex,hermes ./setup.sh hub

@@ -12,7 +12,8 @@
  *   - `open_session` with no device/composite name picks a configured
  *     default device, or the single device (local counts as a candidate)
  *     uniquely capable of the requested engine; otherwise a deterministic
- *     ambiguity error.
+ *     ambiguity error. An open with no engine goes to the explicit device,
+ *     else local, carrying no engine: that device's router answers 400.
  *   - Every remote (or explicitly device-scoped) response that carries a
  *     `name` field has that field rewritten to the globally routable
  *     "<deviceId>:<localName>" form, with additive `device`/`localName`
@@ -88,7 +89,7 @@ export function resolveOpenDevice(runtime: FleetRuntime, explicitDevice: string 
   }
   if (explicitDevice !== undefined) {
     if (explicitDevice === 'local') {
-      const localEngines = runtime.localDevice?.engines ?? ['claude']
+      const localEngines = runtime.localDevice?.engines ?? []
       if (!localEngines.includes(engine)) {
         throw new DeviceNotFoundError(`device "local" does not support engine "${engine}"`)
       }
@@ -103,7 +104,7 @@ export function resolveOpenDevice(runtime: FleetRuntime, explicitDevice: string 
   }
 
   const candidates: OpenCandidate[] = [
-    { deviceId: undefined, engines: runtime.localDevice?.engines ?? ['claude'] },
+    { deviceId: undefined, engines: runtime.localDevice?.engines ?? [] },
     ...runtime.registry.listOnline().map((d) => ({ deviceId: d.deviceId, engines: d.engines })),
   ]
   const capable = candidates.filter((c) => c.engines.includes(engine))
@@ -173,7 +174,7 @@ export interface OpenSessionRequest {
 }
 
 export async function dispatchOpenSession(runtime: FleetRuntime, req: OpenSessionRequest): Promise<DispatchResult> {
-  const engine = req.engine ?? 'claude'
+  const engine = req.engine
   let localName = req.name
   let requestedDevice = req.device
   const explicitlyScoped = req.device !== undefined || req.name?.includes(':') === true
@@ -189,7 +190,9 @@ export async function dispatchOpenSession(runtime: FleetRuntime, req: OpenSessio
   }
   let deviceId: string | undefined
   try {
-    deviceId = resolveOpenDevice(runtime, requestedDevice, engine)
+    deviceId = engine === undefined
+      ? requestedDevice === 'local' ? undefined : requestedDevice
+      : resolveOpenDevice(runtime, requestedDevice, engine)
   } catch (e) {
     if (e instanceof DeviceAmbiguousError) return { status: 409, body: { error: e.message, candidates: e.candidates } }
     if (e instanceof DeviceNotFoundError) return { status: 400, body: { error: e.message } }

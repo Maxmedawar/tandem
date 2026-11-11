@@ -110,8 +110,9 @@ export class TandemMcp extends McpAgent<Env> {
           `${BLAST_RADIUS}\n\n` +
           'Spawn a fresh, visible, INTERACTIVE session inside tmux on the owner\'s Mac ' +
           '(tmux session "ccm-<name>") in the given working directory, and return ' +
-          '{ name, cwd, engine, attachHint }. The engine defaults to claude; pass ' +
-          'engine to launch codex or a bare login shell instead. Idempotent: ' +
+          '{ name, cwd, engine, attachHint }. No agent is on by default and engine is ' +
+          'required: an omitted one gets a 400 naming the enabled agents. Pass engine ' +
+          'to launch claude, codex or a bare login shell. Idempotent: ' +
           're-opening an existing live name reuses it. cwd is allowlisted by the ' +
           'bridge (default the home dir); a cwd outside the allowlist is rejected ' +
           '(the allowlist still gates SPAWNING, even though driving existing panes ' +
@@ -123,7 +124,7 @@ export class TandemMcp extends McpAgent<Env> {
           cwd: z.string().optional()
             .describe('Working directory to launch in. Must be on the bridge allowlist (default $HOME).'),
           engine: z.string().regex(AGENT_NAME).optional()
-            .describe('Engine to launch (default "claude"): any agent name, e.g. the claude / codex / grok / gemini CLI (all on the owner\'s own subscription, no API), or "shell" for a bare login shell. The bridge refuses an unknown or disabled one.'),
+            .describe('Engine to launch, required (no agent is on by default; an omitted one gets a 400 naming the enabled agents): any agent name, e.g. the claude / codex / grok / gemini CLI (all on the owner\'s own subscription, no API), or "shell" for a bare login shell. The bridge refuses an unknown or disabled one.'),
           machine: z.string().optional().describe(MACHINE_DESC),
         },
       },

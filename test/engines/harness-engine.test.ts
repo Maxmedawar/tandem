@@ -215,9 +215,26 @@ describe("harness engine: refusals", () => {
     const described = (tools.find((t) => t.name === "open_session")!.inputSchema.properties?.["engine"] as { description: string }).description;
     expect(/loaded harness name \(([^)]*)\)/.exec(described)?.[1]?.split(", ")).not.toContain("claude");
     expect(loadedHarnesses().get("claude")?.source).toBe("builtin");
-    const resolution = await resolveEngine("claude");
-    expect(resolution.harness).toBe(loadedHarnesses().get("claude"));
-    expect(resolution.descriptor).toBeUndefined();
+    // claude resolves only when enabled and found: a fake claude (never run) first on PATH.
+    const bin = join(BOX, "fake-bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    process.env.TANDEM_ENABLED_ENGINES = "claude";
+    const path = process.env.PATH;
+    const quiet = vi.spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+    try {
+      process.env.PATH = `${bin}:/usr/bin:/bin`;
+      resetHarnessCache();
+      const resolution = await resolveEngine("claude");
+      expect(resolution.harness).toBe(loadedHarnesses().get("claude"));
+      expect(resolution.harness?.source).toBe("builtin");
+      expect(resolution).not.toHaveProperty("descriptor");
+    } finally {
+      process.env.PATH = path;
+      resetHarnessCache();
+      loadedHarnesses();
+      quiet.mockRestore();
+    }
     expect(stderrLines.filter((l) => l.includes(join(OWNER, "claude.toml")))).toHaveLength(1);
   });
 

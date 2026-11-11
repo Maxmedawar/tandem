@@ -34,9 +34,9 @@ import { ICON_MIME, ICON_DATA_URI } from "./icon.ts";
 
 /** Standing warning prepended to every tool description (real machine, real actions). */
 const BLAST_RADIUS =
-  "WARNING: this controls a REAL interactive engine session on the host machine. Claude " +
-  "Code in tmux is the default. codex/shell/hermes and harness-file agents are " +
-  "DISABLED unless the host explicitly enables them (TANDEM_ENABLED_ENGINES); shell, " +
+  "WARNING: this controls a REAL interactive engine session on the host machine. No " +
+  "agent is on by default: every engine, harness-file agents included, is DISABLED " +
+  "unless the host explicitly enables it (TANDEM_ENABLED_ENGINES); shell, " +
   "if enabled, is arbitrary OS-user command execution starting in the allowlisted cwd, " +
   "not a sandbox. May read, edit, or delete files and run shell commands in the chosen " +
   "working directory. Treat every call as a real action.";
@@ -76,7 +76,7 @@ function wrap(result: { status: number; body: unknown }) {
  * get the same device-aware schema without opening a network listener.
  */
 export function buildMcpServer(fleet?: FleetRuntime): McpServer {
-  const runtime = fleet ?? createFleetRuntime({ localEngines: ["claude"] });
+  const runtime = fleet ?? createFleetRuntime({});
   // `icons` rides in the server's implementation info (a self-contained data:
   // URI, so no public URL is needed). A spec-aware client renders the Tandem
   // agent mark next to the connector and its tools. The HTTP transport's
@@ -101,13 +101,13 @@ export function buildMcpServer(fleet?: FleetRuntime): McpServer {
 
   server.tool(
     "open_session",
-    `${BLAST_RADIUS}\n\nOpen or attach to a visible interactive session. Supported engine ids are claude, codex, shell, and hermes, plus the name of each loaded harness file (${harnessList}); a harness file describes one more CLI agent. Claude is enabled by default; every other engine needs host opt-in and must be available, and a harness whose program is a shell also needs shell enabled. Claude, Codex, shell, and harness agents run in tmux and require an admitted start cwd; a harness agent runs only on this hub (device local). Hermes attaches only to an explicitly allowlisted writable agent id through a loopback gateway and does not accept cwd.\n\nClaude permission bypass is off by default. model and effort are also Claude-only. Unknown, disabled, unavailable, or incompatible options fail before spawn or gateway contact. A remote open returns a stable global name in the form "<deviceId>:<localName>". Preserve that exact name for later calls so routing cannot drift.`,
+    `${BLAST_RADIUS}\n\nOpen or attach to a visible interactive session. Supported engine ids are claude, codex, shell, and hermes, plus the name of each loaded harness file (${harnessList}); a harness file describes one more CLI agent. No agent is on by default: every engine needs host opt-in and must be available, and a harness whose program is a shell also needs shell enabled. engine is required; an omitted engine gets a 400 naming the enabled agents. Claude, Codex, shell, and harness agents run in tmux and require an admitted start cwd; a harness agent runs only on this hub (device local). Hermes attaches only to an explicitly allowlisted writable agent id through a loopback gateway and does not accept cwd.\n\nPermission bypass is off by default. Bypass, model and effort are Claude-only. Unknown, disabled, unavailable, or incompatible options fail before spawn or gateway contact. A remote open returns a stable global name in the form "<deviceId>:<localName>". Preserve that exact name for later calls so routing cannot drift.`,
     {
       name: z.string().optional().describe("Short name (A-Z a-z 0-9 . _ -); auto-generated if omitted. For engine=hermes this is the writable agent id (required, must be allowlisted)."),
       cwd: z.string().optional().describe("Working dir; must be on the allowlist (default the configured cwd). Not supported for engine=hermes."),
       model: z.string().optional().describe("Claude-only session model: alias (default|opus|sonnet|haiku) or a full claude-* id. Rejected (400) for any other engine."),
       effort: z.string().optional().describe("Claude-only thinking effort: low|medium|high|xhigh|max. Rejected (400) for any other engine."),
-      engine: z.enum(engineIds).optional().describe(`Engine to drive this session: claude, codex, shell, hermes, or a loaded harness name (${harnessList}). Defaults to claude. Every other engine requires TANDEM_ENABLED_ENGINES opt-in.`),
+      engine: z.enum(engineIds).optional().describe(`Engine to drive this session: claude, codex, shell, hermes, or a loaded harness name (${harnessList}). Required: an omitted engine gets a 400 naming the enabled agents. No agent is on by default; each needs TANDEM_ENABLED_ENGINES opt-in.`),
       device: z.string().optional().describe(deviceParamDescription),
     },
     async ({ name, cwd, model, effort, engine, device }) => {

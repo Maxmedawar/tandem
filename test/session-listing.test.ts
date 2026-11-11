@@ -122,20 +122,19 @@ describe('listSessions privacy and admission filters', () => {
       registered.push(session.id)
     }
 
-    it('a fake-agent session with the owner tag lists when enabled (live row and registered session)', async () => {
+    it('a fake-agent session with the owner tag lists when enabled (live row and registered session); claude, not enabled, does not', async () => {
       withHarness('fake-agent')
       const result = await listSessions({ allowlist: ['/allowed'], listingDependencies })
       expect(result.sessions.map((s) => [s.id, s.engine]).sort()).toEqual([
-        ['cl', 'claude'],
         ['fa-live', 'fake-agent'],
         ['fa-reg', 'fake-agent'],
       ])
     })
 
-    it('a fake-agent session does not list when disabled', async () => {
+    it('a fake-agent session does not list when disabled, nor claude (no agent is on by default)', async () => {
       withHarness(undefined)
       const result = await listSessions({ allowlist: ['/allowed'], listingDependencies })
-      expect(result.sessions.map((s) => s.id)).toEqual(['cl'])
+      expect(result.sessions.map((s) => s.id)).toEqual([])
     })
 
     it('a tag naming no harness and no built-in never lists, even in the enabled set', async () => {
@@ -159,7 +158,7 @@ describe('listSessions privacy and admission filters', () => {
     })
 
     it('claude rows are unchanged', async () => {
-      withHarness(undefined)
+      withHarness('claude')
       const result = await listSessions({ allowlist: ['/allowed'], listingDependencies })
       expect(result.sessions).toEqual([
         {

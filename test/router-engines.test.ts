@@ -1,5 +1,8 @@
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { registerLive, unregisterLive, getLive } from "../bridge/sessions.ts";
+import { resetHarnessCache } from "../bridge/engine-registry.ts";
 import type { DrivableSession, EngineId } from "../bridge/drivable.ts";
 import { TerminalSession } from "../bridge/terminal-session.ts";
 
@@ -24,6 +27,11 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 const { routeForTest } = await import("../bridge/router.ts");
+
+/** A PATH folder holding an executable fake `claude` (never run), so claude resolves without the real one. */
+const FAKE_BIN = mkdtempSync("/tmp/r1a13-fakebin-");
+writeFileSync(join(FAKE_BIN, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+afterAll(() => rmSync(FAKE_BIN, { recursive: true, force: true }));
 
 function fakeSession(engine: EngineId, id: string): DrivableSession {
   return {
@@ -143,7 +151,11 @@ describe("POST /sessions/open — engine-mismatch on name reuse is a 409, checke
     const name = "reuse-me";
     registerLive(fakeSession("claude", name));
     opened.push(name);
-    const res = await routeForTest("POST", "/sessions/open", { name, engine: "claude" });
+    resetHarnessCache();
+    const res = await withEnv({ TANDEM_ENABLED_ENGINES: "claude", PATH: `${FAKE_BIN}:/usr/bin:/bin` }, () =>
+      routeForTest("POST", "/sessions/open", { name, engine: "claude" }),
+    );
+    resetHarnessCache();
     expect(res.status).toBe(200);
     expect((res.body as { reused?: boolean }).reused).toBe(true);
     expect((res.body as { engine?: string }).engine).toBe("claude");
