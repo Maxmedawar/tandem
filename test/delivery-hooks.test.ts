@@ -104,7 +104,7 @@ describe("(a) the harness files: claude.toml delivers by hook through --settings
     const { harnesses, errors } = loadHarnesses({ installDir: BUILTIN, ownerDir: NO_OWNER, path: BIN });
     expect(errors).toEqual([]);
     expect(harnesses.get("claude")).toMatchObject({ delivery: "hook", hook: "--settings" });
-    const others = readdirSync(BUILTIN).filter((f) => f.endsWith(".toml") && f !== "claude.toml");
+    const others = readdirSync(BUILTIN).filter((f) => f.endsWith(".toml") && f !== "claude.toml" && f !== "codex.toml");
     expect(others.length).toBeGreaterThan(0);
     for (const f of others) {
       const h = harnesses.get(f.slice(0, -5))!;

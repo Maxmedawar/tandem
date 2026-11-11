@@ -51,6 +51,7 @@ TOML. Every field not listed here is refused, at the top level and inside `state
 | `dialogs` | array of tables (`[[dialogs]]`) | none | see below |
 | `delivery` | `"hook"` or `"notice"` | `"notice"` | `"hook"` needs `hook` |
 | `hook` | string | unset | the option that loads a per-session settings file Tandem writes, `^--[a-z][a-z0-9-]{0,31}$` |
+| `hook_format` | `"settings-file"` or `"config-overrides"` | `"settings-file"` | needs `hook`; how `hook` carries Tandem's hooks (see below) |
 | `permission_hook` | boolean | `false` | |
 | `reports_context` | boolean | `false` | |
 | `adapter` | string | unset | a built-in adapter's name (`hermes`), built-in files only; such an agent has no program and the terminal fields go unused |
@@ -62,6 +63,11 @@ Tandem writes one settings file for that session under `<TANDEM_HOME>/delivery/`
 Tandem's own (bridge/delivery-hooks.ts); no harness file names a hook program, and the agent's own
 settings are never read or written. Its hooks hand over due mail at a tool call or turn end, labelled
 as untrusted data with its sender, and tell Tandem when a turn starts and ends.
+
+With `hook_format = "config-overrides"` (codex.toml) Tandem writes no file: it adds `hook` once before
+each of five values, the agent's UserPromptSubmit, PostToolUse, Stop and Interrupt hooks and the trust
+record for exactly those four, as Codex reads `--config key=value`. The commands are the same Tandem
+commands, an Interrupt also ends the turn, and the agent's own config folder is never read or written.
 
 ### `states`
 

@@ -11,6 +11,10 @@ resume = ["resume", "{id}"]
 fork = ["fork", "{id}"]
 account_env = "CODEX_HOME"
 history = "~/.codex/sessions"
+# U-R1A-26: Codex 0.167.1 has hooks; Tandem passes its own, and their trust record, as --config values.
+delivery = "hook"
+hook = "--config"
+hook_format = "config-overrides"
 
 [states]
 waiting_for_approval = [
