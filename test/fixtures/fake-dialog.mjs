@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // fake-dialog.mjs: a made-up first-run dialog for test/dialogs.test.ts.
-// Usage: fake-dialog.mjs <screen file> <start highlight index> <key-log path>
+// Usage: fake-dialog.mjs <screen file> <start highlight index> <key-log path> [<later file>]
 // The screen file is plain text; each line starting "@ " is one option. Option <index> is drawn
 // with the highlight "❯ " in front, the others with spaces (index -1: no highlight drawn). Every
 // key read is appended to the key log, one per line (Up, Down, Enter, or the character itself).
@@ -8,9 +8,10 @@
 // chooses the option whose text ends with whitespace and that character. A choice prints
 // "chose: <option>" then the prompt "fake> " (the RULES prompt of the test). When the screen
 // file's first line is "#again", a choice draws the dialog again instead, under "(asked again)".
-import { appendFileSync, readFileSync } from 'node:fs'
+// With a <later file>: once that file exists after a choice, its text is printed under the prompt.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs'
 
-const [file, start, log] = process.argv.slice(2)
+const [file, start, log, later] = process.argv.slice(2)
 const raw = readFileSync(file, 'utf8').split('\n')
 const again = raw[0] === '#again'
 const lines = again ? raw.slice(1) : raw
@@ -33,6 +34,12 @@ function choose(option) {
   }
   chosen = true
   process.stdout.write(`\x1b[2J\x1b[Hchose: ${option}\nfake> `)
+  if (later === undefined) return
+  const timer = setInterval(() => {
+    if (!existsSync(later)) return
+    clearInterval(timer)
+    process.stdout.write(`\n${readFileSync(later, 'utf8')}`)
+  }, 200)
 }
 
 draw()

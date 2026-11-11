@@ -74,6 +74,16 @@ const logOf = (name: string) => join(LOGS, `${name}.log`);
 ownerFile("r1a18b-rtrust", [TRUST, "0", logOf("rtrust")], [TRUST_ROW]);
 ownerFile("r1a18b-rbypass", [BYPASS, "0", logOf("rbypass")], [BYPASS_ROW]);
 ownerFile("r1a18b-radopt", [TRUST, "0", logOf("radopt")], [TRUST_ROW]);
+// The audit table's files (review-fix U-R1A-18B-R1): a bypass dialog for a permission_skip folder, a
+// trust dialog for a folder the limits file does not list, and a made-up `claude` first on PATH
+// (the relay's two sessions run the built-in claude file) whose trust dialog also asks for a sign-in.
+ownerFile("r1a18b-rskip", [BYPASS, "0", logOf("rskip")], [BYPASS_ROW]);
+ownerFile("r1a18b-rdeny", [TRUST, "1", logOf("rdeny")], [TRUST_ROW]);
+const BIN = join(BOX, "bin");
+mkdirSync(BIN);
+writeFileSync(join(BIN, "claude"), `#!/bin/sh\nexec "${FAKE}" "${SIGNIN}" 1 "${logOf("claude")}"\n`, { mode: 0o755 });
+process.env.PATH = `${BIN}:${process.env.PATH}`;
+process.env.TANDEM_ENABLED_ENGINES += ",r1a18b-rskip,r1a18b-rdeny,claude";
 
 const ts: Record<string, any> = await import("../bridge/terminal-session.ts");
 const registry: Record<string, any> = await import("../bridge/harness-registry.ts");
@@ -396,4 +406,152 @@ describe("(d) through route() with a limits file", () => {
       await rq("POST", `/sessions/${name}/close`);
     }
   }, 40_000);
+});
+
+describe("review-fix U-R1A-18B-R1: the audit table", () => {
+  const YES = { name: "any", kind: "trust", match: [".*"], answer: "Yes", highlight: "❯" };
+  const far = Array.from({ length: 12 }, (_, i) => (i === 10 ? "@ Yes, I trust this folder" : `@ Option ${i}`)).join("\n");
+  // label, screen, start highlight, rows, dialogAnswers, the keys typed, how the start ends
+  const starts: [string, string, number, Record<string, unknown>[], string, string[], "owner" | "ready"][] = [
+    ["two dialogs at once: no key, needs owner at the deadline", " Do you trust this folder?\n WARNING: Bypass Permissions mode\n\n@ No, exit\n@ Yes, I trust this folder\n@ Yes, I accept\n", 1, [TRUST_ROW, BYPASS_ROW], "safe-and-bypass", [], "owner"],
+    ["NEVER text far from the dialog (a footer)", " Do you trust this folder?\n\n@ No, exit\n@ Yes, I trust this folder\n\n\n\n\n Not signed in · /login\n", 1, [TRUST_ROW], "safe-and-bypass", [], "owner"],
+    ["answer 'Yes', match '.*', a sign-in dialog", " Sign in with your account?\n\n@ Yes\n@ No\n", 0, [YES], "safe-and-bypass", [], "owner"],
+    ["answer 'Yes', match '.*', a purchase dialog", " Buy 500 more credits?\n\n@ Yes\n@ No\n", 0, [YES], "safe-and-bypass", [], "owner"],
+    ["answer 'Yes', match '.*', kind trust, an install dialog", " A new version is ready. Install it now?\n\n@ Yes\n@ No\n", 0, [YES], "safe-and-bypass", [], "owner"],
+    ["answer 'Yes', kind update (a row the loader refuses), an update dialog", " Update available\n\n@ Yes\n@ No\n", 0, [{ ...YES, kind: "update" }], "safe-and-bypass", [], "owner"],
+    ["answer 'Install update' (a row the loader refuses)", " A new version is ready\n\n@ Install update\n@ Later\n", 0, [{ ...YES, answer: "Install update" }], "safe-and-bypass", [], "owner"],
+    ["an update dialog is skipped: Down, Enter", " Update available\n\n@ Update now\n@ Skip\n", 0, [{ ...YES, kind: "update", answer: "Skip" }], "safe", ["Down", "Enter"], "ready"],
+    ["the answer 10 options below: 8 arrows, no Enter", ` Do you trust this folder?\n\n${far}\n`, 0, [TRUST_ROW], "safe", Array(8).fill("Down"), "owner"],
+    ["a screen that never changes: one arrow, no Enter", " Do you trust this folder?\n\n ❯ No, exit\n   Yes, I trust this folder\n", 0, [TRUST_ROW], "safe", ["Down"], "owner"],
+  ];
+  it("warmup, every row at once: the keys typed and how the start ends", async () => {
+    const got = await Promise.all(
+      starts.map(async ([label, text, start, rows, answers], i) => {
+        const h = harness(`r1a18b-t${i}`, screen(`t${i}.txt`, text), start, rows);
+        let end: string;
+        try {
+          const s = await spawn(h, answers);
+          end = s.ready ? "ready" : "not ready";
+          await s.close();
+        } catch (e) {
+          end = e instanceof ts.NeedsOwnerError ? "owner" : String(e);
+        }
+        return [label, keys(logOf(h.name)), end, tmuxHas(h.name)];
+      }),
+    );
+    expect(got).toEqual(starts.map(([label, , , , , typed, end]) => [label, typed, end, false]));
+  }, 60_000);
+
+  const dir = join(BOX, "loader-audit");
+  const row = (o: Record<string, unknown>) => rowToml({ name: "t", kind: "trust", match: [".*"], answer: "Yes", highlight: "❯", ...o });
+  const files: [string, string, boolean][] = [
+    ["answer 'Yes', match '.*'", row({}), true],
+    ["answer 'Sign in'", row({ answer: "Sign in" }), false],
+    ["answer 'Buy'", row({ answer: "Buy" }), false],
+    ["answer 'Install update', kind trust", row({ answer: "Install update" }), false],
+    ["answer 'Upgrade now', kind bypass", row({ kind: "bypass", answer: "Upgrade now" }), false],
+    ["answer 'Yes', kind update", row({ kind: "update" }), false],
+    ["answer 'Skip until next version', kind update", row({ kind: "update", answer: "Skip until next version" }), true],
+    ["answer 'Not now', kind update", row({ kind: "update", answer: "Not now" }), true],
+    ["a pattern that backtracks elsewhere", row({ match: ["(a+)+$"] }), true],
+    ["9 dialogs", Array.from({ length: 9 }, (_, i) => row({ name: `t${i}` })).join(""), false],
+    ["kind 'login'", row({ kind: "login" }), false],
+    ["kind 'install'", row({ kind: "install" }), false],
+  ];
+  it("the loader, every malicious row: loads or is refused", () => {
+    const got = files.map(([label, rows], i) => {
+      const own = join(dir, `m${i}`);
+      mkdirSync(own, { recursive: true });
+      writeFileSync(join(own, `m${i}.toml`), `name = "m${i}"\nprogram = "/bin/echo"\nhas_prompts = true\n${rows}`);
+      return [label, loadHarnesses({ installDir: own, ownerDir: "/nonexistent-r1a18b", path: "/usr/bin" }).harnesses.has(`m${i}`)];
+    });
+    expect(got).toEqual(files.map(([label, , loads]) => [label, loads]));
+  });
+
+  it("a pattern that backtracks in other engines reads a long screen in linear time", () => {
+    const d = { name: "t", kind: "trust", match: ["(a+)+$", "(.*)*x\\z"], answer: "Yes", highlight: "❯" };
+    const t0 = Date.now();
+    expect(ts.shownDialogs(`${"a".repeat(50_000)}!\n ❯ Yes\n`, [d])).toEqual([]);
+    expect(Date.now() - t0).toBeLessThan(2000);
+  });
+
+  it("past warmup, a trust dialog the agent prints itself gets no key", async () => {
+    const h = harness("r1a18b-mimic", TRUST, 0, [TRUST_ROW]);
+    const later = join(FIXED, "mimic.txt");
+    h.args.push(later);
+    const s = await spawn(h, "safe-and-bypass");
+    try {
+      expect(s.ready).toBe(true);
+      writeFileSync(later, " Do you trust this folder?\n\n ❯ Yes, I trust this folder\n   No, exit\n");
+      await sleep(1500);
+      const pane = tmux("capture-pane", "-p", "-t", `=ccm-${h.name}:`);
+      expect(ts.shownDialogs(pane, [TRUST_ROW]).map((d: any) => d.name)).toEqual(["folder-trust"]);
+      expect(ts.dialogKey(pane, TRUST_ROW)).toBe("Enter");
+      await s.read();
+      await sleep(2500);
+      await s.read();
+      expect(keys(logOf(h.name))).toEqual(["Down", "Enter"]);
+    } finally {
+      await s.close();
+    }
+  }, 40_000);
+
+  describe("through route()", () => {
+    const limits = (fields: Record<string, unknown>) => {
+      const loaded = loadedHarnesses();
+      const agents = Object.fromEntries(["r1a18b-rskip", "r1a18b-rdeny", "claude"].map((n) => [n, agentEntry(loaded.get(n)!)]));
+      writeLimits(TANDEM_HOME, { agents, ...fields });
+      applyLimits();
+    };
+    /** The relay's sessions on the private server (none also when no server is left). */
+    const relaySessions = () => {
+      try {
+        return tmux("list-sessions", "-F", "#{session_name}").split("\n").filter((n) => n.startsWith("ccm-relay-"));
+      } catch {
+        return [];
+      }
+    };
+
+    it("a bypass dialog in a permission_skip folder: answered, 200 ready", async () => {
+      limits({ folders: [WORK], permission_skip: [WORK] });
+      const name = "r1a18b-rskip";
+      const res = await rq("POST", "/sessions/open", { engine: name, name, cwd: WORK });
+      try {
+        expect(res.status).toBe(200);
+        expect(res.body).toMatchObject({ name, ready: true });
+        expect(keys(logOf("rskip"))).toEqual(["Down", "Enter"]);
+      } finally {
+        await rq("POST", `/sessions/${name}/close`);
+      }
+    }, 40_000);
+
+    it("a relay whose agent shows a dialog with sign-in text: 409 needs owner, nothing typed, no session left", async () => {
+      limits({ folders: [WORK], permission_skip: [WORK] });
+      expect(loadedHarnesses().get("claude")?.programPath).toBe(join(BIN, "claude"));
+      process.env.TANDEM_ALLOW_BYPASS = "1";
+      const before = auditLines().length;
+      try {
+        const res = await rq("POST", "/relay/start", { goal: "r1a18b audit", cwd: WORK });
+        expect((res.body as any).error).toMatch(/^needs owner: claude shows its first-run trust dialog "folder-trust" /);
+        expect(res.status).toBe(409);
+        expect(keys(logOf("claude"))).toEqual([]);
+        expect(relaySessions()).toEqual([]);
+        expect(auditLines().slice(before)).toContainEqual(expect.objectContaining({ route: "POST /relay/start", denied: "dialog" }));
+      } finally {
+        delete process.env.TANDEM_ALLOW_BYPASS;
+      }
+    }, 40_000);
+
+    it("a folder the limits file does not list: 403, nothing typed, no session", async () => {
+      const other = join(BOX, "other");
+      mkdirSync(other);
+      limits({ folders: [other] });
+      const name = "r1a18b-rdeny";
+      const res = await rq("POST", "/sessions/open", { engine: name, name, cwd: WORK });
+      expect(res.status).toBe(403);
+      expect((res.body as any).error).toMatch(/^limits: /);
+      expect(keys(logOf("rdeny"))).toEqual([]);
+      expect(tmuxHas(name)).toBe(false);
+    }, 40_000);
+  });
 });

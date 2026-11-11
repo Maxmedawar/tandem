@@ -651,6 +651,10 @@ async function handleRelayStart(req: RpcRequest): Promise<RpcResult> {
     return ok({ status: 'running', loopId, leadName, workerName, cursor: 0 })
   } catch (e) {
     if (e instanceof relay.RelayConfigError) return err(400, e.message)
+    if (e instanceof NeedsOwnerError) {
+      audit({ route: 'POST /relay/start', cwd, denied: 'dialog' })
+      return err(409, e.message)
+    }
     return err(500, `failed to start relay: ${e instanceof Error ? e.message : String(e)}`)
   }
 }

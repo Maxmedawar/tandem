@@ -95,7 +95,8 @@ tables.
 
 Exactly one of `highlight` and `key`. Refused: an `answer` that matches NEVER
 (`bridge/harness-registry.ts`: sign-in, log-in, purchase, buy, subscription, payment, billing,
-credit card text), and an `update` answer containing `update`, `install` or `upgrade` (any case):
+credit card text), any `answer` containing `updat`, `install` or `upgrad` (any case), and an
+`update` answer that does not start with `Skip`, `Not now`, `Later`, `No`, `Dismiss` or `Remind`:
 an update dialog may only be skipped.
 
 How Tandem uses them (`bridge/terminal-session.ts`):
@@ -116,11 +117,13 @@ How Tandem uses them (`bridge/terminal-session.ts`):
   allows all three. A reused or adopted session never runs warmup, so nothing is answered. Outside
   warmup no dialog is ever answered.
 - **needs owner.** A shown dialog the start does not allow, a shown dialog while NEVER matches the
-  screen, a dialog still shown after its Enter or key, or a dialog still shown when warmup ends:
+  screen, a shown dialog while the screen holds update text (`updat`, `install`, `upgrad`) unless it
+  is an `update` dialog that skips, a dialog still shown after its Enter or key, or a dialog still
+  shown when warmup ends (two dialogs shown at once end this way, with no key):
   the start kills its own tmux session and fails (`NeedsOwnerError`; an open answers 409
   `needs owner: <harness> shows its first-run <kind> dialog "<name>" in <cwd> (<reason>); Tandem
-  typed no answer. Open it there yourself once, then open the session again.`). The first three
-  send no key at all.
+  typed no answer. Open it there yourself once, then open the session again.`; a relay start
+  answers 409 the same way). The first four send no key at all.
 
 Never answer a dialog through an agent's own flag, config or trust file, or its environment.
 

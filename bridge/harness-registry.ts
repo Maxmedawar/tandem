@@ -80,6 +80,10 @@ const STATE_NAMES: StateName[] = ['working', 'idle', 'waiting_for_approval']
 const KEY_NAMES = ['approve', 'deny', 'interrupt'] as const
 /** Text that is never typed as a dialog answer, and a screen showing it is never answered (sign-in, purchase). */
 export const NEVER = /sign(?:ing)?[ -]?in|log(?:ging)?[ -]?in|login|purchase|buy|subscri|payment|billing|credit card/i
+/** Update text. No answer holds it, and a screen showing it is answered only by an `update` dialog that skips. */
+export const UPDATE_TEXT = /updat|install|upgrad/i
+/** The answers an `update` dialog may give: it is only ever skipped. */
+export const SKIPS_UPDATE = /^(?:skip|not now|later|no|dismiss|remind)\b/i
 const DIALOG_FIELDS = ['name', 'kind', 'match', 'answer', 'highlight', 'key']
 const DIALOG_KINDS = ['trust', 'update', 'bypass']
 const HIGHLIGHTS = ['❯', '›', '>']
@@ -147,7 +151,8 @@ function dialogsOf(raw: Table): Dialog[] | undefined {
     if ([...answer].length < 1 || [...answer].length > 80) fail(`${at}answer: 1 to 80 characters`)
     checkText(answer, `${at}answer`)
     if (NEVER.test(answer)) fail(`${at}answer: a sign-in or purchase answer is never typed`)
-    if (kind === 'update' && /update|install|upgrade/i.test(answer)) fail(`${at}answer: an update dialog may only be skipped`)
+    if (UPDATE_TEXT.test(answer)) fail(`${at}answer: an update is never started (an update dialog may only be skipped)`)
+    if (kind === 'update' && !SKIPS_UPDATE.test(answer)) fail(`${at}answer: an update dialog may only be skipped (Skip, Not now, Later, No, Dismiss, Remind)`)
     const highlight = str(t, 'highlight', at)
     const key = str(t, 'key', at)
     if ((highlight === undefined) === (key === undefined)) fail(`${at}highlight or ${at}key: exactly one of them`)

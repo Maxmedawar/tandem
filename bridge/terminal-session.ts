@@ -57,7 +57,7 @@ import { cpus, homedir, loadavg } from 'node:os'
 import { join, sep } from 'node:path'
 import { RE2JS } from 're2js'
 import { CLAUDE_DESCRIPTOR, type EngineDescriptor } from './drivable.ts'
-import { NEVER, type Dialog } from './harness-registry.ts'
+import { NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { noteSessionClose, noteSessionStart, TRANSCRIPTS_DIR } from './transcripts/index.ts'
 
@@ -864,7 +864,8 @@ export class TerminalSession {
    * for the screen to change or the answer to be highlighted). One key per poll, and no next key
    * until the screen changed since the last one; at most 8 arrows and one Enter or key per dialog.
    * Throws NeedsOwnerError, sending no key, when `dialogAnswers` does not allow the dialog's kind,
-   * when NEVER matches the screen, or when a dialog is still shown after its Enter or key. Two
+   * when NEVER matches the screen, when the screen shows update text and the dialog is not an `update`
+   * one that skips, or when a dialog is still shown after its Enter or key. Two
    * dialogs at once get no key.
    */
   private async answerDialog(pane: string, watch: DialogWatch): Promise<boolean> {
@@ -875,6 +876,10 @@ export class TerminalSession {
     if (watch.answered.has(d.name)) throw this.needsOwner(d, "it is still shown after Tandem's answer")
     if (!allowsDialog(this.dialogAnswers, d.kind)) throw this.needsOwner(d, `the limits file lets Tandem answer no ${d.kind} dialog here`)
     if (NEVER.test(pane)) throw this.needsOwner(d, 'the screen asks for a sign-in or a purchase')
+    // Checked here too: a descriptor need not come from the loader. An update is only ever skipped.
+    if (UPDATE_TEXT.test(d.answer) || (UPDATE_TEXT.test(pane) && !(d.kind === 'update' && SKIPS_UPDATE.test(d.answer)))) {
+      throw this.needsOwner(d, 'the screen asks about an update, which Tandem only skips')
+    }
     const key = dialogKey(pane, d)
     if (key === undefined) return true
     if (key === 'Down' || key === 'Up') {
