@@ -46,6 +46,20 @@ if (fleetToken && (!Number.isInteger(fleetPort) || fleetPort < 0 || fleetPort > 
   process.exit(1);
 }
 
+// The link module (and the hub wire code it imports) loads only when the link is
+// configured, so with the URL unset nothing new is loaded or started.
+let startConfiguredHubLink: (() => { close(): Promise<void> }) | undefined;
+if (process.env.TANDEM_HUB_LINK_URL) {
+  try {
+    const { hubLinkConfigFromEnv, startHubLink } = await import("../bridge/hub-link.ts");
+    const hubLinkConfig = hubLinkConfigFromEnv(process.env);
+    if (hubLinkConfig) startConfiguredHubLink = () => startHubLink(hubLinkConfig);
+  } catch {
+    console.error("tandem will not start: hub link configuration is invalid");
+    process.exit(1);
+  }
+}
+
 const { createFleetRuntime, buildDefaultDeviceIdFromEnv } = await import("../bridge/fleet-runtime.ts");
 const { capabilityReport } = await import("../bridge/engine-registry.ts");
 const localCapabilities = await capabilityReport();
@@ -96,6 +110,8 @@ try {
   process.exit(1);
 }
 
+const hubLink = startConfiguredHubLink?.();
+
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
@@ -104,6 +120,7 @@ async function shutdown(signal: string): Promise<void> {
   const results = await Promise.allSettled([
     publicHandle?.close() ?? Promise.resolve(),
     privateHandle?.close() ?? Promise.resolve(),
+    hubLink?.close() ?? Promise.resolve(),
   ]);
   process.exit(results.some((result) => result.status === "rejected") ? 1 : 0);
 }
