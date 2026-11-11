@@ -2,13 +2,16 @@
 # may open the configure wizard. Checked against goose v1.59.0 (the release binary, the tagged
 # source and its prompt library cliclack 0.5.6, read as text, never run). Goose is a line REPL,
 # not a full-screen UI. idle is the `> ` prompt followed by one of rustyline's three hints, which
-# Goose draws only on an empty, waiting prompt (`Enter to send · Ctrl+<key> newline`, the
+# Goose draws only on an empty, waiting prompt (`Enter to send · Ctrl+<key> newline`, any key, the
 # Interrupted hint, the press-again-to-exit hint); never anchored at column 0; unproven on a real
 # screen until the live row runs. working is the thinking spinner's `(Ctrl+C to interrupt)`.
 # waiting_for_approval is cliclack's ACTIVE symbol `◆` (or its ASCII fallback `*`) before either
 # tool question, with the select's first row (`Allow`) on the next line, so an answered prompt
 # (`◇`) left in scrollback never reads as waiting and the question quoted in a reply does not
-# either. Other cliclack confirms (summarize, the usage-data question) read unknown. There is no
+# either. A REPL draws what it waits on last, so every rule ends at the end of the screen (`\z`):
+# the open select's items and `└` footer, the spinner line, the prompt line. A reply that quotes
+# the whole menu, the spinner hint or a prompt hint above the real bottom line never counts.
+# Other cliclack confirms (summarize, the usage-data question) read unknown. There is no
 # skip-prompts flag: GOOSE_MODE (environment or Goose's config) decides. approve is Enter (Allow,
 # selected at open); deny is Escape, which Goose maps to Cancel: it denies the call AND ends the
 # response (no one-key plain deny). interrupt is one C-c; a second C-c on an empty prompt exits.
@@ -25,9 +28,9 @@ history = "~/.local/share/goose/sessions"
 delivery = "notice"
 
 [states]
-waiting_for_approval = ['[◆*]  (?:Goose would like to call the above tool, do you allow|Do you allow this tool call)\?\n[│|]  [●○> ] Allow']
-working = ['\(Ctrl\+C to interrupt\)']
-idle = ['> (?:Enter to send · Ctrl\+[A-Za-z] newline|Interrupted, what should goose work on instead\?|Press Ctrl\+C again to exit, or type new instructions to continue)']
+waiting_for_approval = ['[◆*]  (?:Goose would like to call the above tool, do you allow|Do you allow this tool call)\?\n[│|]  [●○> ] Allow[^\n]*(?:\n[│|]  [^\n]*){1,3}\n[└—][^\n]*\z']
+working = ['\(Ctrl\+C to interrupt\)[ \t]*\z']
+idle = ['> (?:Enter to send · Ctrl\+\S newline|Interrupted, what should goose work on instead\?|Press Ctrl\+C again to exit, or type new instructions to continue)[ \t]*\z']
 
 [keys]
 interrupt = ["C-c"]

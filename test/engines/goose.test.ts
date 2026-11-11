@@ -220,6 +220,35 @@ describe("goose: the built-in harness file", () => {
     }
   });
 
+  // Audit (U-R1B-GOOSE): a REPL draws what it waits on last, so each rule ends at the screen's end.
+  // A reply quoting the whole menu, the spinner hint or a prompt hint above the real bottom line
+  // must not lock the owner out (approval), hold every send (working) or let an agent type into a
+  // confirm (idle).
+  const ASK = screen(IDLE_SRC).replace(HINT, "> what does the goose approval menu look like?");
+  const MENU_TOOL = `◆  ${Q_TOOL}\n│  ● Allow (Allow the tool call once)\n│  ○ Always Allow\n│  ○ Deny\n│  ○ Cancel\n└`;
+  const MENU_PROMPT = `◆  ${Q_PROMPT}\n│  ● Allow (Allow the tool call once)\n│  ○ Deny\n│  ○ Cancel\n└`;
+  const MENU_ASCII = `*  ${Q_TOOL}\n|  > Allow (Allow the tool call once)\n|    Always Allow\n|    Deny\n|    Cancel\n—`;
+  const CONFIRM = (q: string) => `◆  ${q}\n│  ● Yes / ○ No\n└`;
+  it.each([
+    ["a reply quoting the tool menu in a code block above the prompt", `${ASK}It looks like this:\n\`\`\`\n${MENU_TOOL}\n\`\`\`\n\n${HINT}\n`, "idle"],
+    ["a reply quoting the prompt-tool menu above the prompt", `${ASK}${MENU_PROMPT}\n\n${HINT}\n`, "idle"],
+    ["a reply quoting the ASCII menu above the prompt", `${ASK}${MENU_ASCII}\n\n${HINT}\n`, "idle"],
+    ["a reply quoting the header and first row above the prompt", `${ASK}◆  ${Q_PROMPT}\n│  ● Allow\n\n${HINT}\n`, "idle"],
+    ["a reply quoting `(Ctrl+C to interrupt)` above the prompt", `${ASK}It shows (Ctrl+C to interrupt) while it works.\n\n${HINT}\n`, "idle"],
+    ["a quoted prompt hint above the usage-data question", `${ASK}${HINT}\n\n${screen(join(GSE_SCREENS, "unknown-telemetry-src.txt"))}`, "unknown"],
+    ["a quoted prompt hint above an elicitation confirm", `${ASK}${HINT}\n\n${CONFIRM("Approve this action?")}`, "unknown"],
+    ["a quoted Interrupted hint above the top-up confirm", `${ASK}> Interrupted, what should goose work on instead?\n${CONFIRM("Open the top-up URL in your browser?")}`, "unknown"],
+    ["a quoted prompt hint while the spinner runs", `${ASK}${HINT}\n◐  Thinking...  (Ctrl+C to interrupt)`, "working"],
+    ["a quoted menu above the real menu", `${ASK}${MENU_PROMPT}\n\n${MENU_TOOL}\n`, "waiting_for_approval"],
+    ["the real menu with the cursor moved to Deny", MENU_TOOL.replace("● Allow (Allow the tool call once)", "○ Allow").replace("○ Deny", "● Deny (Deny the tool call)"), "waiting_for_approval"],
+    ["a cancelled approval (`■`, Operation cancelled.) above the prompt", `${ASK}■  ${Q_TOOL}\n│  Cancel\n└  Operation cancelled.\n\n${HINT}\n`, "idle"],
+    ["an answered approval while the tool runs", `${ASK}◇  ${Q_PROMPT}\n│  Allow\n│\na.txt`, "unknown"],
+    ["the spinner's ASCII frame", `${ASK}O  Waddling...  (Ctrl+C to interrupt)`, "working"],
+    ["a punctuation newline key (Ctrl+])", screen(IDLE_SRC).replace("Ctrl+J", "Ctrl+]"), "idle"],
+  ])("audit: %s", (_label, text, state) => {
+    expect(readScreen(builtinGoose(), text)).toBe(state);
+  });
+
   it("never idle: every approval and unknown screen and every other agent's idle screen in the screens folder", () => {
     const h = builtinGoose();
     const files = readdirSync(SCREENS).filter(
