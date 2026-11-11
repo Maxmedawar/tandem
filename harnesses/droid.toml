@@ -34,10 +34,14 @@ waiting_for_approval = [
   '(?m)^[ │]*(?:[>✕] )?(?:No, cancel(?: all)?|No, keep iterating on spec|(?:\d+\. )?No and explain why|\d+\. Proceed with (?:Manual Approvals|Low autonomy|Medium autonomy|High autonomy))[ │]*$(?:\n[^\n]*){0,3}?\n *(?:↑↓ (?:navigate · (?:1-\d+ select · )?Enter select|to select, Enter to confirm)|↑/↓ Navigate · Enter Select)[^\n]*(?:\n[^\n╭╮╰╯│]*){0,4}\z',
   '(?m)Droid-Shield approval required(?:\n[^\n]*){1,40}?\n[ │]*(?:[>✕] )?Cancel[ │]*$(?:\n[^\n]*){0,3}?\n *↑↓ navigate · Enter select[^\n]*(?:\n[^\n╭╮╰╯│]*){0,4}\z',
 ]
-working = ['\((?:Press ESC to stop|Please wait)\)']
+# U-R1B-ANCHOR: the status line counts only above the input box in use: at most 4 lines with no box
+# border, then one box, then no prompt row (`│ >` or `>`) to the screen end.
+working = ['\((?:Press ESC to stop|Please wait)\)[^\n]*(?:\n[^\n╭╮╰╯│]*){0,4}\n[ \t]*╭[^\n]*(?:\n[ \t]*│[^\n]*)+\n[ \t]*╰[^\n]*(?:\n[ \t]*(?:│[ \t]*(?:[^ \t>\n][^\n]*)?|[^ \t│>\n][^\n]*)?)*\z']
+# U-R1B-ANCHOR: the empty input counts only when no later row is a prompt row (`│ >` or `>`) to the
+# screen end; box and footer rows under it (the footer stack) may follow.
 idle = [
-  '> (?:(?:Try|Type) "(?:How do I handle errors in async functions\?|Write unit tests for this file|Search the documentation for this library|Optimize the performance of this component|Debug why users can.t login|Implement a REST endpoint for user data|Add proper error handling to API calls|Set up GitHub Actions for CI/CD|Fix all lint warnings|Create a PR with these changes|Review the changes in my current branch|Explain how the codebase is organized|Review this code for security issues)"|Droid will research and plan before making changes|Mission control for huge projects)',
-  '(?m)^ *│ > +│ *\n *╰─+╯',
+  '> (?:(?:Try|Type) "(?:How do I handle errors in async functions\?|Write unit tests for this file|Search the documentation for this library|Optimize the performance of this component|Debug why users can.t login|Implement a REST endpoint for user data|Add proper error handling to API calls|Set up GitHub Actions for CI/CD|Fix all lint warnings|Create a PR with these changes|Review the changes in my current branch|Explain how the codebase is organized|Review this code for security issues)"|Droid will research and plan before making changes|Mission control for huge projects)[^\n]*(?:\n[ \t]*(?:│[ \t]*(?:[^ \t>\n][^\n]*)?|[^ \t│>\n][^\n]*)?)*\z',
+  '(?m)^ *│ > +│ *\n *╰─+╯[^\n]*(?:\n[ \t]*(?:│[ \t]*(?:[^ \t>\n][^\n]*)?|[^ \t│>\n][^\n]*)?)*\z',
 ]
 # U-R1A-18D: an agent's text enters only an empty prompt (the box row shows only a placeholder, or nothing).
 empty_prompt = ['^ *│ > (?:(?:Try|Type) "(?:How do I handle errors in async functions\?|Write unit tests for this file|Search the documentation for this library|Optimize the performance of this component|Debug why users can.t login|Implement a REST endpoint for user data|Add proper error handling to API calls|Set up GitHub Actions for CI/CD|Fix all lint warnings|Create a PR with these changes|Review the changes in my current branch|Explain how the codebase is organized|Review this code for security issues)"|Droid will research and plan before making changes|Mission control for huge projects) *│ *(?:\n[ \t]*(?:[^ \t╭│\n][^\n]*)?)*\z', '^ *│ > +│ *\n *╰─+╯[ \t]*(?:\n[ \t]*(?:[^ \t╭│\n][^\n]*)?)*\z']

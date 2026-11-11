@@ -130,7 +130,7 @@ describe("pi: the built-in harness file", () => {
     expect(h.args).toEqual([]);
     expect(h.skip_prompts_args).toEqual([]);
     expect(h.keys).toEqual({ interrupt: ["Escape"] });
-    expect(h.states?.working).toEqual(["Working\\.\\.\\."]);
+    expect(h.states?.working).toEqual(["Working\\.\\.\\.[^\\n]*(?:\\n(?:[^─\\n][^\\n]*)?){0,4}\\n─{3}[^\\n]*(?:\\n(?:[^─\\n][^\\n]*)?)*\\n─{3}[^\\n]*(?:\\n(?:[^─\\n][^\\n]*)?)*\\z", "Working\\.\\.\\.[^\\n]*(?:\\n(?:─{0,19}[^─\\n])*─{0,19}){0,12}\\n─{3}[^\\n]*(?:\\n(?:[^─\\n][^\\n]*)?)*\\n─{3}[^\\n]*(?:\\n(?:[^─\\n][^\\n]*)?)*\\z"]);
     expect(h.states?.idle).toEqual(["─{20,}\\n[^\\n]*\\n─{20,}\\n[^\\n]*\\n[^\\n]*(?:\\d%|\\?)/\\d"]);
     expect(h.states?.waiting_for_approval ?? []).toEqual([]);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);

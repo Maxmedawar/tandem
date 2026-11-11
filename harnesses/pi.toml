@@ -18,7 +18,13 @@ history = "~/.pi/agent/sessions"
 delivery = "notice"
 
 [states]
-working = ['Working\.\.\.']
+# U-R1B-ANCHOR: the working line counts only above the editor in use, then the editor's two rules and
+# the footer to the screen end with no other rule. Between the line and the editor (pi 0.79.7 draws
+# its widgets there: a blank line, then up to 10 lines and a truncation line for one widget): at most
+# 4 lines that do not start with a rule, or at most 12 lines that hold no run of 20 `─` (a quoted
+# editor rule, however it is indented). A reply quoting it with its editor above the editor in use
+# reads idle.
+working = ['Working\.\.\.[^\n]*(?:\n(?:[^─\n][^\n]*)?){0,4}\n─{3}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\n─{3}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z', 'Working\.\.\.[^\n]*(?:\n(?:─{0,19}[^─\n])*─{0,19}){0,12}\n─{3}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\n─{3}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z']
 idle = ['─{20,}\n[^\n]*\n─{20,}\n[^\n]*\n[^\n]*(?:\d%|\?)/\d']
 # U-R1A-18D: an agent's text enters only an empty prompt (a blank row between the two rules above the footer).
 empty_prompt = ['─{20,}\n[ \t]*\n─{20,}\n[^\n]*\n[^\n]*(?:\d%|\?)/\d[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z']
