@@ -366,22 +366,34 @@ export function sweepOffers(now: number = Date.now()): number {
   })
 }
 
-/** Remove every waiting offer; returns the count. roster.json is never touched. */
+/** RosterError 'not a regular file' unless `st` is a regular file or a symlink (unlinked as a link, never followed). */
+function checkRemovable(st: Stats, path: string): void {
+  if (!st.isFile() && !st.isSymbolicLink()) throw new RosterError('not a regular file', path)
+}
+
+/**
+ * Remove every waiting offer; returns the count. Every name is checked first: one that is neither
+ * a regular file nor a symlink is refused with its path and nothing is removed. roster.json is
+ * never touched.
+ */
 export function clearOffers(): number {
   return withLock((dir) => {
     const offers = join(dir, 'offers')
     if (!checkDir(offers, false)) return 0
-    const names = readdirSync(offers).filter((f) => f.endsWith('.json'))
-    for (const f of names) unlinkSync(join(offers, f))
-    return names.length
+    const paths = readdirSync(offers).filter((f) => f.endsWith('.json')).map((f) => join(offers, f))
+    for (const path of paths) checkRemovable(lstatSync(path), path)
+    for (const path of paths) unlinkSync(path)
+    return paths.length
   })
 }
 
-/** Remove pending.json; true when one was there. roster.json is never touched. */
+/** Remove pending.json; true when one was there (not a regular file or symlink: refused, left as is). roster.json is never touched. */
 export function clearPending(): boolean {
   return withLock((dir) => {
     const path = join(dir, 'pending.json')
-    if (!lstatSync(path, { throwIfNoEntry: false })) return false
+    const st = lstatSync(path, { throwIfNoEntry: false })
+    if (!st) return false
+    checkRemovable(st, path)
     unlinkSync(path)
     return true
   })
@@ -403,22 +415,38 @@ export function listOffers(): { id: string; fingerprint: string }[] {
     })
 }
 
-/** Sign the waiting offer whose whole fingerprint is `fingerprint` into the roster, by `key`. */
+/** In the locked `dir`: roster.json with the waiting offer `fingerprint` signed in by `key`, as text; nothing written. */
+function signIn(dir: string, key: DeviceKey, fingerprint: string, now: number): { id: string; fingerprint: string; text: string } {
+  const entries = rosterIn(dir)
+  if (!entries || !entries.some((e) => e.key === key.publicKey)) throw new RosterError('not trusted')
+  const offers = join(dir, 'offers')
+  const offer = checkDir(offers, false) ? offerAt(offers, fingerprint) : undefined
+  if (!offer || fingerprintOf(offer.key) !== fingerprint) throw new RosterError('no matching offer')
+  if (!fresh(offer, now)) throw new RosterError('time')
+  const last = entries[entries.length - 1]
+  const head = { seq: entries.length, id: offer.id, key: offer.key, signer: key.publicKey, ts: Math.max(now, last.ts), prev: sha256(entryText(last)) }
+  const next = verifyRoster(rosterText([...entries, { ...head, sig: key.sign(entryText(head)) }]), entries[0].key)
+  return { id: offer.id, fingerprint, text: rosterText(next) }
+}
+
+/**
+ * The roster with the waiting offer whose whole fingerprint is `fingerprint` signed in by `key`, as
+ * text (trustOffer's checks and entry, under the lock); writes and removes nothing. The hub path
+ * (bridge/roster-hub.ts) uploads it first and keeps it only once the hub took it.
+ */
+export function signOffer(key: DeviceKey, fingerprint: string, now: number = Date.now()): { id: string; fingerprint: string; text: string } {
+  if (typeof fingerprint !== 'string' || !FINGERPRINT.test(fingerprint)) throw new RosterError('bad fingerprint')
+  return withLock((dir) => signIn(dir, key, fingerprint, now))
+}
+
+/** Sign the waiting offer whose whole fingerprint is `fingerprint` into the roster, by `key` (signOffer's text written, the offer removed). */
 export function trustOffer(key: DeviceKey, fingerprint: string, now: number = Date.now()): { id: string; fingerprint: string } {
   if (typeof fingerprint !== 'string' || !FINGERPRINT.test(fingerprint)) throw new RosterError('bad fingerprint')
   return withLock((dir) => {
-    const entries = rosterIn(dir)
-    if (!entries || !entries.some((e) => e.key === key.publicKey)) throw new RosterError('not trusted')
-    const offers = join(dir, 'offers')
-    const offer = checkDir(offers, false) ? offerAt(offers, fingerprint) : undefined
-    if (!offer || fingerprintOf(offer.key) !== fingerprint) throw new RosterError('no matching offer')
-    if (!fresh(offer, now)) throw new RosterError('time')
-    const last = entries[entries.length - 1]
-    const head = { seq: entries.length, id: offer.id, key: offer.key, signer: key.publicKey, ts: Math.max(now, last.ts), prev: sha256(entryText(last)) }
-    const next = verifyRoster(rosterText([...entries, { ...head, sig: key.sign(entryText(head)) }]), entries[0].key)
-    writeAtomic(join(dir, 'roster.json'), rosterText(next))
-    unlinkSync(join(offers, `${fingerprint}.json`))
-    return { id: offer.id, fingerprint }
+    const signed = signIn(dir, key, fingerprint, now)
+    writeAtomic(join(dir, 'roster.json'), signed.text)
+    unlinkSync(join(dir, 'offers', `${fingerprint}.json`))
+    return { id: signed.id, fingerprint }
   })
 }
 

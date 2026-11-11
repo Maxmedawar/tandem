@@ -322,3 +322,54 @@ describe('audit rows (U-R1A-31B-1)', () => {
     }
   })
 })
+
+describe('(31C-2) per-id proof limit', () => {
+  // 1,201 distinct nonces: the (d) helper has only 256.
+  const nn = (i: number) => {
+    const b = Buffer.alloc(16, 9)
+    b.writeUInt32BE(i, 0)
+    return b.toString('base64url')
+  }
+  const LIMIT = 1200
+  // Thousands of commits: no fsync per commit on these files, so a slow disk (a small Linux VM
+  // right after npm ci) cannot stall a row; what is read back is the same.
+  const fast = (rows: (query: string) => unknown) => rows('PRAGMA synchronous = OFF')
+
+  it('1,200 admits of one id at one instant: ok; the 1,201st: slow, no row; another id ok; at +600,001 ms ok again', async () => {
+    const mod = await import('../src/devices.ts')
+    expect((mod as Record<string, unknown>).MAX_PROOFS_PER_ID).toBe(LIMIT)
+    const { h, clock, rows } = openDevices()
+    fast(rows)
+    const count = (id: string) => Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces WHERE id = ?', id)[0].c)
+    expect(h.devices.admit('alpha', A.publicKey, nn(0), true)).toBe('bound')
+    for (let i = 1; i < LIMIT; i++) expect([i, h.devices.admit('alpha', A.publicKey, nn(i), true)]).toEqual([i, 'ok'])
+    expect(count('alpha')).toBe(LIMIT)
+    expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT), true)).toBe('slow')
+    expect(count('alpha')).toBe(LIMIT)
+    expect(rows('SELECT nonce FROM hub_device_nonces WHERE nonce = ?', nn(LIMIT))).toEqual([])
+    expect(h.devices.admit('beta', B.publicKey, nn(0), true)).toBe('bound')
+    expect(h.devices.admit('beta', B.publicKey, nn(1), true)).toBe('ok')
+    clock.now = T0 + 600_000
+    expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT + 1), true)).toBe('slow')
+    clock.now = T0 + 600_001
+    expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT + 2), true)).toBe('ok')
+    expect(count('alpha')).toBe(1)
+  })
+
+  it('with 1,200 rows a used nonce is still replay and another key still taken; a slow writes no row; the count survives a restart', () => {
+    const file = join(dir, `d${++files}.sqlite`)
+    const { h, restart, rows } = openDevices(file)
+    fast(rows)
+    const all = () => Number(rows('SELECT COUNT(*) AS c FROM hub_device_nonces')[0].c)
+    for (let i = 0; i < LIMIT; i++) h.devices.admit('alpha', A.publicKey, nn(i), true)
+    expect(all()).toBe(LIMIT)
+    expect(h.devices.admit('alpha', A.publicKey, nn(5), true)).toBe('replay')
+    expect(h.devices.admit('alpha', B.publicKey, nn(LIMIT + 5), true)).toBe('taken')
+    for (let i = 0; i < 20; i++) expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT + 10 + i), true)).toBe('slow')
+    expect(all()).toBe(LIMIT)
+    restart()
+    expect(h.devices.admit('alpha', A.publicKey, nn(LIMIT + 50), true)).toBe('slow')
+    expect(h.devices.admit('alpha', A.publicKey, nn(3), true)).toBe('replay')
+    expect(all()).toBe(LIMIT)
+  })
+})

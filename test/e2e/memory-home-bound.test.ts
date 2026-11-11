@@ -376,7 +376,7 @@ describe.skipIf(Boolean(missing))(title, () => {
     await home.close()
   }, WAIT)
 
-  it('(6) a stored roster that fails the hub check: with a and X both homes, 503 not in roster, never 409, and neither is sent a frame', async () => {
+  it('(6) (31C-2 G1) an upload that fails the hub check (a copied signature) is refused 400 and the stored roster kept: with a and X both homes, memory calls still go to a only', async () => {
     const entries = rosterOf(computers.a)
     const last = entries[entries.length - 1]
     const fresh = openDeviceKey({ path: join(folder('e'), 'keys', 'device.key') })
@@ -384,13 +384,45 @@ describe.skipIf(Boolean(missing))(title, () => {
       seq: entries.length, id: 'r1a31c1-e', key: fresh.publicKey, signer: keyOf(computers.a).publicKey, ts: last.ts,
       prev: sha(`tandem-roster-v1\n${last.seq}\n${last.prev}\n${last.id}\n${last.key}\n${last.signer}\n${last.ts}`),
     }
-    expect(await putAsA([...entries, { ...head, sig: entries[0].sig }], entries.length)).toEqual({ ok: true, len: entries.length + 1 })
+    const asA = rosterHub({ url: wsHub(), token: LINK_TOKEN, bridgeId: computers.a.id }, keyOf(computers.a))
+    const held = await asA.get()
+    expect(held?.len).toBe(entries.length)
+    const refused = await putAsA([...entries, { ...head, sig: entries[0].sig }], entries.length).then(() => 'accepted', (e: { reason?: string }) => e.reason)
+    expect(refused).toBe('hub: 400 roster_invalid')
+    expect(await asA.get()).toEqual(held)
     const a = await standIn(computers.a.id, keyOf(computers.a), { from: 'a' })
     stands.push(a)
-    expect(await linkRoute('/fabric/project/list')).toEqual({ status: 503, text: JSON.stringify(NOT_IN_ROSTER) })
-    expect(await viaB('/fabric/project/list', {})).toEqual(NOT_IN_ROSTER)
-    expect(a.requests).toHaveLength(0)
+    expect(await linkRoute('/fabric/project/list')).toEqual({ status: 200, text: JSON.stringify({ from: 'a' }) })
+    expect(await viaB('/fabric/project/list', {})).toEqual({ from: 'a' })
+    expect(a.requests).toHaveLength(2)
     expect(x!.requests).toHaveLength(0)
+  }, WAIT)
+
+  it('(6b) (31C-2 G3) an answer is taken only from the socket the call was sent on: another socket sending the same request_id first is ignored', async () => {
+    const home = await dial(computers.a.id, keyOf(computers.a), true)
+    expect(home.status).toBe(101)
+    const other = await dial('r1a31c2-y', xKey, false)
+    expect(other.status).toBe(101)
+    const response = (requestId: string, body: string) => JSON.stringify({
+      type: CCM_FRAME_TYPES.httpResponse, request_id: requestId, status_code: 200,
+      headers: { 'content-type': ['application/json'] }, body_base64: Buffer.from(body, 'utf8').toString('base64'),
+    })
+    const sent: Json[] = []
+    home.ws!.on('message', (data) => {
+      const frame = JSON.parse(data.toString()) as Json
+      if (frame.type !== CCM_FRAME_TYPES.httpRequest) return
+      sent.push(frame)
+      other.ws!.send(response(frame.request_id, '{"from":"other"}'))
+      setTimeout(() => home.ws!.send(response(frame.request_id, '{"from":"home"}')), 500)
+    })
+    try {
+      expect(await linkRoute('/fabric/project/list')).toEqual({ status: 200, text: '{"from":"home"}' })
+      expect(sent).toHaveLength(1)
+      expect(x!.requests).toHaveLength(0)
+    } finally {
+      home.ws!.terminate()
+      other.ws!.terminate()
+    }
   }, WAIT)
 })
 

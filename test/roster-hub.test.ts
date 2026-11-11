@@ -378,3 +378,121 @@ describe('main', () => {
     expect(receiveRoster(text)).toBe('same')
   })
 })
+
+describe('(31C-2) trust through the hub writes roster.json only after the hub took it (31B-2 G6); the hub slowing down', () => {
+  const offerFile = (c: Computer, fp: string) => join(c.home, 'roster', 'offers', `${fp}.json`)
+  const read = (p: string) => (existsSync(p) ? readFileSync(p) : undefined)
+  type Key = ReturnType<typeof openDeviceKey>
+  type E = { seq: number; id: string; key: string; signer: string; ts: number; prev: string; sig: string }
+  const etext = (e: Omit<E, 'sig'>) => `tandem-roster-v1\n${e.seq}\n${e.prev}\n${e.id}\n${e.key}\n${e.signer}\n${e.ts}`
+  /** `text` with one more entry for id/key, signed by `by`. */
+  const extend = (text: string, by: Key, id: string, key: string) => {
+    const entries = JSON.parse(text).entries as E[]
+    const last = entries[entries.length - 1]
+    const head = { seq: entries.length, id, key, signer: by.publicKey, ts: last.ts, prev: createHash('sha256').update(etext(last), 'utf8').digest('hex') }
+    return JSON.stringify({ v: 1, entries: [...entries, { ...head, sig: by.sign(etext(head)) }] })
+  }
+
+  /** A with a roster and B's offer waiting at the hub; the hub holds A's roster. */
+  function setup() {
+    const a = computer('r1a31c2-a')
+    const b = computer('r1a31c2-b')
+    on(b)
+    const offer = JSON.stringify(makeOffer(b.key, b.id))
+    on(a)
+    initRoster(a.key, a.id)
+    const held = readFileSync(rosterFile(a), 'utf8')
+    hubOn()
+    return { a, b, offer, held }
+  }
+
+  it('the PUT answered 409 twice: exit 1 with the hub busy line; roster.json bytes and the offer file unchanged', async () => {
+    const { a, b, offer, held } = setup()
+    answer = (s) => {
+      if (s.url === '/__tunnel/roster/offers') return { status: 200, body: { offers: [offer] } }
+      if (s.method === 'GET') return { status: 200, body: { len: 1, roster: held } }
+      return { status: 409, body: { error: 'roster_conflict', len: 1 } }
+    }
+    // The offer as the first pull keeps it, before the command.
+    on(a)
+    receiveOffer(offer)
+    const [rosterBefore, offerBefore] = [read(rosterFile(a)), read(offerFile(a, b.key.fingerprint))]
+    expect(offerBefore).toBeDefined()
+    expect(await capture(() => hubClient.main(['trust', b.key.fingerprint]))).toEqual({
+      code: 1,
+      out: '',
+      err: `tandem: hub busy: run tandem trust ${b.key.fingerprint} again\n`,
+    })
+    expect(seen.filter((s) => s.method === 'PUT')).toHaveLength(2)
+    expect(read(rosterFile(a))).toEqual(rosterBefore)
+    expect(read(offerFile(a, b.key.fingerprint))).toEqual(offerBefore)
+  })
+
+  it("the hub's roster is another branch (hub roster: fork) and the PUT is 409 twice: roster.json bytes unchanged", async () => {
+    const l = computer('r1a31c2-l')
+    const w = computer('r1a31c2-w')
+    const x = computer('r1a31c2-x')
+    const y = computer('r1a31c2-y')
+    const z = computer('r1a31c2-z')
+    on(z)
+    const offerZ = JSON.stringify(makeOffer(z.key, z.id))
+    on(l)
+    initRoster(l.key, l.id)
+    receiveOffer(JSON.stringify(makeOffer(w.key, w.id)))
+    roster.trustOffer(l.key, w.key.fingerprint)
+    const base = readFileSync(rosterFile(l), 'utf8')
+    // W holds L's branch with x; the hub holds L's branch with y: from the hub, W would drop x (signed by L).
+    const mine = extend(base, l.key, x.id, x.key.publicKey)
+    const hubs = extend(base, l.key, y.id, y.key.publicKey)
+    on(w)
+    receiveRoster(base)
+    roster.joinRoster(w.key, l.key.fingerprint)
+    expect(receiveRoster(mine)).toBe('updated')
+    const before = read(rosterFile(w))
+    hubOn()
+    answer = (s) => {
+      if (s.url === '/__tunnel/roster/offers') return { status: 200, body: { offers: [offerZ] } }
+      if (s.method === 'GET') return { status: 200, body: { len: 3, roster: hubs } }
+      return { status: 409, body: { error: 'roster_conflict', len: 3 } }
+    }
+    const run = await capture(() => hubClient.main(['trust', z.key.fingerprint]))
+    expect(run.code).toBe(1)
+    expect(run.out).toBe('')
+    expect(run.err).toContain('hub roster: fork\n')
+    expect(run.err.endsWith(`tandem: hub busy: run tandem trust ${z.key.fingerprint} again\n`)).toBe(true)
+    expect(seen.filter((s) => s.method === 'PUT')).toHaveLength(2)
+    expect(read(rosterFile(w))).toEqual(before)
+    on(w)
+    expect((readRoster() ?? []).map((e) => e.id)).toEqual([l.id, w.id, x.id])
+  })
+
+  it('the PUT answered 200: roster.json bytes are the PUT body roster, the offer gone, the trusted line', async () => {
+    const { a, b, offer, held } = setup()
+    answer = (s) => {
+      if (s.url === '/__tunnel/roster/offers') return { status: 200, body: { offers: [offer] } }
+      if (s.method === 'GET') return { status: 200, body: { len: 1, roster: held } }
+      return { status: 200, body: { len: 2 } }
+    }
+    expect(await capture(() => hubClient.main(['trust', b.key.fingerprint]))).toEqual({
+      code: 0,
+      out: `trusted ${b.id} ${b.key.fingerprint}. On ${b.id} run: tandem trust ${a.key.fingerprint}\n`,
+      err: '',
+    })
+    const puts = seen.filter((s) => s.method === 'PUT')
+    expect(puts).toHaveLength(1)
+    const sent = JSON.parse(puts[0].body.toString())
+    expect(sent.base).toBe(1)
+    expect(readFileSync(rosterFile(a), 'utf8')).toBe(sent.roster)
+    expect(existsSync(offerFile(a, b.key.fingerprint))).toBe(false)
+    on(a)
+    expect((readRoster() ?? []).map((e) => e.id)).toEqual([a.id, b.id])
+  })
+
+  it('the hub answering 429 slow down to every call: tandem roster exits 1 with the one line', async () => {
+    const { a } = setup()
+    const before = read(rosterFile(a))
+    answer = () => ({ status: 429, body: 'slow down' })
+    expect(await capture(() => hubClient.main(['roster']))).toEqual({ code: 1, out: '', err: 'tandem: hub: 429 slow down\n' })
+    expect(read(rosterFile(a))).toEqual(before)
+  })
+})

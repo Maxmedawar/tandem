@@ -21,7 +21,8 @@
  *   - The roster routes (U-R1A-31B-2; same secret and proof, an id proved here for the first
  *     time is bound: a new computer offers before its bridge ever connected): GET and PUT of the
  *     owner's roster, POST of this computer's pairing offer, GET of the offers waiting. The hub
- *     keeps them (./roster-store) and never checks a signature; every computer does.
+ *     keeps them (./roster-store): a roster only when its whole chain checks out; every
+ *     computer checks both itself.
  *   - GET / is an unauthenticated health check.
  *
  * The provider routes: anything starting with the API routes (/mcp, /sse) and
@@ -96,9 +97,9 @@ function bearerToken(request: Request): string | undefined {
   return auth.slice('bearer '.length).trim() || undefined
 }
 
-/** The plain-text answer to a refused device proof. */
-function deviceRefusal(status: 401 | 409 | 503): Response {
-  const body = status === 409 ? 'machine id taken' : status === 503 ? 'device table full' : 'unauthorized'
+/** The plain-text answer to a refused device proof (429: the id's proof limit, ./devices MAX_PROOFS_PER_ID). */
+function deviceRefusal(status: 401 | 409 | 429 | 503): Response {
+  const body = status === 409 ? 'machine id taken' : status === 429 ? 'slow down' : status === 503 ? 'device table full' : 'unauthorized'
   return new Response(body, { status })
 }
 
@@ -140,7 +141,7 @@ const MEMORY_CHALLENGE_HEADER = 'tandem-memory-challenge'
  * The link route for fabric calls. Order: a `token` query 401, not POST 405, a missing or
  * wrong bearer 401, a body over WS_MAX_FRAME_BYTES 413 (readCapped: never held past the cap),
  * a device proof that is not over these exact bytes or not from an id already bound on the
- * tunnel 401 (409/503 as checkDevice says), a body that is not an object with
+ * tunnel 401 (409/429/503 as checkDevice says), a body that is not an object with
  * an object `input` 400, a `tandem-memory-challenge` that is not exactly 22 base64url characters
  * 400; then the TunnelDO's answer as it is. Only `input` is kept: the caller is the hub's own
  * owner, derived here as TandemMcp derives it. The challenge, when sent, goes on to the memory

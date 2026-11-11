@@ -94,6 +94,8 @@ interface PendingRequest {
   resolve: (response: Response) => void
   timeoutTimer: ReturnType<typeof setTimeout>
   settled: boolean
+  /** The socket the request was sent on: only a frame from it answers (or fails) the call. */
+  socket: WebSocket
   /** A fabric call: the home socket it was sent on. Losing that one (closed, send failed)
    *  answers memory_home_offline; another computer's socket closing leaves the call waiting. */
   home?: WebSocket
@@ -158,12 +160,12 @@ export class TunnelDO extends DurableObject<Env> {
    * PROOF_WINDOW_MS from the hub's clock, or a bad signature: 401. Then, synchronously after the
    * signature check so a check-and-bind never interleaves with another: admit. 'ok'/'bound' 200
    * (with the proof's id and key: the roster routes act for that computer), 'replay'/'unknown'
-   * 401, 'taken' 409, 'full' 503.
+   * 401, 'taken' 409, 'slow' 429 (MAX_PROOFS_PER_ID, ./devices), 'full' 503.
    */
   async checkDevice(
     value: string | null,
     ctx: ProofContext & { queryId?: string; mayBind: boolean },
-  ): Promise<{ status: 200; id: string; key: string } | { status: 401 | 409 | 503 }> {
+  ): Promise<{ status: 200; id: string; key: string } | { status: 401 | 409 | 429 | 503 }> {
     const proof = parseProof(value)
     if (!proof) return { status: 401 }
     if (ctx.queryId !== undefined && ctx.queryId !== proof.id) return { status: 401 }
@@ -176,6 +178,8 @@ export class TunnelDO extends DurableObject<Env> {
         return { status: 200, id: proof.id, key: proof.key }
       case 'taken':
         return { status: 409 }
+      case 'slow':
+        return { status: 429 }
       case 'full':
         return { status: 503 }
       default:
@@ -195,20 +199,28 @@ export class TunnelDO extends DurableObject<Env> {
     return this.rosterStore().get()
   }
 
-  /** The stored roster's text and its checked entries (none when refused), kept until the text changes. */
-  private members?: { text: string; entries: { id: string; key: string }[] }
+  /** The last roster text checked and its entries (undefined when refused), kept until another text is checked. */
+  private members?: { text: string; entries: { id: string; key: string }[] | undefined }
+
+  /** verifyRosterText (./roster-verify) of `text`, cached by its exact bytes. */
+  private async verified(text: string): Promise<{ id: string; key: string }[] | undefined> {
+    if (this.members?.text !== text) this.members = { text, entries: await verifyRosterText(text) }
+    return this.members.entries
+  }
 
   /** The entries of the stored roster when its whole chain checks out (./roster-verify), else none. */
   private async rosterMembers(): Promise<{ id: string; key: string }[]> {
     const text = this.rosterGet()?.roster
-    if (text === undefined) return []
-    if (this.members?.text !== text) this.members = { text, entries: (await verifyRosterText(text)) ?? [] }
-    return this.members.entries
+    return text === undefined ? [] : ((await this.verified(text)) ?? [])
   }
 
-  /** The store's answer and the length it holds after it (0 when none). */
-  rosterPut(senderId: string, senderKey: string, base: number, rosterText: string): { answer: PutAnswer; len: number } {
-    const answer = this.rosterStore().put(senderId, senderKey, base, rosterText)
+  /**
+   * The store's answer and the length it holds after it (0 when none). The store keeps only an
+   * upload whose whole chain checks out (putChecked, through the same cache as rosterMembers: an
+   * accepted upload is then the stored text, checked once).
+   */
+  async rosterPut(senderId: string, senderKey: string, base: number, rosterText: string): Promise<{ answer: PutAnswer; len: number }> {
+    const answer = await this.rosterStore().putChecked(senderId, senderKey, base, rosterText, (text) => this.verified(text))
     return { answer, len: this.rosterStore().get()?.len ?? 0 }
   }
 
@@ -277,7 +289,7 @@ export class TunnelDO extends DurableObject<Env> {
       // leave the socket open for every other session. Only close as a last
       // resort when the oversize frame isn't a recoverable response.
       if (verdict.responseRequestId !== undefined) {
-        this.failPending(verdict.responseRequestId, 413, 'payload_too_large')
+        this.failPending(verdict.responseRequestId, 413, 'payload_too_large', ws)
         return
       }
       try { ws.close(POLICY_CLOSE_OVERSIZE, 'frame too large') } catch { /* ignore */ }
@@ -295,7 +307,7 @@ export class TunnelDO extends DurableObject<Env> {
         try { ws.send(serializeFrame({ type: CCM_FRAME_TYPES.heartbeat })) } catch { /* ignore */ }
         return
       case CCM_FRAME_TYPES.httpResponse:
-        this.completePending(frame)
+        this.completePending(frame, ws)
         return
       default:
         return
@@ -395,7 +407,7 @@ export class TunnelDO extends DurableObject<Env> {
       return json({ error: 'payload_too_large' }, 413)
     }
 
-    const responsePromise = this.awaitResponse(requestId, trustedSurface === undefined ? undefined : socket)
+    const responsePromise = this.awaitResponse(requestId, socket, trustedSurface !== undefined)
     try {
       socket.send(serialized)
     } catch {
@@ -446,7 +458,8 @@ export class TunnelDO extends DurableObject<Env> {
     return dedupeConnectedIds(this.listSockets().infos)
   }
 
-  private awaitResponse(requestId: string, home?: WebSocket): Promise<Response> {
+  /** A call sent on `socket`; a fabric call (`fabric`) also has it as its home. */
+  private awaitResponse(requestId: string, socket: WebSocket, fabric: boolean): Promise<Response> {
     return new Promise<Response>((resolve) => {
       const timeoutTimer = setTimeout(() => {
         const p = this.pending.get(requestId)
@@ -455,13 +468,14 @@ export class TunnelDO extends DurableObject<Env> {
         this.pending.delete(requestId)
         resolve(json({ error: 'gateway_timeout' }, 504))
       }, RPC_TIMEOUT_MS)
-      this.pending.set(requestId, { resolve, timeoutTimer, settled: false, home })
+      this.pending.set(requestId, { resolve, timeoutTimer, settled: false, socket, home: fabric ? socket : undefined })
     })
   }
 
-  private completePending(frame: CcmHttpResponseFrame): void {
+  /** `frame` answers its call only when it came on the socket the call was sent on. */
+  private completePending(frame: CcmHttpResponseFrame, from: WebSocket): void {
     const p = this.pending.get(frame.request_id)
-    if (!p || p.settled) return
+    if (!p || p.settled || p.socket !== from) return
     p.settled = true
     clearTimeout(p.timeoutTimer)
     this.pending.delete(frame.request_id)
@@ -470,9 +484,10 @@ export class TunnelDO extends DurableObject<Env> {
     p.resolve(new Response(body, { status: frame.status_code, headers }))
   }
 
-  private failPending(requestId: string, status: number, code: string): void {
+  /** Fail one call; with `from` (a frame that came in), only when it came on the call's own socket. */
+  private failPending(requestId: string, status: number, code: string, from?: WebSocket): void {
     const p = this.pending.get(requestId)
-    if (!p || p.settled) return
+    if (!p || p.settled || (from !== undefined && p.socket !== from)) return
     p.settled = true
     clearTimeout(p.timeoutTimer)
     this.pending.delete(requestId)

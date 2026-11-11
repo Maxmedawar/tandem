@@ -1304,3 +1304,116 @@ describe('(l) 31B-2 audit rows (U-R1A-31B-2 audit)', () => {
     expect(receive(text(w), 'hub')).toBe('same')
   })
 })
+
+describe('(31C-2) roster clear refuses a folder where a file should be (31B-2 G5); signOffer writes nothing (31B-2 G6)', () => {
+  const offerPath = (c: { home: string }, fp: string) => join(c.home, 'roster', 'offers', `${fp}.json`)
+  const pathOf = (fn: () => unknown): string | undefined => {
+    try {
+      fn()
+    } catch (e) {
+      if (e instanceof RosterError) return e.path
+      throw e
+    }
+    return undefined
+  }
+
+  it('clearOffers: a folder offers/0123456789abcdef.json beside a real offer: not a regular file, nothing removed', () => {
+    const x = computer('x')
+    const y = computer('y')
+    on(x)
+    initRoster(x.key, 'x', T)
+    receiveOffer(JSON.stringify(makeOffer(y.key, 'y', Date.now())))
+    const real = offerPath(x, y.key.fingerprint)
+    const before = bytes(real)
+    const folder = offerPath(x, '0123456789abcdef')
+    mkdirSync(folder, { mode: 0o700 })
+    expect(reasonOf(() => roster.clearOffers())).toBe('not a regular file')
+    expect(pathOf(() => roster.clearOffers())).toBe(folder)
+    expect(bytes(real)).toEqual(before)
+    expect(lstatSync(folder).isDirectory()).toBe(true)
+  })
+
+  it('clearPending: a folder pending.json: not a regular file, the folder still there', () => {
+    const x = computer('x')
+    on(x)
+    initRoster(x.key, 'x', T)
+    const folder = join(x.home, 'roster', 'pending.json')
+    mkdirSync(folder, { mode: 0o700 })
+    expect(reasonOf(() => roster.clearPending())).toBe('not a regular file')
+    expect(pathOf(() => roster.clearPending())).toBe(folder)
+    expect(lstatSync(folder).isDirectory()).toBe(true)
+  })
+
+  it('clearOffers: a symlink offers/fedcba9876543210.json to a file outside the roster folder: removed as a link, the target unchanged', () => {
+    const x = computer('x')
+    on(x)
+    initRoster(x.key, 'x', T)
+    mkdirSync(join(x.home, 'roster', 'offers'), { mode: 0o700 })
+    const target = join(box(), 'outside.json')
+    writeFileSync(target, 'outside bytes', { mode: 0o600 })
+    const link = offerPath(x, 'fedcba9876543210')
+    symlinkSync(target, link)
+    expect(roster.clearOffers()).toBe(1)
+    expect(lstatSync(link, { throwIfNoEntry: false })).toBeUndefined()
+    expect(readFileSync(target, 'utf8')).toBe('outside bytes')
+  })
+
+  it('tandem roster clear through the launcher: exit 1, exactly one stderr line naming the folder, roster.json untouched', () => {
+    const tree = box()
+    mkdirSync(join(tree, 'bin'))
+    copyFileSync(join(repo, 'packaging', 'tandem'), join(tree, 'bin', 'tandem'))
+    chmodSync(join(tree, 'bin', 'tandem'), 0o755)
+    symlinkSync(repo, join(tree, 'runtime'))
+    const home = box()
+    const tandem = (c: { home: string; id: string }, ...args: string[]) => {
+      const env: NodeJS.ProcessEnv = { ...process.env, TANDEM_NODE: process.execPath, TANDEM_HOME: c.home, HOME: home, TANDEM_HUB_LINK_ID: c.id }
+      delete env.TANDEM_HUB_LINK_URL
+      delete env.TANDEM_HUB_LINK_TOKEN
+      const r = spawnSync(join(tree, 'bin', 'tandem'), args, { env, encoding: 'utf8', timeout: 60_000 })
+      return { code: r.status, out: r.stdout, err: r.stderr }
+    }
+    const x = computer('x')
+    const y = computer('y')
+    on(x)
+    initRoster(x.key, 'x', T)
+    receiveOffer(JSON.stringify(makeOffer(y.key, 'y', Date.now())))
+    const folder = offerPath(x, '0123456789abcdef')
+    mkdirSync(folder, { mode: 0o700 })
+    const before = bytes(rosterFile(x))
+    expect(tandem(x, 'roster', 'clear')).toEqual({ code: 1, out: '', err: `tandem: not a regular file (${folder})\n` })
+    expect(existsSync(offerPath(x, y.key.fingerprint))).toBe(true)
+    rmSync(folder, { recursive: true })
+    const pending = join(x.home, 'roster', 'pending.json')
+    mkdirSync(pending, { mode: 0o700 })
+    expect(tandem(x, 'roster', 'clear')).toEqual({ code: 1, out: '', err: `tandem: not a regular file (${pending})\n` })
+    expect(lstatSync(pending).isDirectory()).toBe(true)
+    expect(bytes(rosterFile(x))).toEqual(before)
+  }, 120_000)
+
+  it('signOffer: roster.json and the offer unchanged; its text verifies under the root; trustOffer at the same now writes exactly that text', () => {
+    const a = computer('a')
+    const b = computer('b')
+    on(a)
+    initRoster(a.key, 'a', T)
+    receiveOffer(JSON.stringify(makeOffer(b.key, 'b', T)), T)
+    const file = rosterFile(a)
+    const offer = offerPath(a, b.key.fingerprint)
+    const [rosterBefore, offerBefore] = [bytes(file), bytes(offer)]
+    const signed = roster.signOffer(a.key, b.key.fingerprint, T + 5)
+    expect(bytes(file)).toEqual(rosterBefore)
+    expect(bytes(offer)).toEqual(offerBefore)
+    expect(signed.id).toBe('b')
+    expect(signed.fingerprint).toBe(b.key.fingerprint)
+    const entries = verifyRoster(signed.text, a.key.publicKey)
+    expect(entries.map((e) => e.id)).toEqual(['a', 'b'])
+    expect(signed.text).toBe(doc(entries))
+    // The same refusals as trustOffer, nothing written.
+    expect(reasonOf(() => roster.signOffer(a.key, 'f'.repeat(16), T + 5))).toBe('no matching offer')
+    expect(reasonOf(() => roster.signOffer(b.key, b.key.fingerprint, T + 5))).toBe('not trusted')
+    expect(reasonOf(() => roster.signOffer(a.key, b.key.fingerprint, T + 2 * DAY))).toBe('time')
+    expect(bytes(file)).toEqual(rosterBefore)
+    expect(trustOffer(a.key, b.key.fingerprint, T + 5)).toEqual({ id: 'b', fingerprint: b.key.fingerprint })
+    expect(readFileSync(file, 'utf8')).toBe(signed.text)
+    expect(existsSync(offer)).toBe(false)
+  })
+})
