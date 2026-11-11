@@ -11,9 +11,12 @@
  * Drives HarnessSession directly, never route(), so Tandem writes nothing under the real HOME:
  * the owner id is injected and the transcript folder is fixed under a temporary HOME while the
  * bridge modules load (agy's own files under ~/.gemini are expected). No sign-in, no bypass, no
- * account or settings change; nothing here answers an agy menu: every send waits for an idle
+ * account or settings change; nothing here types into an agy menu: every send waits for an idle
  * screen (a sign-in, trust or update menu never reads idle), so a menu fails the step instead of
  * taking the typed text and Enter.
+ *
+ * Warmup answers agy's first-run workspace-trust dialog for the new temporary folder only through
+ * the file's `[[dialogs]]` row (`dialogAnswers: "safe"`); no other menu is answered.
  *
  * Sign-in check: agy's own first screen. Signed out, agy shows `Select login method:` and waits,
  * and logs `You are not logged into Antigravity.`; when any recorded screen holds either text the
@@ -174,7 +177,7 @@ describe.skipIf(!LIVE)("antigravity live: the built-in harness file through Harn
       timer = setInterval(record, 500);
       session = await mods.HarnessSession.spawn(
         agy,
-        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)] },
+        { name: NAME, cwd: WORK, allowlist: [realpathSync(WORK)], dialogAnswers: "safe" },
         async (o) => (terminal = await mods.TerminalSession.spawn({ ...o, ownerIdProvider: async () => "r1a15-live-owner" })),
       );
       record();

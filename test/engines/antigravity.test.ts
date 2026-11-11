@@ -55,16 +55,16 @@ const AGY_REAL = fileURLToPath(new URL("../fixtures/agy-screens/", import.meta.u
 const AGY_REAL_FILES = readdirSync(AGY_REAL).filter((f) => /-real\.txt$/.test(f));
 const NO_OWNER = join(tmp, "no-owner");
 /**
- * A PATH folder holding an executable fake `agy`: it prints `Antigravity (fake)`; each line it
- * reads shows `Working (esc to cancel)` for about 1 s, then redraws that line (carriage return,
- * erase line) as `Done. <line>` and a newline. It has no prompt, as no agy prompt has been seen.
+ * A PATH folder holding an executable fake `agy`: it prints `Antigravity (fake)` and agy's ready
+ * hint `? for shortcuts`; each line it reads shows `Working (esc to cancel)` for about 1 s, then
+ * redraws that line (carriage return, erase line) as `Done. <line>`, a newline and the ready hint.
  */
 const BIN = join(tmp, "bin");
 mkdirSync(BIN);
 const FAKE_AGY = join(BIN, "agy");
 writeFileSync(
   FAKE_AGY,
-  "#!/bin/sh\nprintf 'Antigravity (fake)\\n'\nwhile IFS= read -r line; do\n  printf 'Working (esc to cancel)'\n  sleep 1\n  printf '\\r\\033[KDone. %s\\n' \"$line\"\ndone\n",
+  "#!/bin/sh\nprintf 'Antigravity (fake)\\n? for shortcuts\\n'\nwhile IFS= read -r line; do\n  printf 'Working (esc to cancel)'\n  sleep 1\n  printf '\\r\\033[KDone. %s\\n? for shortcuts\\n' \"$line\"\ndone\n",
   { mode: 0o755 },
 );
 
@@ -113,7 +113,7 @@ afterEach(() => {
 });
 
 describe("antigravity: the built-in harness file", () => {
-  it("loads with no error, kind agent; its states equal the gemini fixture file's; markerless at 1500 ms", () => {
+  it("loads with no error, kind agent; approval and working rules equal the gemini fixture file's; idle reads agy's ready hint; 1500 ms", () => {
     const h = builtinAgy();
     expect(h).toMatchObject({
       name: "antigravity",
@@ -136,15 +136,16 @@ describe("antigravity: the built-in harness file", () => {
     expect(h.hook).toBeUndefined();
     expect(h.logo).toBeUndefined();
     const fixture = loadHarnesses({ installDir: join(SCREENS, "harnesses"), ownerDir: NO_OWNER }).harnesses.get("gemini")!;
-    expect(h.states).toEqual(fixture.states);
+    expect(h.states?.waiting_for_approval).toEqual(fixture.states?.waiting_for_approval);
+    expect(h.states?.working).toEqual(fixture.states?.working);
+    expect(h.states?.idle).toEqual(["\\? for shortcuts"]);
     expect(h.states?.debounce_ms).toBe(1500);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
-    expect(h.states?.idle).toBeUndefined();
 
     const d = harnessDescriptor(h);
     expect(d.minStableMs).toBe(1500);
-    expect(d.isReady).toBeUndefined();
-    expect(d.isWorking).toBeUndefined();
+    expect(d.isReady).toBeTypeOf("function");
+    expect(d.isWorking).toBeTypeOf("function");
   });
 
   it.each([
@@ -304,7 +305,7 @@ describe("antigravity: spawn (injected spawn function)", () => {
 });
 
 describe("antigravity: a fake agy in tmux on a private socket", () => {
-  it("spawns ready; a send of r1a15-ok ends quiet (markerless) with it in the report; a read gives unknown; close", async () => {
+  it("spawns ready; a send of r1a15-ok ends done with it in the report; a read gives idle; close", async () => {
     const name = `r1a15-agy-${Math.random().toString(36).slice(2, 8)}`;
     const session = await HarnessSession.spawn(builtinAgy(), { name, cwd: WORK, allowlist: [WORK] }, (o) =>
       TerminalSession.spawn({ ...o, ownerIdProvider: async () => "r1a15-owner" }),
@@ -315,10 +316,18 @@ describe("antigravity: a fake agy in tmux on a private socket", () => {
       expect(session.readinessWarning).toBeUndefined();
 
       const sent = await session.send("r1a15-ok");
-      expect(sent.status).toBe("quiet");
+      expect(sent.status).toBe("done");
       expect(sent.report).toContain("r1a15-ok");
 
-      expect((await session.read({ cursor: sent.cursor })).agentState).toBe("unknown");
+      // idle is debounced (1500 ms), so it can take a few reads.
+      const deadline = Date.now() + 10_000;
+      let state: string | undefined;
+      while (Date.now() < deadline) {
+        state = (await session.read({ cursor: sent.cursor })).agentState;
+        if (state === "idle") break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      expect(state).toBe("idle");
     } finally {
       await session.close();
     }
