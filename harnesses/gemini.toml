@@ -1,0 +1,34 @@
+# Gemini CLI, program `gemini`, checked against 0.38.2's --help, docs and UI strings (never run
+# for this file). idle is a positive match of the input prompt line with its placeholder
+# (`> ` then `Type your message or @path/to/file`), from the UI source; unproven on a real ready
+# screen until the live row runs. The prompt box has one column of padding and a `│` border only
+# when ui.useBackgroundColor is false (default true), so the line starts with `│ ` or a space. working is `esc to cancel`, shown next to `Thinking...`.
+# The approval rules are ccmanager's (test/fixtures/screens/harnesses/gemini.toml, MIT, see
+# test/fixtures/screens/NOTICE) plus `No, suggest changes (esc)`. approve is Enter (the default
+# `Allow once`), deny is Escape. interrupt is one Escape; a second Escape rewinds, and Ctrl+C on an
+# empty input starts the quit. delivery is `notice`: hooks live in gemini's settings.json, which
+# Tandem never writes. No dialog row: the trusted-folders dialog is off by default and its `●`
+# marker is not a SCHEMA highlight.
+name = "gemini"
+program = "gemini"
+has_prompts = true
+skip_prompts_args = ["--yolo"]
+resume = ["--resume", "{id}"]
+account_env = "GEMINI_CLI_HOME"
+history = "~/.gemini/tmp"
+delivery = "notice"
+
+[states]
+waiting_for_approval = [
+  '(?i)waiting for user confirmation',
+  '│ (?:Apply this change|Allow execution|Do you want to proceed)',
+  '(?i)(?:allow execution|do you want to|apply this change)[\s\S]*?\n+[\s\S]*?\byes\b',
+  'No, suggest changes \(esc\)',
+]
+working = ['(?i)esc to cancel']
+idle = ['(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file']
+
+[keys]
+interrupt = ["Escape"]
+approve = "Enter"
+deny = "Escape"

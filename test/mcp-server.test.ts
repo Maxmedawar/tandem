@@ -84,7 +84,7 @@ describe("buildMcpServer (shared tool surface)", () => {
     expect(openSession).toBeDefined();
     const props = (openSession!.inputSchema as { properties?: Record<string, unknown> }).properties ?? {};
     const engineProp = props["engine"] as { enum?: string[] } | undefined;
-    expect(engineProp?.enum?.slice().sort()).toEqual(["antigravity", "claude", "codex", "grok", "hermes", "opencode", "pi", "shell"]);
+    expect(engineProp?.enum?.slice().sort()).toEqual(["antigravity", "claude", "codex", "gemini", "grok", "hermes", "opencode", "pi", "shell"]);
 
     // engine must not be required (defaults to claude).
     const required = (openSession!.inputSchema as { required?: string[] }).required ?? [];
@@ -101,12 +101,12 @@ describe("buildMcpServer (shared tool surface)", () => {
     writeFileSync(join(owner, "r1a10-agent.toml"), 'name = "r1a10-agent"\nprogram = "/usr/bin/true"\nhas_prompts = false\n', { mode: 0o600 });
     try {
       resetHarnessCache();
-      expect((await engineEnum())?.slice().sort()).toEqual(["antigravity", "claude", "codex", "grok", "hermes", "opencode", "pi", "r1a10-agent", "shell"]);
+      expect((await engineEnum())?.slice().sort()).toEqual(["antigravity", "claude", "codex", "gemini", "grok", "hermes", "opencode", "pi", "r1a10-agent", "shell"]);
     } finally {
       rmSync(owner, { recursive: true, force: true });
     }
     resetHarnessCache();
-    expect((await engineEnum())?.slice().sort()).toEqual(["antigravity", "claude", "codex", "grok", "hermes", "opencode", "pi", "shell"]);
+    expect((await engineEnum())?.slice().sort()).toEqual(["antigravity", "claude", "codex", "gemini", "grok", "hermes", "opencode", "pi", "shell"]);
   });
 
   it("local list_sessions takes engine: 'shell' and returns only shell rows", async () => {

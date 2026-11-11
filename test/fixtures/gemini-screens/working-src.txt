@@ -1,0 +1,6 @@
+✦ All 12 tests pass.
+
+⠋ Thinking... (esc to cancel, 3s)
+│ >   Type your message or @path/to/file
+
+~/work   no sandbox   gemini-2.5-pro

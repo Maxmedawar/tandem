@@ -1,0 +1,4 @@
+Do you trust the files in this folder?
+● 1. Trust folder (work)
+  2. Trust parent folder (tmp)
+  3. Don't trust

@@ -1,0 +1,16 @@
+Gemini CLI screens in this folder are plain-text (no colour) for harnesses/gemini.toml.
+
+Every *-src.txt file here is CONSTRUCTED, not a capture. Each is built from the UI strings in the
+Gemini CLI 0.38.2 package (npm package @google/gemini-cli 0.38.2, Apache-2.0 License,
+https://github.com/google-gemini/gemini-cli): its loaded UI chunk bundle/interactiveCli-XAEPLVZH.js
+and the chunks it imports, read as text only.
+
+idle-src.txt: a last reply line, the input prompt line (`>` and the placeholder
+`Type your message or @path/to/file`) and a footer line.
+working-src.txt: idle-src.txt with a `Thinking... (esc to cancel, 3s)` line above the prompt line.
+waiting_for_approval-src.txt: the shell tool approval (`Allow execution of`, `Allow once`,
+`Allow for this session`, `No, suggest changes (esc)`, `Waiting for user confirmation...`).
+unknown-trust-src.txt: the trusted-folders dialog (`Do you trust the files in this folder?`, the
+`●` selection marker), off by default in 0.38.2.
+
+None of these is a real screen. A real screen added here by a live run is named *-real.txt.
