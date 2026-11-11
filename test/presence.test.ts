@@ -22,21 +22,20 @@ type Json = any; // eslint-disable-line @typescript-eslint/no-explicit-any
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const FAKE = fileURLToPath(new URL("fixtures/fake-cli.sh", import.meta.url));
-const BOX = mkdtempSync("/tmp/r1a29-");
-const STDIO_BOX = mkdtempSync("/tmp/r1a29-");
-process.env.TMUX_TMPDIR = BOX;
-delete process.env.TMUX;
+const BOXES: string[] = [];
+const removeBoxes = () => { for (const box of BOXES.splice(0)) rmSync(box, { recursive: true, force: true }); };
+/** A step before afterAll is registered: if it fails (a missing module, a bad write) the folders
+ *  made so far are removed and the error is rethrown, since a file that fails to load runs no hook. */
+async function guarded<T>(step: () => T | Promise<T>): Promise<T> {
+  try { return await step(); } catch (error) { removeBoxes(); throw error; }
+}
+const box = () => { const dir = mkdtempSync("/tmp/r1a29-"); BOXES.push(dir); return dir; };
+const BOX = box();
+const STDIO_BOX = await guarded(box);
 const SOCK = join(BOX, `tmux-${process.getuid!()}`, "default");
 const WORK = join(BOX, "work");
 const TANDEM_HOME = join(BOX, "tandem");
 const OWNER = join(TANDEM_HOME, "harnesses");
-mkdirSync(WORK);
-mkdirSync(OWNER, { recursive: true });
-chmodSync(OWNER, 0o700);
-process.env.TANDEM_HOME = TANDEM_HOME;
-process.env.CCM_CWD_ALLOWLIST = WORK;
-process.env.TANDEM_WAIT_MS = "3000";
-process.env.TANDEM_HUB_LINK_ID = "r1a29-box";
 
 /** fake-cli.sh's screens: its prompt, its slow turn, its approval question. */
 const RULES = `[states]
@@ -45,24 +44,41 @@ idle = ['^fake>\\z']
 waiting_for_approval = ['\\(y/n\\)\\z']
 debounce_ms = 300
 `;
-writeFileSync(join(OWNER, "fake-rules.toml"), `name = "fake-rules"\nprogram = "${FAKE}"\nhas_prompts = true\n${RULES}`, { mode: 0o600 });
 
-const { createPresence, HEARTBEAT_MS } = await import("../bridge/presence.ts");
-const { buildMcpServer } = await import("../src/mcp-server.ts");
-const { loadedHarnesses, resetHarnessCache } = await import("../bridge/engine-registry.ts");
-const { applyLimits } = await import("../bridge/limits.ts");
-const { agentEntry, writeLimits } = await import("./fixtures/limits.ts");
-const { routeForTest } = await import("../bridge/router.ts");
+const [
+  { createPresence, HEARTBEAT_MS }, { buildMcpServer }, { loadedHarnesses, resetHarnessCache }, { applyLimits }, { agentEntry, writeLimits }, { routeForTest },
+] = await guarded(async () => {
+  process.env.TMUX_TMPDIR = BOX;
+  delete process.env.TMUX;
+  mkdirSync(WORK);
+  mkdirSync(OWNER, { recursive: true });
+  chmodSync(OWNER, 0o700);
+  process.env.TANDEM_HOME = TANDEM_HOME;
+  process.env.CCM_CWD_ALLOWLIST = WORK;
+  process.env.TANDEM_WAIT_MS = "3000";
+  process.env.TANDEM_HUB_LINK_ID = "r1a29-box";
+  writeFileSync(join(OWNER, "fake-rules.toml"), `name = "fake-rules"\nprogram = "${FAKE}"\nhas_prompts = true\n${RULES}`, { mode: 0o600 });
+  return [
+    await import("../bridge/presence.ts"),
+    await import("../src/mcp-server.ts"),
+    await import("../bridge/engine-registry.ts"),
+    await import("../bridge/limits.ts"),
+    await import("./fixtures/limits.ts"),
+    await import("../bridge/router.ts"),
+  ] as const;
+});
 
 afterAll(() => {
-  const out = execFileSync(
-    "/bin/sh",
-    ["-c", 'if test -S "$1"; then tmux -S "$1" kill-server; echo "test -S $1 rc=0; tmux -S $1 kill-server rc=$?"; else echo "test -S $1 rc=1 (no private server left)"; fi', "sh", SOCK],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-  );
-  console.log(`r1a29 cleanup: ${out.trim()}`);
-  rmSync(BOX, { recursive: true, force: true });
-  rmSync(STDIO_BOX, { recursive: true, force: true });
+  try {
+    const out = execFileSync(
+      "/bin/sh",
+      ["-c", 'if test -S "$1"; then tmux -S "$1" kill-server; echo "test -S $1 rc=0; tmux -S $1 kill-server rc=$?"; else echo "test -S $1 rc=1 (no private server left)"; fi', "sh", SOCK],
+      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    console.log(`r1a29 cleanup: ${out.trim()}`);
+  } finally {
+    removeBoxes();
+  }
 });
 
 const T = 1_800_000_000_000;
