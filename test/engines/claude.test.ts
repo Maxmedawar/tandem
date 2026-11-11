@@ -106,9 +106,9 @@ describe("claude: the built-in harness file", () => {
       account_env: "CLAUDE_CONFIG_DIR",
       history: "~/.claude/projects",
       keys: { interrupt: ["Escape", "C-c"], approve: "Enter", deny: "Escape" },
-      delivery: "notice",
+      delivery: "hook",
+      hook: "--settings",
     });
-    expect(h.hook).toBeUndefined();
     expect(h.logo).toBeUndefined();
     const fixture = loadHarnesses({ installDir: join(SCREENS, "harnesses"), ownerDir: NO_OWNER }).harnesses.get("claude")!;
     const { debounce_ms, ...patterns } = h.states!;
@@ -173,25 +173,28 @@ describe("claude: spawn flags (injected spawn function)", () => {
     return spawnArgv(seen[0]!.descriptor!, seen[0]!);
   }
 
+  // U-R1A-25: the session's own delivery settings file follows the program.
+  const HOOK = ["--settings", expect.stringMatching(/\/delivery\/r1a11-spawn\.settings\.json$/)];
+
   it("plain: /usr/bin/env -- <programPath> and nothing else", async () => {
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "");
     const program = builtinClaude().programPath ?? "claude";
-    expect(await spawned({})).toEqual(["/usr/bin/env", "--", program]);
+    expect(await spawned({})).toEqual(["/usr/bin/env", "--", program, ...HOOK]);
   });
 
   it("with bypass: --dangerously-skip-permissions from allowBypass: true only; TANDEM_ALLOW_BYPASS=1 alone adds nothing (U-R1A-17)", async () => {
     const program = builtinClaude().programPath ?? "claude";
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "");
-    expect(await spawned({ allowBypass: true })).toEqual(["/usr/bin/env", "--", program, "--dangerously-skip-permissions"]);
+    expect(await spawned({ allowBypass: true })).toEqual(["/usr/bin/env", "--", program, ...HOOK, "--dangerously-skip-permissions"]);
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "1");
-    expect(await spawned({})).toEqual(["/usr/bin/env", "--", program]);
-    expect(await spawned({ allowBypass: false })).toEqual(["/usr/bin/env", "--", program]);
+    expect(await spawned({})).toEqual(["/usr/bin/env", "--", program, ...HOOK]);
+    expect(await spawned({ allowBypass: false })).toEqual(["/usr/bin/env", "--", program, ...HOOK]);
   });
 
   it('with model "opus", effort "high": --model opus --effort high', async () => {
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "");
     const program = builtinClaude().programPath ?? "claude";
-    expect(await spawned({ model: "opus", effort: "high" })).toEqual(["/usr/bin/env", "--", program, "--model", "opus", "--effort", "high"]);
+    expect(await spawned({ model: "opus", effort: "high" })).toEqual(["/usr/bin/env", "--", program, ...HOOK, "--model", "opus", "--effort", "high"]);
   });
 
   describe("warmup's trust answer (claude.toml's folder-trust row): one key per screen poll, Enter only on a highlighted 'Yes, I trust this folder'", () => {

@@ -11,6 +11,8 @@ resume = ["--resume", "{id}"]
 fork = ["--resume", "{id}", "--fork-session"]
 account_env = "CLAUDE_CONFIG_DIR"
 history = "~/.claude/projects"
+delivery = "hook"
+hook = "--settings"
 
 [states]
 waiting_for_approval = [

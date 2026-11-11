@@ -7,6 +7,7 @@
  * Gates (enabled, `shell` for a shell program, program found) live in engine-registry.ts;
  * model/effort/bypass stay Claude-only and are refused, never ignored.
  */
+import { installHook, removeHook, turnState } from '../delivery-hooks.ts'
 import type { EngineDescriptor, ReadOptions, ReadResult } from '../drivable.ts'
 import { createStateReader, readScreen, type ReadState } from '../harness-detect.ts'
 import type { Harness } from '../harness-registry.ts'
@@ -82,10 +83,22 @@ export class HarnessSession extends TerminalAdapterSession {
    * The input gate's read (bridge/input-gate.ts): ONE screen capture, its state by the file's
    * rules with no debounce, and the file's `states.debounce_ms` (0 without `states`). Not the
    * debounced `reader`: its last value can carry an old idle across a screen it never saw.
+   * A hook agent's idle screen reads working while its hooks say the turn is still going
+   * (bridge/delivery-hooks.ts): an agent may show no marker while it streams a reply.
    */
   async inputState(): Promise<{ state: ReadState; screen: string; debounceMs: number }> {
     const screen = await this.screenSource.screen()
-    return { state: readScreen(this.harness, screen), screen, debounceMs: this.harness.states?.debounce_ms ?? 0 }
+    let state = readScreen(this.harness, screen)
+    if (state === 'idle' && this.harness.delivery === 'hook' && turnState(this.id) === 'working') state = 'working'
+    return { state, screen, debounceMs: this.harness.states?.debounce_ms ?? 0 }
+  }
+
+  /** Closes the terminal, then removes a hook agent's delivery files. */
+  async close(): Promise<void> {
+    await super.close()
+    if (this.harness.delivery === 'hook') {
+      try { removeHook(this.id) } catch { /* the files go with the next start of this name */ }
+    }
   }
 
   /** The terminal page plus `agentState`, read from the current screen by the file's rules. */
@@ -99,8 +112,10 @@ export class HarnessSession extends TerminalAdapterSession {
     opts: HarnessSpawnOptions,
     spawnFn: (opts: TerminalSpawnOptions) => Promise<HarnessTerminal> = TerminalSession.spawn,
   ): Promise<HarnessSession> {
-    const descriptor = harnessDescriptor(harness, opts)
+    let descriptor = harnessDescriptor(harness, opts)
     spawnArgv(descriptor, opts) // a refused or bad flag throws before anything starts
+    // A hook agent gets its own settings file (spawn only: adoption writes nothing).
+    if (harness.delivery === 'hook') descriptor = { ...descriptor, argv: [...(descriptor.argv ?? []), ...installHook(harness, opts.name)] }
     return new HarnessSession(harness, await spawnFn({ ...opts, descriptor }))
   }
 
