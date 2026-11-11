@@ -9,6 +9,9 @@
  * Limits per receiving computer: MAX_COPIES copies or MAX_BYTES of body (UTF-8);
  * a copy over either is refused, an older one is never dropped. A copy queued more
  * than TTL_MS ago is removed and the sender's computer gets one `expired` receipt.
+ * A body over MAX_BODY_BYTES (the tunnel's frame cap) can never be handed over in
+ * one frame, and a Durable Object row cannot hold one over 2 MB: `put` throws for
+ * it before anything is written, as it does for an empty `to`.
  *
  * The logic is a plain class over injected SQL storage (the shape of a Durable
  * Object's ctx.storage.sql) and a clock, so it tests on a local SQLite file. Every method
@@ -17,9 +20,12 @@
  * `body` is opaque: the queue never parses it.
  */
 
+import { WS_MAX_FRAME_BYTES } from './frame-size'
+
 export const MAX_COPIES = 1000
 export const MAX_BYTES = 10 * 1024 * 1024
 export const TTL_MS = 7 * 86_400_000
+export const MAX_BODY_BYTES = WS_MAX_FRAME_BYTES
 
 /** The part of ctx.storage.sql the queue uses. */
 export interface QueueSql {
@@ -68,9 +74,10 @@ export class HubQueue {
   put(msg: QueueMessage): PutResult[] {
     const to = [...new Set(msg.to)]
     if (to.length === 0) throw new Error('queue put: `to` is empty')
+    const bytes = new TextEncoder().encode(msg.body).byteLength
+    if (bytes > MAX_BODY_BYTES) throw new Error(`queue put: body is ${bytes} bytes, over ${MAX_BODY_BYTES}`)
     this.expire()
     const now = this.now()
-    const bytes = new TextEncoder().encode(msg.body).byteLength
     const room = msg.room ?? null
     const roomSeq = room === null ? null : this.next(`r:${room}`)
     return to.map((computer): PutResult => {

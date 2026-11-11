@@ -11,7 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite'
-import { HubQueue, MAX_BYTES, MAX_COPIES, TTL_MS } from '../src/queue.ts'
+import { HubQueue, MAX_BODY_BYTES, MAX_BYTES, MAX_COPIES, TTL_MS } from '../src/queue.ts'
 
 const dir = mkdtempSync(join(tmpdir(), 'hub-queue-'))
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
@@ -155,5 +155,29 @@ describe('HubQueue', () => {
     q.queue.ack('A', 2)
     expect(q.queue.take('A')).toEqual([])
     expect(q.queue.put({ id: 'm3', from: 'S', to: ['A'], body: 'x' })).toEqual([{ to: 'A', seq: 3 }])
+  })
+
+  it('one computer never takes or acks another computer\'s copies; names are bound, never SQL', () => {
+    const { q } = openQueue()
+    const evil = { id: "x'); DROP TABLE queue_copies;--", from: "S'--", room: "g'); DELETE FROM queue_copies;--" }
+    const names = ["A' OR '1'='1", 'a', 'A ', 'A\u0000', 'B']
+    q.queue.put({ id: 'a1', from: 'S', to: ['A'], body: 'x' })
+    q.queue.put({ ...evil, to: names, body: 'y' })
+    for (const other of names) {
+      expect(q.queue.take(other).map((c) => [c.id, c.from, c.room, c.room_seq])).toEqual([[evil.id, evil.from, evil.room, 1]])
+      q.queue.ack(other, 1e9)
+      expect(q.queue.take(other)).toEqual([])
+    }
+    expect(q.queue.take('A').map((c) => c.id)).toEqual(['a1'])
+  })
+
+  it('a body over the 1 MiB frame cap (UTF-8 bytes) throws before anything is written', () => {
+    const { q } = openQueue()
+    expect(MAX_BODY_BYTES).toBe(1_048_576)
+    // 2-byte characters: MAX_BODY_BYTES + 1 bytes in about half as many characters.
+    const over = 'é'.repeat(MAX_BODY_BYTES / 2) + 'x'
+    expect(() => q.queue.put({ id: 'big', from: 'S', to: ['A'], room: 'r', body: over })).toThrow(/body/)
+    expect(q.queue.put({ id: 'ok', from: 'S', to: ['A'], room: 'r', body: 'é'.repeat(MAX_BODY_BYTES / 2) })).toEqual([{ to: 'A', seq: 1 }])
+    expect(q.queue.take('A').map((c) => [c.id, c.seq, c.room_seq])).toEqual([['ok', 1, 1]])
   })
 })
