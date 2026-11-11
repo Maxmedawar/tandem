@@ -1,8 +1,8 @@
 /**
  * bridge-id — pure helpers for deriving and sanitizing a bridge's identity.
  *
- * A `bridge_id` names which Mac a tunnel socket belongs to (e.g. "mini",
- * "macbook"). It is emitted by the bridge (CCM_BRIDGE_ID env or a hostname-slug
+ * A `bridge_id` names which Mac a tunnel socket belongs to (e.g. "laptop",
+ * "desktop"). It is emitted by the bridge (TANDEM_HUB_LINK_ID setting or a hostname-slug
  * fallback) and captured by the TunnelDO at connect time. This module is kept
  * free of `cloudflare:workers` imports so it can be unit-tested in the plain-node
  * vitest env AND shared by the bridge (Node) side — the same split as
@@ -12,7 +12,7 @@
 /** Id used when a bridge connects without a usable bridge_id (old bridge / empty). */
 export const DEFAULT_BRIDGE_ID = 'default'
 
-/** Max length of a bridge_id slug (keeps hibernation tags small). */
+/** Maximum length of a bridge_id slug (keeps hibernation tags small). */
 const MAX_BRIDGE_ID_LEN = 64
 
 /**

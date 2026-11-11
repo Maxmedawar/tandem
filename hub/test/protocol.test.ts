@@ -53,11 +53,11 @@ describe('protocol frame round-trip', () => {
     const frame: CcmFrame = {
       type: CCM_FRAME_TYPES.register,
       token: 'secret',
-      bridge_id: 'mini',
+      bridge_id: 'laptop',
     }
     const parsed = parseAnyFrame(serializeFrame(frame))
     expect(parsed).toEqual(frame)
-    expect(parsed && 'bridge_id' in parsed ? parsed.bridge_id : undefined).toBe('mini')
+    expect(parsed && 'bridge_id' in parsed ? parsed.bridge_id : undefined).toBe('laptop')
   })
 })
 

@@ -14,8 +14,8 @@ describe('sanitizeBridgeId (DO side)', () => {
   })
 
   it('passes through an already-clean id', () => {
-    expect(sanitizeBridgeId('mini')).toBe('mini')
-    expect(sanitizeBridgeId('macbook')).toBe('macbook')
+    expect(sanitizeBridgeId('laptop')).toBe('laptop')
+    expect(sanitizeBridgeId('desktop')).toBe('desktop')
   })
 
   it('applies the same slug rule as the bridge', () => {

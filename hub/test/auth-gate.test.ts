@@ -44,8 +44,8 @@ function makeEnv(password: string | undefined, allowedOrigins?: string) {
     }),
   )
   const env = {
-    CCM_MCP_PASSWORD: password,
-    CCM_ALLOWED_REDIRECT_ORIGINS: allowedOrigins,
+    TANDEM_HUB_PASSWORD: password,
+    TANDEM_ALLOWED_REDIRECT_ORIGINS: allowedOrigins,
     OAUTH_PROVIDER: { parseAuthRequest, completeAuthorization, lookupClient },
     // Login throttle binding: always allows here (counting is in login-throttle.test.ts).
     LOGIN_THROTTLE: {
@@ -89,12 +89,12 @@ describe('timingSafeEqual', () => {
 })
 
 describe('handleAuthorize — fail closed', () => {
-  it('no CCM_MCP_PASSWORD configured -> 503, never completes', async () => {
+  it('no TANDEM_HUB_PASSWORD configured -> 503, never completes', async () => {
     const { env, completeAuthorization } = makeEnv(undefined)
     const res = await handleAuthorize(getReq(), env)
     expect(res.status).toBe(503)
     const body = await res.text()
-    expect(body).toMatch(/CCM_MCP_PASSWORD/)
+    expect(body).toMatch(/TANDEM_HUB_PASSWORD/)
     expect(completeAuthorization).not.toHaveBeenCalled()
   })
 
@@ -168,7 +168,7 @@ describe('handleAuthorize — POST', () => {
     expect(completeAuthorization).not.toHaveBeenCalled()
   })
 
-  it('correct password -> parseAuthRequest + completeAuthorization(userId max) once, 302', async () => {
+  it('correct password -> parseAuthRequest + completeAuthorization(userId owner) once, 302', async () => {
     const { env, parseAuthRequest, completeAuthorization } = makeEnv(PASSWORD)
     const res = await handleAuthorize(
       postReq({
@@ -188,8 +188,8 @@ describe('handleAuthorize — POST', () => {
     expect(parseAuthRequest).toHaveBeenCalledTimes(1)
     expect(completeAuthorization).toHaveBeenCalledTimes(1)
     const arg = completeAuthorization.mock.calls[0][0] as { userId: string; props: { userId: string } }
-    expect(arg.userId).toBe('max')
-    expect(arg.props.userId).toBe('max')
+    expect(arg.userId).toBe('owner')
+    expect(arg.props.userId).toBe('owner')
 
     // The rebuilt request passed to parseAuthRequest carries the OAuth params as the
     // QUERY STRING (and NOT the password).
@@ -225,7 +225,7 @@ describe('redirect-origin allowlist helpers', () => {
     expect(s.has('https://claude.com')).toBe(true)
   })
   it('parseAllowedOrigins parses a custom comma list', () => {
-    const s = parseAllowedOrigins({ CCM_ALLOWED_REDIRECT_ORIGINS: 'https://a.example, https://b.example/path' })
+    const s = parseAllowedOrigins({ TANDEM_ALLOWED_REDIRECT_ORIGINS: 'https://a.example, https://b.example/path' })
     expect(s.has('https://a.example')).toBe(true)
     expect(s.has('https://b.example')).toBe(true) // path stripped to origin
     expect(s.has('https://claude.ai')).toBe(false)
@@ -274,11 +274,11 @@ describe('guardClientRegistration (POST /register)', () => {
 
   it('honors a custom allowlist', async () => {
     const ok = await guardClientRegistration(regReq(['https://myclient.example/cb']), {
-      CCM_ALLOWED_REDIRECT_ORIGINS: 'https://myclient.example',
+      TANDEM_ALLOWED_REDIRECT_ORIGINS: 'https://myclient.example',
     })
     expect(ok).toBeUndefined()
     const blocked = await guardClientRegistration(regReq(['https://claude.ai/cb']), {
-      CCM_ALLOWED_REDIRECT_ORIGINS: 'https://myclient.example',
+      TANDEM_ALLOWED_REDIRECT_ORIGINS: 'https://myclient.example',
     })
     expect(blocked?.status).toBe(400)
   })
@@ -361,14 +361,14 @@ describe('handleAuthorize — consent visibility', () => {
 describe('parseAllowedOrigins — opaque scheme rejection (H1)', () => {
   it('drops javascript:/data:/file: entries (origin "null"), keeps http(s)', () => {
     const set = parseAllowedOrigins({
-      CCM_ALLOWED_REDIRECT_ORIGINS: 'javascript:alert(1),data:text/html,x,file:///etc,https://claude.ai',
+      TANDEM_ALLOWED_REDIRECT_ORIGINS: 'javascript:alert(1),data:text/html,x,file:///etc,https://claude.ai',
     })
     expect(set.has('null')).toBe(false)
     expect(set.has('https://claude.ai')).toBe(true)
     expect(set.size).toBe(1)
   })
   it('an opaque-scheme redirect can never match (no "null" in the set)', () => {
-    const set = parseAllowedOrigins({ CCM_ALLOWED_REDIRECT_ORIGINS: 'javascript:alert(1),https://claude.ai' })
+    const set = parseAllowedOrigins({ TANDEM_ALLOWED_REDIRECT_ORIGINS: 'javascript:alert(1),https://claude.ai' })
     expect(isAllowedRedirect('data:text/html,x', set)).toBe(false)
     expect(isAllowedRedirect('javascript:alert(1)', set)).toBe(false)
   })
@@ -384,7 +384,7 @@ describe('createRegistrationGuardedFetch (export-wrapper E2E)', () => {
     return { provider: { fetch }, fetch }
   }
   const CTX = { sentinel: true } as unknown as ExecutionContext
-  const ENV = {} as never // CCM_ALLOWED_REDIRECT_ORIGINS undefined -> default allowlist
+  const ENV = {} as never // TANDEM_ALLOWED_REDIRECT_ORIGINS undefined -> default allowlist
 
   it('(a) POST /register off-allowlist -> 400 from the wrapper; provider.fetch NOT called', async () => {
     const { provider, fetch } = stub()
@@ -548,7 +548,7 @@ describe('authorize accepts loopback (with password), warns only on remote off-a
 describe('handleAuthorize — login hardening', () => {
   const fields = { response_type: 'code', client_id: 'client-1', redirect_uri: 'https://claude.ai/callback' }
 
-  it('f) CCM_MCP_PASSWORD shorter than 24 characters -> 503, grant not completed', async () => {
+  it('f) TANDEM_HUB_PASSWORD shorter than 24 characters -> 503, grant not completed', async () => {
     const short = 'x'.repeat(23)
     const { env, completeAuthorization } = makeEnv(short)
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})

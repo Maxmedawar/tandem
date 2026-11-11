@@ -4,18 +4,18 @@
  * SECURITY (this is the front door): claude.ai opens /authorize in the user's
  * browser during connector setup. Previously this AUTO-APPROVED every request with
  * zero credentials — anyone with the Worker URL could complete the handshake and
- * gain full control of Max's Mac (and with the ccm- fence removed, that's "drive
+ * gain full control of the owner's Mac (and with the ccm- fence removed, that's "drive
  * any terminal"). This module gates /authorize on a shared password secret
- * `CCM_MCP_PASSWORD` (set via `wrangler secret put`, never in code).
+ * `TANDEM_HUB_PASSWORD` (set via `wrangler secret put`, never in code).
  *
  * Behavior:
- *   - No CCM_MCP_PASSWORD configured -> FAIL CLOSED (503). NEVER auto-approve.
+ *   - No TANDEM_HUB_PASSWORD configured -> FAIL CLOSED (503). NEVER auto-approve.
  *   - GET /authorize -> render a minimal HTML login form. The original OAuth query
  *     params are preserved as HTML-ESCAPED hidden inputs so the flow resumes after
  *     auth; a `password` param is never preserved.
  *   - POST /authorize, correct password -> rebuild the auth request from the
  *     preserved params (parseAuthRequest reads url.searchParams), completeAuthorization
- *     (userId 'max'), 302 back to the client. The library validates redirect_uri
+ *     (userId 'owner'), 302 back to the client. The library validates redirect_uri
  *     against the registered client; we do NOT hand-roll the redirect.
  *   - POST, wrong/missing password -> re-render the form with a GENERIC error, 401.
  *
@@ -28,10 +28,10 @@ import type { OAuthHelpers } from '@cloudflare/workers-oauth-provider'
 import type { Env } from './types'
 import { addressKey, clearLogin, reserveLogin } from './login-throttle'
 
-/** Stable identity for the single human (Max) using this personal connector. */
-const SINGLE_USER_ID = 'max'
+/** Stable identity for the single human (the owner) using this personal connector. */
+const SINGLE_USER_ID = 'owner'
 
-/** A shorter CCM_MCP_PASSWORD is treated like a missing one: the gate stays shut. */
+/** A shorter TANDEM_HUB_PASSWORD is treated like a missing one: the gate stays shut. */
 const MIN_PASSWORD_LENGTH = 24
 
 /** The 503 for a misconfigured or unavailable gate. Says nothing about the cause;
@@ -51,8 +51,8 @@ export type AuthGateEnv = Env & { OAUTH_PROVIDER: OAuthHelpers }
  * Default redirect-origin allowlist. An OAuth auth code may ONLY ever be returned
  * to one of these origins — never an attacker-controlled URL (the phishing hole:
  * open client registration + a generic login form would let an attacker register
- * `redirect_uri:https://evil/cb`, send Max a crafted /authorize link, and launder
- * the code to their address). Widen via CCM_ALLOWED_REDIRECT_ORIGINS only if your
+ * `redirect_uri:https://evil/cb`, send the owner a crafted /authorize link, and launder
+ * the code to their address). Widen via TANDEM_ALLOWED_REDIRECT_ORIGINS only if your
  * Claude client uses another origin.
  */
 const DEFAULT_ALLOWED_REDIRECT_ORIGINS = 'https://claude.ai,https://claude.com'
@@ -66,13 +66,13 @@ function originOf(url: string): string | undefined {
   }
 }
 
-/** Parse CCM_ALLOWED_REDIRECT_ORIGINS (comma-separated) into a Set of origins.
+/** Parse TANDEM_ALLOWED_REDIRECT_ORIGINS (comma-separated) into a Set of origins.
  *  Only http(s) origins are admitted: an opaque scheme (`javascript:`, `data:`,
  *  `file:`) has the literal origin "null", which would otherwise let an attacker's
  *  `data:`/`javascript:` redirect (also origin "null") MATCH the allowlist (review
  *  H1). We drop "null" and any non-http(s) origin. */
-export function parseAllowedOrigins(env: { CCM_ALLOWED_REDIRECT_ORIGINS?: string }): Set<string> {
-  const raw = env.CCM_ALLOWED_REDIRECT_ORIGINS ?? DEFAULT_ALLOWED_REDIRECT_ORIGINS
+export function parseAllowedOrigins(env: { TANDEM_ALLOWED_REDIRECT_ORIGINS?: string }): Set<string> {
+  const raw = env.TANDEM_ALLOWED_REDIRECT_ORIGINS ?? DEFAULT_ALLOWED_REDIRECT_ORIGINS
   const out = new Set<string>()
   for (const entry of raw.split(',')) {
     const o = originOf(entry.trim())
@@ -133,7 +133,7 @@ function jsonResponse(body: unknown, status: number): Response {
  */
 export async function guardClientRegistration(
   request: Request,
-  env: { CCM_ALLOWED_REDIRECT_ORIGINS?: string },
+  env: { TANDEM_ALLOWED_REDIRECT_ORIGINS?: string },
 ): Promise<Response | undefined> {
   let body: unknown
   try {
@@ -219,7 +219,7 @@ function htmlResponse(body: string, status: number): Response {
   })
 }
 
-/** Consent details shown ON the login form so Max sees WHO/WHERE he is authorizing
+/** Consent details shown ON the login form so the owner sees WHO/WHERE they are authorizing
  *  before typing the password (defense in depth — review: consent visibility). */
 interface Consent {
   clientId: string
@@ -296,7 +296,7 @@ function renderLoginForm(
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <title>cloud-code-mcp · sign in</title>
+  <title>tandem · sign in</title>
   <style>
     body { font: 15px system-ui, sans-serif; max-width: 26rem; margin: 12vh auto; padding: 0 1rem; }
     h1 { font-size: 1.1rem; }
@@ -309,8 +309,8 @@ function renderLoginForm(
   </style>
 </head>
 <body>
-  <h1>Authorize cloud-code-mcp</h1>
-  <p class="hint">This connector can drive terminals on Max's Mac. Enter the connector password to continue.</p>
+  <h1>Authorize tandem</h1>
+  <p class="hint">This connector can drive terminals on your Mac. Enter the connector password to continue.</p>
 ${consentBlock}  <form method="POST" action="/authorize" autocomplete="off">
 ${hidden}
 ${errorBlock}    <input type="password" name="password" placeholder="Password" autofocus required aria-label="Connector password">
@@ -325,20 +325,20 @@ ${errorBlock}    <input type="password" name="password" placeholder="Password" a
  * can be unit-tested with a mocked env.OAUTH_PROVIDER (no live OAuthProvider).
  */
 export async function handleAuthorize(request: Request, env: AuthGateEnv): Promise<Response> {
-  const secret = env.CCM_MCP_PASSWORD
+  const secret = env.TANDEM_HUB_PASSWORD
 
   // 1. FAIL CLOSED when the secret is not configured — never auto-approve.
   if (!secret) {
     return htmlResponse(
       '<!doctype html><meta charset="utf-8"><title>503</title>' +
         '<h1>503 — authorization disabled</h1>' +
-        '<p>CCM_MCP_PASSWORD is not set on this Worker — refusing to authorize. ' +
-        'Set it with <code>wrangler secret put CCM_MCP_PASSWORD</code>.</p>',
+        '<p>TANDEM_HUB_PASSWORD is not set on this Worker — refusing to authorize. ' +
+        'Set it with <code>wrangler secret put TANDEM_HUB_PASSWORD</code>.</p>',
       503,
     )
   }
   if (secret.length < MIN_PASSWORD_LENGTH) {
-    console.error(`[auth-gate] CCM_MCP_PASSWORD is shorter than ${MIN_PASSWORD_LENGTH} characters, refusing to authorize`)
+    console.error(`[auth-gate] TANDEM_HUB_PASSWORD is shorter than ${MIN_PASSWORD_LENGTH} characters, refusing to authorize`)
     return disabledResponse()
   }
 

@@ -75,8 +75,8 @@ beforeAll(async () => {
   persist = mkdtempSync(join(tmpdir(), 'url-token-wrangler-'))
   wrangler = spawn(join(root, 'node_modules', '.bin', 'wrangler'), [
     'dev', '--local', '--port', String(port), '--ip', '127.0.0.1', '--inspector-port', String(inspectorPort),
-    '--var', `CCM_TUNNEL_TOKEN:${T}`, '--var', `CCM_EXT_TOKEN:${E}`,
-    '--var', `CCM_MCP_PASSWORD:${'p'.repeat(32)}`,
+    '--var', `TANDEM_HUB_LINK_TOKEN:${T}`,
+    '--var', `TANDEM_HUB_PASSWORD:${'p'.repeat(32)}`,
     '--persist-to', persist,
   ], { cwd: root, detached: true, env: { ...process.env, WRANGLER_SEND_METRICS: 'false' }, stdio: ['ignore', 'pipe', 'pipe'] })
   await new Promise<void>((resolve, reject) => {

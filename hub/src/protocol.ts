@@ -1,7 +1,7 @@
 /**
- * cloud-code-mcp tunnel wire protocol.
+ * tandem tunnel wire protocol.
  *
- * Derived from Anilo-mobile-bridge's relay protocol (MIT, Vellum-pattern),
+ * Derived from a mobile-bridge relay protocol (MIT, Vellum-pattern),
  * simplified to the only thing this MVP needs: HTTP-style request/response
  * forwarding between the Cloudflare Worker and the single Mac bridge, plus
  * register + heartbeat. No phone/websocket-tunneling frames.
@@ -16,7 +16,7 @@
 import { z } from 'zod'
 
 /** WebSocket subprotocol negotiated on connect. */
-export const CCM_TUNNEL_SUBPROTOCOL = 'cloud-code-mcp-tunnel-v1'
+export const CCM_TUNNEL_SUBPROTOCOL = 'tandem-tunnel-v1'
 
 export const CCM_FRAME_TYPES = {
   register: 'tunnel_register',

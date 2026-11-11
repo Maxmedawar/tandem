@@ -2,7 +2,7 @@
  * TunnelDO — singleton Durable Object that owns the Mac bridge's outbound
  * WebSocket and forwards MCP->bridge RPC as HTTP-style frames.
  *
- * Derived (simplified, single-user) from Anilo-mobile-bridge relay/tunnel-do.ts.
+ * Derived (simplified, single-user) from a mobile-bridge relay/tunnel-do.ts.
  * Responsibilities: accept the bridge WS via the Hibernation API; on each
  * forwarded RPC request assign a request_id, frame it as tunnel_http_request,
  * await the matching tunnel_http_response (timeout), return it. On bridge

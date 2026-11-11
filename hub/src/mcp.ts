@@ -1,5 +1,5 @@
 /**
- * CloudCodeMcp — the claude.ai-facing MCP server (Streamable HTTP / SSE).
+ * TandemMcp — the claude.ai-facing MCP server (Streamable HTTP / SSE).
  *
  * Built on Cloudflare's `McpAgent` (from the `agents` package); it is itself a
  * Durable Object (binding MCP_OBJECT). Every tool forwards an HTTP-shaped RPC
@@ -8,12 +8,12 @@
  * the zero-API relay loop, and is the trust boundary.
  *
  * ENGINE = tmux (see spec §1b/§2). A "session" is a REAL interactive `claude`
- * TUI in a tmux session "ccm-<name>" on Max's Mac, billed against his
+ * TUI in a tmux session "ccm-<name>" on the owner's Mac, billed against their
  * subscription — NOT `claude -p` / the Messages API. The autonomous capability
  * is a TWO-session relay (a lead + a worker, both interactive), NOT an API brain.
  *
- * SAFETY: every tool here causes REAL Claude Code to run on Max's Mac and may
- * read/edit/delete files and run shell commands, on his subscription. The tool
+ * SAFETY: every tool here causes REAL Claude Code to run on the owner's Mac and may
+ * read/edit/delete files and run shell commands, on their subscription. The tool
  * descriptions say so loudly so claude.ai surfaces the blast radius.
  *
  * POLL CONTRACT: send_to_session / start_relay are held-open but may return
@@ -38,11 +38,11 @@ import {
 
 /** Standing warning prepended to every tool description. */
 const BLAST_RADIUS =
-  'WARNING: this controls REAL terminal sessions on Max\'s personal Mac. The ' +
+  'WARNING: this controls REAL terminal sessions on the owner\'s personal Mac. The ' +
   'session/drive tools can reach ANY live tmux pane on the machine — not just ' +
   'Claude Code, but Codex, or a bare login shell (the engine is auto-detected) — ' +
   'and may type into it, read it, interrupt it, or kill it. Anything run that way ' +
-  '(Claude Code included) executes on Max\'s subscription and may read, edit, or ' +
+  '(Claude Code included) executes on the owner\'s subscription and may read, edit, or ' +
   'delete files and run shell commands. Treat every call as a real, irreversible ' +
   'action on a real machine.'
 
@@ -50,13 +50,13 @@ type RpcMethod = 'GET' | 'POST'
 
 /** Shared description for the optional `machine` selector on every session/relay tool. */
 const MACHINE_DESC =
-  'Which Mac to run on, e.g. "mini" or "macbook". If omitted, uses the only ' +
+  'Which Mac to run on, e.g. "laptop" or "desktop". If omitted, uses the only ' +
   'connected machine, or the configured default when several are connected ' +
   '(call list_machines to see what is online).'
 
-export class CloudCodeMcp extends McpAgent<Env> {
+export class TandemMcp extends McpAgent<Env> {
   server = new McpServer({
-    name: 'cloud-code-mcp',
+    name: 'tandem',
     version: '0.1.0',
     icons: [{ src: ICON_DATA_URI, mimeType: ICON_MIME, sizes: ['640x640'] }],
   })
@@ -70,7 +70,7 @@ export class CloudCodeMcp extends McpAgent<Env> {
         title: 'List terminal / Claude Code sessions',
         description:
           `${BLAST_RADIUS}\n\n` +
-          'List terminal sessions on Max\'s Mac: ALL LIVE tmux panes (each tagged ' +
+          'List terminal sessions on the owner\'s Mac: ALL LIVE tmux panes (each tagged ' +
           'with its detected engine — claude, codex, or shell — plus its real tmux ' +
           'name and a "tmux attach -t <tmuxName>" hint) first, then recent local ' +
           'Claude Code AND Codex history. Read-only; does not start or send ' +
@@ -85,7 +85,7 @@ export class CloudCodeMcp extends McpAgent<Env> {
           'content signature is added.',
         inputSchema: {
           limit: z.number().int().positive().optional()
-            .describe('Max sessions to return (default 20).'),
+            .describe('Maximum sessions to return (default 20).'),
           project: z.string().optional()
             .describe('Optional project/cwd substring filter.'),
           engine: z.enum(['claude', 'codex', 'grok', 'gemini', 'shell', 'hermes', 'terminal', 'all']).optional()
@@ -105,14 +105,14 @@ export class CloudCodeMcp extends McpAgent<Env> {
         title: 'Open a Claude Code (or other engine) session',
         description:
           `${BLAST_RADIUS}\n\n` +
-          'Spawn a fresh, visible, INTERACTIVE session inside tmux on Max\'s Mac ' +
+          'Spawn a fresh, visible, INTERACTIVE session inside tmux on the owner\'s Mac ' +
           '(tmux session "ccm-<name>") in the given working directory, and return ' +
           '{ name, cwd, engine, attachHint }. The engine defaults to claude; pass ' +
           'engine to launch codex or a bare login shell instead. Idempotent: ' +
           're-opening an existing live name reuses it. cwd is allowlisted by the ' +
           'bridge (default the home dir); a cwd outside the allowlist is rejected ' +
           '(the allowlist still gates SPAWNING, even though driving existing panes ' +
-          'is unrestricted). Max can run the returned attachHint to watch or type ' +
+          'is unrestricted). The owner can run the returned attachHint to watch or type ' +
           'alongside.',
         inputSchema: {
           name: z.string().optional()
@@ -120,7 +120,7 @@ export class CloudCodeMcp extends McpAgent<Env> {
           cwd: z.string().optional()
             .describe('Working directory to launch in. Must be on the bridge allowlist (default $HOME).'),
           engine: z.enum(['claude', 'codex', 'grok', 'gemini', 'shell']).optional()
-            .describe('Engine to launch (default "claude"): the claude / codex / grok / gemini CLI (all on Max\'s own subscription, no API), or "shell" for a bare login shell.'),
+            .describe('Engine to launch (default "claude"): the claude / codex / grok / gemini CLI (all on the owner\'s own subscription, no API), or "shell" for a bare login shell.'),
           machine: z.string().optional().describe(MACHINE_DESC),
         },
       },
@@ -134,7 +134,7 @@ export class CloudCodeMcp extends McpAgent<Env> {
         title: 'Send a prompt / keystrokes to a terminal session',
         description:
           `${BLAST_RADIUS}\n\n` +
-          'Type into ANY live terminal session on Max\'s Mac and wait (held open) ' +
+          'Type into ANY live terminal session on the owner\'s Mac and wait (held open) ' +
           'for that turn to finish, returning { status, report, cursor }. ' +
           'status "done" = the engine\'s working marker cleared; status "quiet" = ' +
           'a codex or shell pane printed nothing for its stability window and gave ' +
@@ -237,7 +237,7 @@ export class CloudCodeMcp extends McpAgent<Env> {
         title: 'Close a terminal session',
         description:
           `${BLAST_RADIUS}\n\n` +
-          'KILL a live tmux session on Max\'s Mac (ends whatever is running in it — ' +
+          'KILL a live tmux session on the owner\'s Mac (ends whatever is running in it — ' +
           'a Claude Code / codex TUI or a bare shell). Works on ANY live tmux pane, ' +
           'not just ccm-* sessions the bridge spawned, so use it deliberately. ' +
           'Idempotent — closing an already-gone session still returns ok. Returns ' +
@@ -261,11 +261,11 @@ export class CloudCodeMcp extends McpAgent<Env> {
         title: 'Start an autonomous two-session relay',
         description:
           `${BLAST_RADIUS}\n\n` +
-          'Kick off a NO-HUMAN-IN-THE-LOOP relay on Max\'s Mac: TWO interactive ' +
+          'Kick off a NO-HUMAN-IN-THE-LOOP relay on the owner\'s Mac: TWO interactive ' +
           'Claude Code sessions (a "lead" strategist/reviewer and a "worker" that ' +
           'does the hands-on work) message each other until the lead says DONE, a ' +
           'hard max-turn cap is hit, a wall-clock cap passes, or it is stopped. ' +
-          'Both run on Max\'s subscription (zero API). This will autonomously edit ' +
+          'Both run on the owner\'s subscription (zero API). This will autonomously edit ' +
           'files and run commands. Returns { status:"running", loopId, leadName, ' +
           'workerName, cursor }. Watch it with read_relay (poll with the cursor); ' +
           'barge in with inject_to_relay; halt with stop_relay.',
@@ -315,7 +315,7 @@ export class CloudCodeMcp extends McpAgent<Env> {
         title: 'Stop an autonomous relay',
         description:
           `${BLAST_RADIUS}\n\n` +
-          'Halt a running relay loop on Max\'s Mac: flips it off and interrupts ' +
+          'Halt a running relay loop on the owner\'s Mac: flips it off and interrupts ' +
           'the session currently mid-turn so it stops promptly. Returns ' +
           '{ ok, running }.',
         inputSchema: {
@@ -426,9 +426,9 @@ export class CloudCodeMcp extends McpAgent<Env> {
   }
 
   /** The operator default machine, sanitized to match the stored bid: ids. Falls
-   *  back to the untagged-socket id when DEFAULT_MACHINE is unset (e.g. in tests). */
+   *  back to the untagged-socket id when TANDEM_DEFAULT_MACHINE is unset (e.g. in tests). */
   private defaultMachine(): string {
-    return this.env.DEFAULT_MACHINE ? sanitizeBridgeId(this.env.DEFAULT_MACHINE) : FALLBACK_BRIDGE_ID
+    return this.env.TANDEM_DEFAULT_MACHINE ? sanitizeBridgeId(this.env.TANDEM_DEFAULT_MACHINE) : FALLBACK_BRIDGE_ID
   }
 
   /** Ask the TunnelDO which bridge_ids are currently connected. */
