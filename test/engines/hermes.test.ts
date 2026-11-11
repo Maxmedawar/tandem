@@ -1006,12 +1006,13 @@ describe("Hermes through the router on a test-only server (U-R1A-16, A1.1)", () 
   describe("U-R1A-16-R1 audit: provenance, loopback only, refusal order, one open per name", () => {
     // tmux only on a private socket this file makes (never the default one, never $TMUX's).
     const tmuxBox = mkdtempSync("/tmp/r1a16-tmux-");
-    const sockDir = join(tmuxBox, `tmux-${process.getuid?.() ?? 0}`);
-    const sock = join(sockDir, "default");
+    // U-R1A-19: the bridge reads only Tandem's own socket, <TANDEM_HOME, else ~/.tandem>/tmux/tandem.
+    const sockDir = join(process.env.TANDEM_HOME || join(homedir(), ".tandem"), "tmux");
+    const sock = join(sockDir, "tandem");
     const savedTmux = { TMUX: process.env.TMUX, TMUX_TMPDIR: process.env.TMUX_TMPDIR };
     const tx = (...args: string[]) => execFileSync("tmux", ["-S", sock, ...args], { stdio: "pipe" });
     beforeAll(() => {
-      mkdirSync(sockDir, { mode: 0o700 });
+      mkdirSync(sockDir, { recursive: true, mode: 0o700 });
       delete process.env.TMUX;
       process.env.TMUX_TMPDIR = tmuxBox;
     });

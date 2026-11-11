@@ -10,7 +10,8 @@
  * usage stays on their subscription windows. The bridge SPAWNS a fresh
  * interactive process inside a tmux session ("tmux new-session -d -s ccm-<name>
  * <engine>") and drives it by injecting keys + scraping the pane. The owner can
- * "tmux attach -t ccm-<name>" to watch or type alongside.
+ * attach (attachHint(): `tmux -S <Tandem's socket> attach -t '=ccm-<name>'`) to watch or type
+ * alongside. Every tmux call runs on Tandem's own socket (tmuxSocketPath()), never the default one.
  *
  * IDLE DETECTION — marker-based (claude) vs markerless (codex/shell):
  *   Claude has a proven footer marker: "esc to interrupt" PRESENT means working;
@@ -51,10 +52,10 @@
  */
 
 import { execFile } from 'node:child_process'
-import { closeSync, existsSync, fstatSync, openSync, readSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, statSync, type Stats } from 'node:fs'
 import { chmod, open, mkdir } from 'node:fs/promises'
 import { cpus, homedir, loadavg } from 'node:os'
-import { join, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { RE2JS } from 're2js'
 import { CLAUDE_DESCRIPTOR, type EngineDescriptor } from './drivable.ts'
 import { NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
@@ -269,19 +270,95 @@ function paneTarget(name: string): string {
  *  and every session inherits that, so no tmux call gets them; process.env keeps them. */
 const BRIDGE_SECRET_SETTINGS = ['TANDEM_OWNER_PASSWORD', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_FLEET_TOKEN']
 
-/** Run tmux with an argv array (never a shell string). Resolves stdout. */
-function tmux(args: string[]): Promise<string> {
+/** Field separator for tmux formats. tmux rewrites control characters in its output (3.4 prints
+ *  a tab as `_`), and a session name can never hold `:`, so `|:|` survives and ends a name. */
+export const TMUX_FIELD_SEP = '|:|'
+
+/** Tandem's own tmux socket, `<TANDEM_HOME, else ~/.tandem>/tmux/tandem`, worked out at each call
+ *  (never the user's default socket). Throws when the path is over 100 bytes (a Unix socket path
+ *  holds about 104). */
+export function tmuxSocketPath(tandemHome = process.env.TANDEM_HOME): string {
+  const path = join(resolve(tandemHome || join(homedir(), '.tandem')), 'tmux', 'tandem')
+  if (Buffer.byteLength(path) > 100) throw new Error(`tmux socket path too long: ${path}`)
+  return path
+}
+
+/** The socket for the next tmux call. A missing TANDEM_HOME and `tmux/` are made 0700; a `tmux/`
+ *  that is a symlink, not a folder, not this user's, or has a group/world bit is refused with
+ *  nothing made or repaired and no tmux call. */
+function prepareTmuxSocket(): string {
+  const sock = tmuxSocketPath()
+  const dir = dirname(sock)
+  let st: Stats
+  try {
+    st = lstatSync(dir)
+  } catch {
+    mkdirSync(dir, { recursive: true, mode: 0o700 })
+    st = lstatSync(dir)
+  }
+  const refuse = (why: string) => new Error(`tmux socket folder refused: ${dir} (${why})`)
+  if (st.isSymbolicLink()) throw refuse('a symlink')
+  if (!st.isDirectory()) throw refuse('not a folder')
+  if (process.getuid && st.uid !== process.getuid()) throw refuse('not owned by this user')
+  if (st.mode & 0o077) throw refuse(`mode ${(st.mode & 0o777).toString(8)} has group/world bits`)
+  return sock
+}
+
+/** Runs one tmux process with argv only (execTmux below). Injectable so the retry is testable. */
+export type TmuxExec = (
+  argv: string[],
+  opts: { maxBuffer: number; env: NodeJS.ProcessEnv },
+  cb: (error: (Error & { code?: unknown }) | null, stdout: string, stderr: string) => void,
+) => void
+
+const execTmux: TmuxExec = (argv, opts, cb) => {
+  execFile('tmux', argv, opts, (error, stdout, stderr) => cb(error, String(stdout), String(stderr)))
+}
+
+/** A tmux that failed to START with one of these is retried; one that ran and exited non-zero is not. */
+const TRANSIENT_SPAWN_CODES = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE'])
+const TMUX_RETRY_WAITS_MS = [50, 100, 150]
+
+/** The one tmux runner (bridge/sessions.ts uses it too): argv only, never a shell string;
+ *  `-S <Tandem's socket>` first; the environment minus the bridge's secret settings. Resolves stdout. */
+export async function tmux(args: string[], exec: TmuxExec = execTmux): Promise<string> {
+  const argv = ['-S', prepareTmuxSocket(), ...args]
   const env = { ...process.env }
   for (const name of BRIDGE_SECRET_SETTINGS) delete env[name]
-  return new Promise<string>((resolve, reject) => {
-    execFile('tmux', args, { maxBuffer: 16 * 1024 * 1024, env }, (error, stdout, stderr) => {
-      if (error) {
-        reject(new Error(`tmux ${args[0]} failed: ${stderr || error.message}`))
-        return
-      }
-      resolve(stdout)
-    })
-  })
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await new Promise<string>((resolve, reject) => {
+        exec(argv, { maxBuffer: 16 * 1024 * 1024, env }, (error, stdout, stderr) => {
+          if (error) reject(Object.assign(new Error(`tmux ${args[0]} failed: ${stderr || error.message}`), { code: error.code }))
+          else resolve(stdout)
+        })
+      })
+    } catch (e) {
+      const code = (e as { code?: unknown }).code
+      const transient = typeof code === 'string' && TRANSIENT_SPAWN_CODES.has(code)
+      if (!transient || attempt >= TMUX_RETRY_WAITS_MS.length) throw e
+      await sleep(TMUX_RETRY_WAITS_MS[attempt])
+    }
+  }
+}
+
+/** A Tandem-socket server already running keeps the global environment it started with: drop the
+ *  bridge's secret settings from it before a new session inherits them. No server: nothing to do. */
+async function scrubServerSecrets(): Promise<void> {
+  const argv = BRIDGE_SECRET_SETTINGS.flatMap((name, i) => [...(i ? [';'] : []), 'set-environment', '-g', '-u', name])
+  try {
+    await tmux(argv)
+  } catch (e) {
+    if (!/no server running|error connecting to/.test(String(e))) throw e
+  }
+}
+
+const shellQuote = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`
+
+/** The command that attaches a terminal to ccm-<name> on Tandem's socket, every part single-quoted
+ *  so sh, bash and zsh read it as typed (zsh would expand a bare leading `=`). */
+export function attachCommand(name: string): string {
+  return `tmux -S ${shellQuote(tmuxSocketPath())} attach -t ${shellQuote(sessionTarget(name))}`
 }
 
 /** Read a spawned session's `@tandem_engine` / `@tandem_owner` tmux user options
@@ -289,8 +366,11 @@ function tmux(args: string[]): Promise<string> {
  *  an unset user option in `display-message`, never throws). */
 async function readProvenanceTags(name: string): Promise<{ engine: string; owner: string }> {
   try {
-    const raw = await tmux(['display-message', '-p', '-t', paneTarget(name), '#{@tandem_engine}\t#{@tandem_owner}'])
-    const [engine = '', owner = ''] = raw.replace(/\n$/, '').split('\t')
+    const raw = await tmux(['display-message', '-p', '-t', paneTarget(name), `#{@tandem_engine}${TMUX_FIELD_SEP}#{@tandem_owner}`])
+    const fields = raw.replace(/\n$/, '').split(TMUX_FIELD_SEP)
+    // Exactly two fields, else a tag holds the separator: read as absent (never adopted or listed).
+    if (fields.length !== 2) return { engine: '', owner: '' }
+    const [engine, owner] = fields
     return { engine, owner }
   } catch {
     return { engine: '', owner: '' }
@@ -387,7 +467,7 @@ function formatUnreadyMessage(pane: string, load1: number, cpuCount: number, nam
   }
   return (
     `session "${name}" did not reach the prompt: ${where} after warmup. The TUI may not have ` +
-    `initialized — attach a real terminal once to kick it: tmux attach -t ${SESSION_PREFIX}${name}`
+    `initialized — attach a real terminal once to kick it: ${attachCommand(name)}`
   )
 }
 
@@ -634,9 +714,9 @@ export class TerminalSession {
     return paneTarget(this._name)
   }
 
-  /** Quoted so zsh does not expand the leading `=` when pasted. */
+  /** Tandem's socket and the exact target, quoted for pasting into sh, bash or zsh. */
   attachHint(): string {
-    return `tmux attach -t '${sessionTarget(this._name)}'`
+    return attachCommand(this._name)
   }
 
   /**
@@ -667,6 +747,8 @@ export class TerminalSession {
     }
 
     const target = SESSION_PREFIX + name
+    // A refused or too-long socket path fails here, naming it, before any tmux call or file write.
+    prepareTmuxSocket()
     // Refuse to clobber an existing session of the same name.
     if (await TerminalSession.tmuxSessionExists(name)) {
       throw new Error(`tmux session already exists: ${target}`)
@@ -688,6 +770,7 @@ export class TerminalSession {
     // (constants + validated flags), so this is a normal new-session. The engine
     // binary (or login shell) runs INSIDE the pane; the cwd is set via -c.
     const startedAtMs = Date.now()
+    await scrubServerSecrets()
     await tmux([
       'new-session',
       '-d',

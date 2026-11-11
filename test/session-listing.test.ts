@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { DrivableSession, EngineId } from '../bridge/drivable.ts'
 import { loadedHarnesses, resetHarnessCache } from '../bridge/engine-registry.ts'
 import { listLiveTmuxSessions, listSessions, registerLive, unregisterLive } from '../bridge/sessions.ts'
+import { tmuxSocketPath } from '../bridge/terminal-session.ts'
 
 const registered: string[] = []
 
@@ -53,11 +54,11 @@ describe('listSessions privacy and admission filters', () => {
 
   it('excludes raw tmux rows for disabled engines, disallowed cwd, bad provenance, and relay internals', async () => {
     const rows = [
-      'ccm-good\t100\t/allowed/project',
-      'ccm-disabled\t101\t/allowed/project',
-      'ccm-outside\t102\t/private/project',
-      'ccm-bad-owner\t103\t/allowed/project',
-      'ccm-relay-loop-lead\t104\t/allowed/project',
+      'ccm-good|:|100|:|/allowed/project',
+      'ccm-disabled|:|101|:|/allowed/project',
+      'ccm-outside|:|102|:|/private/project',
+      'ccm-bad-owner|:|103|:|/allowed/project',
+      'ccm-relay-loop-lead|:|104|:|/allowed/project',
     ].join('\n')
     const provenance: Record<string, { engine: string; owner: string }> = {
       good: { engine: 'claude', owner: 'owner-a' },
@@ -86,7 +87,7 @@ describe('listSessions privacy and admission filters', () => {
       allowlist: ['/allowed'],
       listingDependencies: {
         ownerIdProvider: async () => 'owner-a',
-        tmuxFn: async () => 'ccm-same\t100\t/allowed/project',
+        tmuxFn: async () => 'ccm-same|:|100|:|/allowed/project',
         provenanceReader: async () => ({ engine: 'claude', owner: 'owner-a' }),
       },
     })
@@ -95,11 +96,11 @@ describe('listSessions privacy and admission filters', () => {
 
   describe('harness sessions (U-R1A-11)', () => {
     const rows = [
-      'ccm-fa-live\t200\t/allowed/project',
-      'ccm-nobody\t201\t/allowed/project',
-      'ccm-cl\t202\t/allowed/project',
-      'ccm-fa-other\t203\t/allowed/project',
-      'ccm-cl-other\t204\t/allowed/project',
+      'ccm-fa-live|:|200|:|/allowed/project',
+      'ccm-nobody|:|201|:|/allowed/project',
+      'ccm-cl|:|202|:|/allowed/project',
+      'ccm-fa-other|:|203|:|/allowed/project',
+      'ccm-cl-other|:|204|:|/allowed/project',
     ].join('\n')
     const provenance: Record<string, { engine: string; owner: string }> = {
       'fa-live': { engine: 'fake-agent', owner: 'owner-a' },
@@ -155,7 +156,7 @@ describe('listSessions privacy and admission filters', () => {
       expect(loadedHarnesses().get('hermes')?.adapter).toBe('hermes')
       const deps = {
         ownerIdProvider: async () => 'owner-a',
-        tmuxFn: async () => 'ccm-r1a16-hm\t300\t/allowed/project\nccm-cl\t202\t/allowed/project',
+        tmuxFn: async () => 'ccm-r1a16-hm|:|300|:|/allowed/project\nccm-cl|:|202|:|/allowed/project',
         provenanceReader: async (name: string) => ({ engine: name === 'r1a16-hm' ? 'hermes' : 'claude', owner: 'owner-a' }),
       }
       const result = await listSessions({
@@ -188,7 +189,7 @@ describe('listSessions privacy and admission filters', () => {
           cwd: '/allowed/project',
           live: true,
           updatedAt: 202_000,
-          attachHint: "tmux attach -t '=ccm-cl'",
+          attachHint: `tmux -S '${tmuxSocketPath()}' attach -t '=ccm-cl'`,
         },
       ])
     })

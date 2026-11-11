@@ -6,7 +6,7 @@
  * Run (real HOME, only so the signed-in `claude` works; a private tmux socket):
  *   T=$(mktemp -d /tmp/r1a11.XXXXXX); env -u TMUX TMUX_TMPDIR="$T" TANDEM_HOME="$T/tandem" TANDEM_LIVE=1 \
  *     npx vitest run test/conformance/claude.live.test.ts --reporter=verbose
- *   then: test -d "$T/tmux-$(id -u)" && tmux -S "$T/tmux-$(id -u)/default" kill-server
+ *   then: test -S "$T/tandem/tmux/tandem" && tmux -S "$T/tandem/tmux/tandem" kill-server (Tandem's own socket, U-R1A-19)
  *
  * Drives HarnessSession directly, never route(), so Tandem writes nothing under the real HOME:
  * the owner id is injected and the transcript folder is fixed under a temporary HOME while the

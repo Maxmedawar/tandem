@@ -5,7 +5,7 @@
  *
  * tmux runs only on a private socket: before any tmux call TMUX_TMPDIR is a new /tmp/r1a10-
  * folder and TMUX is unset, so nothing here reaches the default server where the live agents
- * run. Cleanup is `tmux -S <that folder>/tmux-<uid>/default kill-server` after `test -S`.
+ * run. Cleanup is `tmux -S <that folder>/tandem/tmux/tandem kill-server` (Tandem's socket) after `test -S`.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -19,7 +19,7 @@ const FAKE = fileURLToPath(new URL("../fixtures/fake-cli.sh", import.meta.url));
 const BOX = mkdtempSync("/tmp/r1a10-");
 process.env.TMUX_TMPDIR = BOX;
 delete process.env.TMUX;
-const SOCK = join(BOX, `tmux-${process.getuid!()}`, "default");
+const SOCK = join(BOX, "tandem", "tmux", "tandem"); // U-R1A-19: Tandem's own socket under TANDEM_HOME
 const WORK = join(BOX, "work");
 const TANDEM_HOME = join(BOX, "tandem");
 const OWNER = join(TANDEM_HOME, "harnesses");

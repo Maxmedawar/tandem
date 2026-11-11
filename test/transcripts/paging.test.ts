@@ -18,7 +18,7 @@ const FAKE = fileURLToPath(new URL("../fixtures/fake-cli.sh", import.meta.url));
 const BOX = mkdtempSync("/tmp/r1a37-");
 process.env.TMUX_TMPDIR = BOX;
 delete process.env.TMUX;
-const SOCK = join(BOX, `tmux-${process.getuid!()}`, "default");
+const SOCK = join(BOX, "tandem", "tmux", "tandem"); // U-R1A-19: Tandem's own socket under TANDEM_HOME
 // Registered before any bridge import, so a failed import still removes the folder.
 afterAll(() => {
   const out = execFileSync(

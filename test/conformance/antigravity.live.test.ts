@@ -6,7 +6,7 @@
  * Run (real HOME, only so a signed-in `agy` works; a private tmux socket):
  *   mkdir /tmp/r1a15l-live && env -u TMUX TMUX_TMPDIR=/tmp/r1a15l-live TANDEM_HOME=/tmp/r1a15l-live/tandem \
  *     TANDEM_LIVE=1 npx vitest run test/conformance/antigravity.live.test.ts --reporter=verbose
- *   then: test -d /tmp/r1a15l-live/tmux-$(id -u) && tmux -S /tmp/r1a15l-live/tmux-$(id -u)/default kill-server
+ *   then: test -S /tmp/r1a15l-live/tandem/tmux/tandem && tmux -S /tmp/r1a15l-live/tandem/tmux/tandem kill-server (Tandem's own socket, U-R1A-19)
  *
  * Drives HarnessSession directly, never route(), so Tandem writes nothing under the real HOME:
  * the owner id is injected and the transcript folder is fixed under a temporary HOME while the
@@ -44,7 +44,7 @@ const RUN = process.env.TMUX_TMPDIR || tmpdir();
 const BOX = LIVE ? mkdtempSync(join(RUN, "r1a15-box-")) : "";
 const WORK = LIVE ? join(BOX, "work") : "";
 const SCREENS = join(RUN, "screens");
-const SOCK = join(RUN, `tmux-${process.getuid!()}`, "default");
+const SOCK = join(process.env.TANDEM_HOME || join(homedir(), ".tandem"), "tmux", "tandem"); // U-R1A-19: Tandem's own socket
 const NAME = `r1a15-live-${randomBytes(3).toString("hex")}`;
 const SIGNED_OUT = /Select login method|not logged into Antigravity/;
 

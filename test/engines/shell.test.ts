@@ -18,7 +18,7 @@ import type { HarnessTerminal } from "../../bridge/engines/harness-engine.ts";
 const BOX = mkdtempSync("/tmp/r1a13-");
 process.env.TMUX_TMPDIR = BOX;
 delete process.env.TMUX;
-const SOCK = join(BOX, `tmux-${process.getuid!()}`, "default");
+const SOCK = join(BOX, "tandem", "tmux", "tandem"); // U-R1A-19: Tandem's own socket under TANDEM_HOME
 const WORK = join(BOX, "work");
 mkdirSync(WORK);
 // Read when the router is imported or the harness files first load.

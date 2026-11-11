@@ -6,7 +6,7 @@
  *
  * tmux runs only on a private socket: before any tmux call TMUX_TMPDIR is a new /tmp/r1a18b-
  * folder and TMUX is unset, so nothing here reaches the default server where the live agents
- * run. Cleanup is `tmux -S <that folder>/tmux-<uid>/default kill-server` after `test -S`.
+ * run. Cleanup is `tmux -S <that folder>/tandem/tmux/tandem kill-server` (Tandem's socket) after `test -S`.
  * HOME and TANDEM_HOME are folders in it too, so the audit lines and transcripts land there.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
@@ -21,7 +21,7 @@ const DIALOGS = fileURLToPath(new URL("./fixtures/dialogs/", import.meta.url));
 const BOX = mkdtempSync("/tmp/r1a18b-");
 process.env.TMUX_TMPDIR = BOX;
 delete process.env.TMUX;
-const SOCK = join(BOX, `tmux-${process.getuid!()}`, "default");
+const SOCK = join(BOX, "tandem", "tmux", "tandem"); // U-R1A-19: Tandem's own socket under TANDEM_HOME
 const HOME = join(BOX, "home");
 const WORK = join(BOX, "work");
 const TANDEM_HOME = join(BOX, "tandem");

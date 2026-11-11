@@ -22,7 +22,7 @@ const FAKE = fileURLToPath(new URL("./fixtures/fake-cli.sh", import.meta.url));
 const BOX = realpathSync(mkdtempSync("/tmp/r1a17-"));
 process.env.TMUX_TMPDIR = BOX;
 delete process.env.TMUX;
-const SOCK = join(BOX, `tmux-${process.getuid!()}`, "default");
+const SOCK = join(BOX, "tandem", "tmux", "tandem"); // U-R1A-19: Tandem's own socket under TANDEM_HOME
 const TH = join(BOX, "tandem");
 const OWNER = join(TH, "harnesses");
 const LIMITS = join(TH, "limits.toml");
