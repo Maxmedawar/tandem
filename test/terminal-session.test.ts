@@ -641,6 +641,64 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
       }
     }
   }, 30_000);
+
+  // U-R1A-12-R1 review-fix: codex 0.167.1 takes an Enter that lands right after the typed text as a
+  // newline (its paste detection), so the prompt was never submitted live. Every type-then-Enter path pauses.
+  describe("k) Enter reaches tmux only after a pause behind the typed text", () => {
+    /** Runs `act`, which calls `typed()` right after the text is typed. Returns whether a tmux call
+     *  sending Enter had started 100 ms later (`early`) and whether one came at all (`after`). A
+     *  first PATH shim marks the start of that call, before it reaches the socket shim. */
+    async function enterAfterTyping(act: (typed: () => void) => Promise<unknown>): Promise<{ early: boolean; after: boolean }> {
+      const marker = join(box, "enter-started");
+      const first = join(box, "first-bin");
+      rmSync(marker, { force: true });
+      mkdirSync(first, { recursive: true });
+      writeFileSync(join(first, "tmux"), `#!/bin/sh\ncase "$*" in *Enter*) : > ${shq(marker)} ;; esac\nexec ${shq(join(box, "bin", "tmux"))} "$@"\n`, { mode: 0o700 });
+      execFileSync(join(first, "tmux"), ["-V"]); // the first run of a new script is slow on macOS
+      const path = process.env.PATH;
+      process.env.PATH = `${first}:${path}`;
+      try {
+        let check: Promise<boolean> | undefined;
+        await act(() => {
+          check ??= new Promise((resolve) => setTimeout(() => resolve(existsSync(marker)), 100));
+        });
+        expect(check).toBeDefined();
+        return { early: await check!, after: existsSync(marker) };
+      } finally {
+        process.env.PATH = path;
+      }
+    }
+
+    it.each<[string, (typed: () => void) => Promise<unknown>]>([
+      ["send()", async (typed) => {
+        sink("k-send");
+        const s = session("k-send", CAT_DESCRIPTOR);
+        stub(s, () => "$ ", typed);
+        return s.send("probe");
+      }],
+      ["applyControls() (a slash control)", async (typed) => {
+        sink("k-ctl");
+        const s = session("k-ctl", CLAUDE_DESCRIPTOR);
+        stub(s, () => "❯ ", typed);
+        return s.applyControls({ effort: "high" });
+      }],
+      ["spawn's warmup prompt", async (typed) => {
+        const proto = TerminalSession.prototype as unknown as Internals;
+        const inject = proto.injectMultiline;
+        const spy = vi.spyOn(proto, "injectMultiline").mockImplementation(async function (this: unknown, text: string) {
+          await inject.call(this, text);
+          typed();
+        });
+        try {
+          return await TerminalSession.spawn({ name: "k-warm", cwd: box, allowlist: [box], descriptor: CAT_DESCRIPTOR, ownerIdProvider: async () => "spawn-owner" });
+        } finally {
+          spy.mockRestore();
+        }
+      }],
+    ])("%s", async (_label, act) => {
+      expect(await enterAfterTyping(act)).toEqual({ early: false, after: true });
+    }, 30_000);
+  });
 });
 
 // ---- TANDEM-B-SESSION-R1 review-fix: a quiet turn's event must say quiet -----

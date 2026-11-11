@@ -73,6 +73,9 @@ const CLAUDE_WORKING_MARKER = 'esc to interrupt'
 const TRUST_PROMPT_MARKER = 'trust this folder'
 
 const POLL_MS = 750
+/** Between the typed text and Enter: codex 0.167.1 takes an Enter that lands right after typed
+ *  text as a newline (its paste detection), so the text is never submitted. Core waits 200 ms. */
+const SUBMIT_PAUSE_MS = 200
 // Soft cap for a single send() wait, configurable via env TANDEM_WAIT_MS (ms).
 // At the cap, send() returns status:'running' so the caller can poll/read again
 // without resending the prompt. The proven idle/done detection below is
@@ -784,10 +787,7 @@ export class TerminalSession {
   }
 
   private async warmupMarkerless(): Promise<void> {
-    if (this.descriptor.warmupPrompt) {
-      await this.injectMultiline(this.descriptor.warmupPrompt)
-      await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
-    }
+    if (this.descriptor.warmupPrompt) await this.typeAndSubmit(this.descriptor.warmupPrompt)
     const deadline = Date.now() + SPAWN_WARMUP_MS
     let state = INITIAL_STABILITY_STATE
     const required = requiredStablePolls(this.descriptor)
@@ -832,6 +832,13 @@ export class TerminalSession {
     }
   }
 
+  /** Every typed-then-submitted text goes through here: type it, pause, then one Enter. */
+  private async typeAndSubmit(text: string): Promise<void> {
+    await this.injectMultiline(text)
+    await sleep(SUBMIT_PAUSE_MS)
+    await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+  }
+
   /**
    * Inject text (injection-safe), submit with Enter, then wait for the turn to
    * complete. Returns status:'done' with the harvested report once idle, or
@@ -853,10 +860,9 @@ export class TerminalSession {
   async send(text: string): Promise<SendResult> {
     const startCursor = this.cursor()
 
-    await this.injectMultiline(text)
     // Separate Enter keypress submits the prompt (the single submit for the whole
     // multi-line body).
-    await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+    await this.typeAndSubmit(text)
 
     const softDeadline = Date.now() + SEND_SOFT_CAP_MS
     const hardDeadline = Date.now() + SEND_HARD_CAP_MS
@@ -923,8 +929,7 @@ export class TerminalSession {
    * autocomplete's exact match resolve and the setting take effect.
    */
   private async submitControl(line: string): Promise<void> {
-    await this.injectMultiline(line)
-    await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+    await this.typeAndSubmit(line)
     await sleep(POLL_MS)
   }
 
