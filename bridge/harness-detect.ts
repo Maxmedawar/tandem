@@ -66,3 +66,29 @@ export function createStateReader(harness: Pick<Harness, 'states'>, now: () => n
     },
   }
 }
+
+/** Each `states.empty_prompt` list is compiled once. */
+const emptySets = new WeakMap<States, RE2JS[]>()
+/** The code rule: optional spaces, at most 32 characters that are not whitespace or a prompt glyph, then one glyph. */
+const BARE_PROMPT = /^[ \t]*[^\s❯›>]{0,32}[❯›>]$/u
+
+/**
+ * Whether the prompt row holds nothing (or only the agent's own placeholder), so an agent's text
+ * may be typed there (bridge/input-gate.ts). With `states.empty_prompt`: one of its patterns
+ * matches the same window the state rules read. Without it: the window's last line, without
+ * trailing spaces and tabs, is a bare prompt. An empty window is not an empty prompt.
+ */
+export function isPromptEmpty(harness: Pick<Harness, 'states'>, screen: string): boolean {
+  const window = windowOf(screen)
+  const states = harness.states
+  if (states?.empty_prompt && states.empty_prompt.length > 0) {
+    let set = emptySets.get(states)
+    if (!set) {
+      set = states.empty_prompt.map((p) => RE2JS.compile(p, RE2JS.MULTILINE))
+      emptySets.set(states, set)
+    }
+    return set.some((re) => re.matcher(window).find())
+  }
+  if (window === '') return false
+  return BARE_PROMPT.test(window.slice(window.lastIndexOf('\n') + 1).replace(/[ \t]+$/, ''))
+}

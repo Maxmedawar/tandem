@@ -11,8 +11,12 @@
  * The state comes from one fresh screen capture read by the agent's harness-file rules with no
  * debounce (HarnessSession.inputState). A session that cannot show its screen reads `unknown`,
  * which counts as idle for the owner and as busy for an agent.
+ *
+ * An agent's text enters only an empty prompt (the harness file's `states.empty_prompt`, else the
+ * last line is a bare prompt): a person's unsent text is never typed after, and the owner's own
+ * text is never checked.
  */
-import type { ReadState } from './harness-detect.ts'
+import { isPromptEmpty, type ReadState } from './harness-detect.ts'
 
 export type InputFrom = 'owner' | 'agent'
 export type InputAction = 'type' | 'interrupt'
@@ -30,6 +34,16 @@ const POLL_MS = 250
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 /** Screens compare without trailing whitespace, per line and at the end. */
 const settled = (screen: string) => screen.replace(/[ \t]+$/gm, '').trimEnd()
+
+export const PROMPT_NOT_EMPTY = 'prompt not empty'
+const HELD_NOT_EMPTY = { verdict: 'held', state: 'idle', reason: PROMPT_NOT_EMPTY } as const
+
+/** The session's own empty-prompt check (a throw counts as not empty), else the code rule. */
+function emptyAt(session: object, screen: string): boolean {
+  const s = session as { promptEmpty?: (screen: string) => boolean }
+  if (typeof s.promptEmpty !== 'function') return isPromptEmpty({}, screen)
+  try { return s.promptEmpty(screen) === true } catch { return false }
+}
 
 const READ_MS = 2000
 const UNREAD: InputRead = { state: 'unknown', screen: '', debounceMs: 0 }
@@ -54,17 +68,19 @@ export function readInput(session: object): Promise<InputRead> {
  * read that is not idle, or debounce_ms + 1000 ms in all, is held. Nothing waits longer than
  * that plus one poll and two reads of 2000 ms at most (the first, and the one under way).
  */
-export async function admitInput(session: object, from: InputFrom, action: InputAction): Promise<{ verdict: InputVerdict; state: ReadState }> {
+export async function admitInput(session: object, from: InputFrom, action: InputAction): Promise<{ verdict: InputVerdict; state: ReadState; reason?: typeof PROMPT_NOT_EMPTY }> {
   const start = Date.now()
   const first = await readInput(session)
   const verdict = decideInput(from, action, first.state)
   if (from === 'owner' || action !== 'type' || verdict !== 'enter') return { verdict, state: first.state }
+  if (!emptyAt(session, first.screen)) return { ...HELD_NOT_EMPTY }
   let screen = settled(first.screen)
   let since = Date.now()
   for (;;) {
     await sleep(POLL_MS)
     const read = await readInput(session)
     if (read.state !== 'idle') return { verdict: 'held', state: read.state }
+    if (!emptyAt(session, read.screen)) return { ...HELD_NOT_EMPTY }
     const now = Date.now()
     const shown = settled(read.screen)
     if (shown !== screen) {

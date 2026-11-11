@@ -9,7 +9,7 @@
  */
 import { installHook, removeHook, turnState } from '../delivery-hooks.ts'
 import type { EngineDescriptor, ReadOptions, ReadResult } from '../drivable.ts'
-import { createStateReader, readScreen, type ReadState } from '../harness-detect.ts'
+import { createStateReader, isPromptEmpty, readScreen, type ReadState } from '../harness-detect.ts'
 import type { Harness } from '../harness-registry.ts'
 import { spawnArgv, TerminalSession, type DialogAnswers, type SpawnOptions as TerminalSpawnOptions } from '../terminal-session.ts'
 import { TerminalAdapterSession, type TerminalSessionLike } from './terminal-adapter.ts'
@@ -91,6 +91,11 @@ export class HarnessSession extends TerminalAdapterSession {
     let state = readScreen(this.harness, screen)
     if (state === 'idle' && this.harness.delivery === 'hook' && turnState(this.id) === 'working') state = 'working'
     return { state, screen, debounceMs: this.harness.states?.debounce_ms ?? 0 }
+  }
+
+  /** The input gate's empty-prompt check (bridge/input-gate.ts): the file's states.empty_prompt, else the code rule. */
+  promptEmpty(screen: string): boolean {
+    return isPromptEmpty(this.harness, screen)
   }
 
   /** How mail reaches this session (bridge/delivery-notice.ts): the file's `delivery`; a shell never gets mail typed. */
