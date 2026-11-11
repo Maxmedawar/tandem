@@ -1,8 +1,8 @@
 /**
  * engines/harness-engine.ts — the one engine that runs any CLI agent from its harness file
- * (harnesses/SCHEMA.md). A thin binding of the shared TerminalAdapterSession
- * (./terminal-adapter.ts), like engines/shell.ts: the file gives the argv and the screen
- * rules, so a new agent is one file and no code.
+ * (harnesses/SCHEMA.md), Claude Code included (harnesses/claude.toml). A thin binding of the
+ * shared TerminalAdapterSession (./terminal-adapter.ts), like engines/shell.ts: the file gives
+ * the argv, the screen rules and the interrupt keys, so a new agent is one file and no code.
  *
  * Gates (enabled, `shell` for a shell program, program found) live in engine-registry.ts;
  * model/effort/bypass stay Claude-only and are refused, never ignored.
@@ -10,7 +10,7 @@
 import type { EngineDescriptor, ReadOptions, ReadResult } from '../drivable.ts'
 import { createStateReader, readScreen } from '../harness-detect.ts'
 import type { Harness } from '../harness-registry.ts'
-import { TerminalSession, type SpawnOptions as TerminalSpawnOptions } from '../terminal-session.ts'
+import { spawnArgv, TerminalSession, type SpawnOptions as TerminalSpawnOptions } from '../terminal-session.ts'
 import { TerminalAdapterSession, type TerminalSessionLike } from './terminal-adapter.ts'
 
 /** A terminal that can also show its current screen. */
@@ -20,6 +20,10 @@ export interface HarnessSpawnOptions {
   name: string
   cwd: string
   allowlist: string[]
+  /** Claude only (the harness named `claude`); any other harness refuses them. */
+  model?: string
+  effort?: string
+  allowBypass?: boolean
 }
 
 /**
@@ -29,8 +33,11 @@ export interface HarnessSpawnOptions {
  * turns end `quiet`.
  */
 export function harnessDescriptor(h: Harness): EngineDescriptor {
-  if (!h.programPath) throw new Error(`harness "${h.name}": program "${h.program}" was not found`)
-  const argv = ['/usr/bin/env', '--', h.programPath, ...h.args]
+  // ponytail: claude keeps its no-presence-check exemption (a missing claude fails at spawn, as
+  // before the harness file); U-R1A-13 drops it.
+  const program = h.programPath ?? (h.name === 'claude' ? h.program : undefined)
+  if (!program) throw new Error(`harness "${h.name}": program "${h.program}" was not found`)
+  const argv = ['/usr/bin/env', '--', program, ...h.args]
   if (h.states?.idle?.length) {
     return {
       id: h.name,
@@ -46,11 +53,19 @@ export function harnessDescriptor(h: Harness): EngineDescriptor {
 export class HarnessSession extends TerminalAdapterSession {
   private readonly screenSource: HarnessTerminal
   private readonly reader: ReturnType<typeof createStateReader>
+  private readonly interruptKeys: readonly string[] | undefined
 
   constructor(harness: Harness, terminal: HarnessTerminal) {
     super(harness.name, terminal)
     this.screenSource = terminal
     this.reader = createStateReader(harness)
+    const keys = harness.keys?.interrupt
+    this.interruptKeys = typeof keys === 'string' ? [keys] : keys
+  }
+
+  /** The file's `keys.interrupt` when set, else the terminal's default (Escape, then C-c). */
+  interrupt(): Promise<void> {
+    return this.screenSource.interrupt(this.interruptKeys)
   }
 
   /** The terminal page plus `agentState`, read from the current screen by the file's rules. */
@@ -64,7 +79,9 @@ export class HarnessSession extends TerminalAdapterSession {
     opts: HarnessSpawnOptions,
     spawnFn: (opts: TerminalSpawnOptions) => Promise<HarnessTerminal> = TerminalSession.spawn,
   ): Promise<HarnessSession> {
-    return new HarnessSession(harness, await spawnFn({ ...opts, descriptor: harnessDescriptor(harness) }))
+    const descriptor = harnessDescriptor(harness)
+    spawnArgv(descriptor, opts) // a refused or bad flag throws before anything starts
+    return new HarnessSession(harness, await spawnFn({ ...opts, descriptor }))
   }
 
   static async attachExisting(

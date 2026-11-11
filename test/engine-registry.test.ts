@@ -50,7 +50,7 @@ describe("resolveEngine — order: parse -> enabled -> executable-available", ()
   it("defaults to claude when no id is given", async () => {
     const resolution = await resolveEngine(undefined, { enabledEngines: new Set(["claude"]) });
     expect(resolution.id).toBe("claude");
-    expect(resolution.descriptor?.id).toBe("claude");
+    expect(resolution.harness?.name).toBe("claude");
   });
 
   it("claude is EXEMPT from the executable-presence check (no regression from Phase 1, no subprocess on the hot path)", async () => {

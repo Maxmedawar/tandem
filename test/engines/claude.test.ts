@@ -1,199 +1,305 @@
-import { describe, it, expect } from "vitest";
-import { ClaudeSession, type TerminalSessionLike } from "../../bridge/engines/claude.ts";
-
 /**
- * Adapter contract tests (binding — Phase 1 plan review amendment #6): drive
- * ClaudeSession entirely through an INJECTED fake TerminalSessionLike. No tmux,
- * no real `claude` process, no live subscription — deterministic and CI-safe.
- * A real tmux/Claude run is a separate manual smoke test, never required here.
+ * U-R1A-11: Claude Code runs from its built-in harness file (harnesses/claude.toml) through the
+ * one harness engine. Injected fakes only: no tmux, no real `claude` process.
+ *
+ * Parity with Synergy's test/engines.test.ts (Claude's engine-table cases) and
+ * test/interrupt-keys.test.ts (Escape, then C-c) lands here as harness file cases.
  */
+import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadHarnesses, type Harness } from "../../bridge/harness-registry.ts";
+import { HarnessSession, harnessDescriptor, type HarnessTerminal } from "../../bridge/engines/harness-engine.ts";
+import { loadedHarnesses, resetHarnessCache, resolveEngine } from "../../bridge/engine-registry.ts";
+import { spawnArgv, trustAnswerKey, type SpawnOptions } from "../../bridge/terminal-session.ts";
+
+const BUILTIN = fileURLToPath(new URL("../../harnesses/", import.meta.url));
+const SCREENS = fileURLToPath(new URL("../fixtures/screens/", import.meta.url));
+const screen = (f: string) => readFileSync(join(SCREENS, f), "utf8");
+
+const tmp = mkdtempSync(join(tmpdir(), "r1a11-claude-"));
+const NO_OWNER = join(tmp, "no-owner");
+
+/** The built-in claude file as the loader reads it (no owner files). */
+function builtinClaude(path?: string): Harness {
+  const { harnesses, errors } = loadHarnesses({ installDir: BUILTIN, ownerDir: NO_OWNER, ...(path === undefined ? {} : { path }) });
+  expect(errors).toEqual([]);
+  return harnesses.get("claude")!;
+}
+
+/** An owner folder (mode 0700) holding one claude.toml (mode 0600). */
+function ownerWithClaude(): string {
+  const home = mkdtempSync(join(tmp, "home-"));
+  const dir = join(home, "harnesses");
+  mkdirSync(dir);
+  chmodSync(dir, 0o700);
+  writeFileSync(join(dir, "claude.toml"), 'name = "claude"\nprogram = "/usr/bin/true"\nhas_prompts = false\n', { mode: 0o600 });
+  return home;
+}
 
 interface Call {
   method: string;
   args: unknown[];
 }
 
-function makeFakeTerminal(overrides: Partial<TerminalSessionLike> = {}) {
+function fakeTerminal(screenText = "") {
   const calls: Call[] = [];
-  const fake: TerminalSessionLike = {
-    name: "fake-session",
+  const fake: HarnessTerminal = {
+    name: "r1a11-fake",
     cwd: "/tmp/work",
     ready: true,
     readinessWarning: undefined,
-    attachHint: () => {
-      calls.push({ method: "attachHint", args: [] });
-      return "tmux attach -t ccm-fake-session";
-    },
-    isAlive: async () => {
-      calls.push({ method: "isAlive", args: [] });
-      return true;
-    },
-    isCurrentlyWorking: async () => {
-      calls.push({ method: "isCurrentlyWorking", args: [] });
-      return false;
-    },
+    attachHint: () => "tmux attach -t '=ccm-r1a11-fake'",
+    isAlive: async () => true,
+    isCurrentlyWorking: async () => false,
     send: async (text: string) => {
       calls.push({ method: "send", args: [text] });
-      return { report: `report for: ${text}`, cursor: 42, status: "done" as const };
+      return { report: `report: ${text}`, cursor: 1, status: "done" as const };
     },
-    readSince: async (cursor: number) => {
-      calls.push({ method: "readSince", args: [cursor] });
-      return { text: "some output", cursor: cursor + 10, idle: true };
-    },
+    readSince: async (cursor: number) => ({ text: "", cursor, idle: true }),
     applyControls: async (controls: { model?: string; effort?: string }) => {
       calls.push({ method: "applyControls", args: [controls] });
-      const applied: string[] = [];
-      if (controls.effort !== undefined) applied.push(`effort=${controls.effort}`);
-      if (controls.model !== undefined) applied.push(`model=${controls.model}`);
-      return applied;
+      return [];
     },
-    interrupt: async () => {
-      calls.push({ method: "interrupt", args: [] });
+    interrupt: async (...args: unknown[]) => {
+      calls.push({ method: "interrupt", args });
     },
-    close: async () => {
-      calls.push({ method: "close", args: [] });
-    },
-    ...overrides,
+    close: async () => {},
+    screen: async () => screenText,
   };
   return { fake, calls };
 }
 
-describe("ClaudeSession — DrivableSession contract (injected fake)", () => {
-  it("id/cwd/engine/ready/readinessWarning mirror the injected terminal", () => {
-    const { fake } = makeFakeTerminal({ readinessWarning: "session did not reach the prompt" });
-    const session = new ClaudeSession(fake);
-    expect(session.engine).toBe("claude");
-    expect(session.id).toBe("fake-session");
-    expect(session.cwd).toBe("/tmp/work");
-    expect(session.ready).toBe(true);
-    expect(session.readinessWarning).toBe("session did not reach the prompt");
-  });
+afterAll(() => rmSync(tmp, { recursive: true, force: true }));
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+  resetHarnessCache();
+});
 
-  it("attachHint() delegates to the terminal", () => {
-    const { fake } = makeFakeTerminal();
-    const session = new ClaudeSession(fake);
-    expect(session.attachHint()).toBe("tmux attach -t ccm-fake-session");
-  });
-
-  it("isAlive() delegates to the terminal's isAlive()", async () => {
-    const { fake: aliveTrue } = makeFakeTerminal();
-    expect(await new ClaudeSession(aliveTrue).isAlive()).toBe(true);
-    const { fake: aliveFalse } = makeFakeTerminal({ isAlive: async () => false });
-    expect(await new ClaudeSession(aliveFalse).isAlive()).toBe(false);
-  });
-
-  it("isWorking() delegates to the terminal's isCurrentlyWorking()", async () => {
-    const { fake, calls } = makeFakeTerminal();
-    const session = new ClaudeSession(fake);
-    expect(await session.isWorking()).toBe(false);
-    expect(calls.map((c) => c.method)).toEqual(["isCurrentlyWorking"]);
-  });
-
-  it("send(text) with no options calls terminal.send() directly — no applyControls", async () => {
-    const { fake, calls } = makeFakeTerminal();
-    const session = new ClaudeSession(fake);
-    const result = await session.send("do the thing");
-    expect(result).toEqual({ report: "report for: do the thing", cursor: 42, status: "done" });
-    expect(calls.map((c) => c.method)).toEqual(["send"]);
-  });
-
-  it("send(text, {model|effort}) applies controls BEFORE sending — generic bounded SendResult, no Claude-only escape hatch", async () => {
-    const { fake, calls } = makeFakeTerminal();
-    const session = new ClaudeSession(fake);
-    const result = await session.send("go", { model: "opus", effort: "high" });
-    expect(calls.map((c) => c.method)).toEqual(["applyControls", "send"]);
-    expect(calls[0].args[0]).toEqual({ model: "opus", effort: "high" });
-    expect(calls[1].args[0]).toBe("go");
-    // The result shape is the generic bounded contract: status/report/cursor only.
-    expect(Object.keys(result).sort()).toEqual(["cursor", "report", "status"]);
-  });
-
-  it("send() returning status:'running' is passed through unchanged (bounded, never blocks internally)", async () => {
-    const { fake } = makeFakeTerminal({
-      send: async () => ({ report: "", cursor: 7, status: "running" as const }),
+describe("claude: the built-in harness file", () => {
+  it("loads with no error, kind agent, and its state patterns and precedence equal the fixture file's", () => {
+    const h = builtinClaude();
+    expect(h).toMatchObject({
+      name: "claude",
+      program: "claude",
+      source: "builtin",
+      file: join(BUILTIN, "claude.toml"),
+      kind: "agent",
+      has_prompts: true,
+      skip_prompts_args: ["--dangerously-skip-permissions"],
+      resume: ["--resume", "{id}"],
+      fork: ["--resume", "{id}", "--fork-session"],
+      account_env: "CLAUDE_CONFIG_DIR",
+      history: "~/.claude/projects",
+      keys: { interrupt: ["Escape", "C-c"], approve: "Enter", deny: "Escape" },
+      delivery: "notice",
     });
-    const session = new ClaudeSession(fake);
-    const result = await session.send("go");
-    expect(result).toEqual({ report: "", cursor: 7, status: "running" });
+    expect(h.hook).toBeUndefined();
+    expect(h.logo).toBeUndefined();
+    const fixture = loadHarnesses({ installDir: join(SCREENS, "harnesses"), ownerDir: NO_OWNER }).harnesses.get("claude")!;
+    const { debounce_ms, ...patterns } = h.states!;
+    const { debounce_ms: _fixtureDebounce, ...fixturePatterns } = fixture.states!;
+    expect(patterns).toEqual(fixturePatterns);
+    expect(debounce_ms).toBe(2250);
   });
 
-  it("read() with no options defaults cursor to 0", async () => {
-    const { fake, calls } = makeFakeTerminal();
-    const session = new ClaudeSession(fake);
-    const result = await session.read();
-    expect(calls).toEqual([{ method: "readSince", args: [0] }]);
-    expect(result).toEqual({ text: "some output", cursor: 10, idle: true });
+  it("an owner claude.toml is refused and the built-in stays", () => {
+    const home = ownerWithClaude();
+    const owner = join(home, "harnesses");
+    const res = loadHarnesses({ installDir: BUILTIN, ownerDir: owner });
+    expect(res.errors).toContainEqual({ file: join(owner, "claude.toml"), reason: "built-in name: an owner file cannot replace a built-in" });
+    expect(res.harnesses.get("claude")?.source).toBe("builtin");
+
+    vi.stubEnv("TANDEM_HOME", home);
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation((() => true) as never);
+    resetHarnessCache();
+    const loaded = loadedHarnesses().get("claude");
+    expect(loaded?.source).toBe("builtin");
+    expect(loaded?.file).toBe(join(BUILTIN, "claude.toml"));
+    const lines = stderr.mock.calls.map((c) => String(c[0]));
+    expect(lines.filter((l) => l.includes(join(owner, "claude.toml")))).toEqual([
+      `[bridge] harness file refused: ${join(owner, "claude.toml")}: built-in name: an owner file cannot replace a built-in\n`,
+    ]);
   });
 
-  it("read({cursor}) forwards the cursor", async () => {
-    const { fake, calls } = makeFakeTerminal();
-    const session = new ClaudeSession(fake);
-    await session.read({ cursor: 100 });
-    expect(calls).toEqual([{ method: "readSince", args: [100] }]);
-  });
+  it("resolves (TANDEM_ENABLED_ENGINES unset) to the claude harness, and with an empty PATH still to /usr/bin/env -- claude", async () => {
+    vi.stubEnv("TANDEM_ENABLED_ENGINES", undefined);
+    vi.stubEnv("TANDEM_HOME", join(tmp, "empty-home"));
+    resetHarnessCache();
+    for (const raw of [undefined, "claude"]) {
+      const r = await resolveEngine(raw);
+      expect(r.id).toBe("claude");
+      expect(r.harness?.file).toBe(join(BUILTIN, "claude.toml"));
+      expect(r.descriptor).toBeUndefined();
+    }
 
-  it("interrupt() delegates to the terminal", async () => {
-    const { fake, calls } = makeFakeTerminal();
-    const session = new ClaudeSession(fake);
-    await session.interrupt();
-    expect(calls.map((c) => c.method)).toEqual(["interrupt"]);
-  });
-
-  it("close() delegates to the terminal", async () => {
-    const { fake, calls } = makeFakeTerminal();
-    const session = new ClaudeSession(fake);
-    await session.close();
-    expect(calls.map((c) => c.method)).toEqual(["close"]);
+    vi.stubEnv("PATH", "");
+    resetHarnessCache();
+    const r = await resolveEngine("claude", { detectExecutable: async () => false });
+    expect(r.harness?.programPath).toBeUndefined();
+    expect(harnessDescriptor(r.harness!).argv).toEqual(["/usr/bin/env", "--", "claude"]);
   });
 });
 
-// spawn/attachExisting/exists regression tests: an injected factory function
-// stands in for TerminalSession.spawn/attachExisting/exists, so these are
-// exercised deterministically too — no tmux, no live Claude process required.
-describe("ClaudeSession — spawn/attachExisting/exists (injected factory)", () => {
-  it("spawn() calls the injected spawnFn with the given options and wraps the result", async () => {
-    const { fake } = makeFakeTerminal({ name: "brand-new", cwd: "/tmp/proj" });
-    const spawnCalls: unknown[] = [];
-    const spawnFn = async (opts: unknown) => {
-      spawnCalls.push(opts);
+describe("claude: spawn flags (injected spawn function)", () => {
+  async function spawned(opts: Partial<SpawnOptions>): Promise<string[]> {
+    const h = builtinClaude();
+    const seen: SpawnOptions[] = [];
+    const { fake } = fakeTerminal();
+    await HarnessSession.spawn(h, { name: "r1a11-spawn", cwd: "/tmp/work", allowlist: ["/tmp"], ...opts }, async (o) => {
+      seen.push(o);
       return fake;
-    };
-    const opts = { name: "brand-new", cwd: "/tmp/proj", allowlist: ["/tmp"] };
-    const session = await ClaudeSession.spawn(opts, spawnFn);
-    expect(spawnCalls).toEqual([opts]);
-    expect(session.id).toBe("brand-new");
-    expect(session.cwd).toBe("/tmp/proj");
+    });
+    expect(seen).toHaveLength(1);
+    // Warmup trust and bypass dialog keys stay Claude-only: the descriptor keeps the id.
+    expect(seen[0]!.descriptor?.id).toBe("claude");
+    return spawnArgv(seen[0]!.descriptor!, seen[0]!);
+  }
+
+  it("plain: /usr/bin/env -- <programPath> and nothing else", async () => {
+    vi.stubEnv("TANDEM_ALLOW_BYPASS", "");
+    const program = builtinClaude().programPath ?? "claude";
+    expect(await spawned({})).toEqual(["/usr/bin/env", "--", program]);
+  });
+
+  it("with bypass: --dangerously-skip-permissions, from allowBypass or TANDEM_ALLOW_BYPASS=1", async () => {
+    const program = builtinClaude().programPath ?? "claude";
+    vi.stubEnv("TANDEM_ALLOW_BYPASS", "");
+    expect(await spawned({ allowBypass: true })).toEqual(["/usr/bin/env", "--", program, "--dangerously-skip-permissions"]);
+    vi.stubEnv("TANDEM_ALLOW_BYPASS", "1");
+    expect(await spawned({})).toEqual(["/usr/bin/env", "--", program, "--dangerously-skip-permissions"]);
+    expect(await spawned({ allowBypass: false })).toEqual(["/usr/bin/env", "--", program]);
+  });
+
+  it('with model "opus", effort "high": --model opus --effort high', async () => {
+    vi.stubEnv("TANDEM_ALLOW_BYPASS", "");
+    const program = builtinClaude().programPath ?? "claude";
+    expect(await spawned({ model: "opus", effort: "high" })).toEqual(["/usr/bin/env", "--", program, "--model", "opus", "--effort", "high"]);
+  });
+
+  describe("warmup's trust answer: one key per screen poll, Enter only on a highlighted 'Yes, I trust this folder'", () => {
+    // The real trust dialog of claude 2.1.321 (private tmux socket, new folder), with the options swapped in.
+    const dialog = (...options: string[]) =>
+      [
+        "",
+        "─".repeat(120),
+        " Accessing workspace:",
+        "",
+        " /private/tmp/w",
+        "",
+        " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source project, or work from your team). If not, take a moment to review what's in this",
+        " folder first.",
+        "",
+        " Claude Code'll be able to read, edit, and execute files here.",
+        "",
+        " Security guide",
+        "",
+        ...options,
+        "",
+        " Enter to confirm · Esc to cancel",
+        "",
+        "",
+      ].join("\n");
+
+    it.each([
+      ["claude 2.1.321: 'No, exit' highlighted first", [" ❯ No, exit", "   Yes, I trust this folder"], "Down"],
+      ["claude 2.1.321 after one Down: Yes highlighted", ["   No, exit", " ❯ Yes, I trust this folder"], "Enter"],
+      ["older numbered layout: Yes highlighted first", [" ❯ 1. Yes, I trust this folder", "   2. No, exit"], "Enter"],
+      ["older numbered layout: No highlighted, Yes above", ["   1. Yes, I trust this folder", " ❯ 2. No, exit"], "Up"],
+      ["Yes two options below the highlight: one Down this poll", [" ❯ No, exit", "   Not now", "   Yes, I trust this folder"], "Down"],
+      ["the highlighted Yes says 'no' in its own text", [" ❯ Yes, I trust this folder (no MCP servers)", "   No, exit"], "Enter"],
+    ])("%s", (_label, options, key) => {
+      expect(trustAnswerKey(dialog(...options))).toBe(key);
+    });
+
+    // A wrapping list (claude 2.1.321: a second Down returns to "No, exit"), one poll per key.
+    it.each([
+      ["claude 2.1.321", ["No, exit", "Yes, I trust this folder"], 0, ["Down", "Enter"]],
+      ["older numbered", ["1. Yes, I trust this folder", "2. No, exit"], 0, ["Enter"]],
+      ["older numbered, No highlighted", ["1. Yes, I trust this folder", "2. No, exit"], 1, ["Up", "Enter"]],
+      ["three options", ["No, exit", "Not now", "Yes, I trust this folder"], 0, ["Down", "Down", "Enter"]],
+    ])("%s: options %j, one key per poll, Enter only on Yes", (_label, options, start, want) => {
+      let at = start as number;
+      const sent: string[] = [];
+      for (let poll = 0; poll < 6 && sent.at(-1) !== "Enter"; poll++) {
+        const key = trustAnswerKey(dialog(...options.map((o, i) => (i === at ? ` ❯ ${o}` : `   ${o}`))));
+        expect(key).toBeDefined();
+        sent.push(key!);
+        if (key === "Enter") expect(options[at]).toMatch(/Yes, I trust this folder/);
+        if (key === "Down") at = (at + 1) % options.length;
+        if (key === "Up") at = (at - 1 + options.length) % options.length;
+      }
+      expect(sent).toEqual(want);
+    });
+
+    it.each([
+      [
+        "the bypass-permissions warning, even with 'trust this folder' on screen",
+        " WARNING: Claude Code running in Bypass Permissions mode\n\n Only use it in a folder you trust this folder to be safe.\n\n ❯ 1. No, exit\n   2. Yes, I accept\n\n Enter to confirm · Esc to cancel",
+      ],
+      ["an update prompt", " A new version of Claude Code is available. Do you trust this folder's updater?\n\n ❯ 1. Update now\n   2. Not now\n"],
+      ["an older dialog with no 'Yes, I trust this folder' option", dialog(" ❯ 1. Yes, proceed", "   2. No, exit")],
+      [
+        "the prompt box under transcript text that quotes the option",
+        "  Yes, I trust this folder\n\n" + "─".repeat(80) + "\n❯ \n" + "─".repeat(80) + "\n  ⏵⏵ auto mode on (shift+tab to cycle)",
+      ],
+      ["the option with no highlight in its block", dialog("   No, exit", "   Yes, I trust this folder")],
+    ])("no key for %s", (_label, pane) => {
+      expect(trustAnswerKey(pane)).toBeUndefined();
+    });
+  });
+
+  it("a bad model or effort throws before the spawn function is called", async () => {
+    const h = builtinClaude();
+    for (const bad of [{ model: "gpt-5" }, { effort: "extreme" }]) {
+      let called = 0;
+      await expect(
+        HarnessSession.spawn(h, { name: "r1a11-bad", cwd: "/tmp/work", allowlist: ["/tmp"], ...bad }, async () => {
+          called += 1;
+          return fakeTerminal().fake;
+        }),
+      ).rejects.toThrow(/unsupported (model|effort)/);
+      expect(called).toBe(0);
+    }
+  });
+});
+
+describe("claude: a harness session over an injected terminal", () => {
+  it("per-turn model/effort call applyControls, then send", async () => {
+    const { fake, calls } = fakeTerminal();
+    const session = new HarnessSession(builtinClaude(), fake);
     expect(session.engine).toBe("claude");
+    const result = await session.send("go", { model: "opus", effort: "high" });
+    expect(calls).toEqual([
+      { method: "applyControls", args: [{ model: "opus", effort: "high" }] },
+      { method: "send", args: ["go"] },
+    ]);
+    expect(result).toEqual({ report: "report: go", cursor: 1, status: "done" });
   });
 
-  it("spawn() propagates a rejection from the injected spawnFn (e.g. cwd not allowed)", async () => {
-    const spawnFn = async () => {
-      throw new Error("cwd not allowed: /etc");
-    };
-    await expect(ClaudeSession.spawn({ name: "x", cwd: "/etc", allowlist: ["/tmp"] }, spawnFn)).rejects.toThrow(
-      "cwd not allowed",
-    );
+  it("interrupt hands Escape, C-c in order (the file's keys.interrupt)", async () => {
+    const { fake, calls } = fakeTerminal();
+    await new HarnessSession(builtinClaude(), fake).interrupt();
+    expect(calls).toEqual([{ method: "interrupt", args: [["Escape", "C-c"]] }]);
   });
 
-  it("attachExisting() wraps a re-adopted terminal when the injected attachFn finds one", async () => {
-    const { fake } = makeFakeTerminal({ name: "survived-restart" });
-    const attachFn = async (name: string, allowlist: string[]) => {
-      expect(name).toBe("survived-restart");
-      expect(allowlist).toEqual(["/tmp"]);
-      return fake;
-    };
-    const session = await ClaudeSession.attachExisting("survived-restart", ["/tmp"], attachFn);
-    expect(session?.id).toBe("survived-restart");
-  });
-
-  it("attachExisting() returns undefined when the injected attachFn finds nothing (e.g. cwd outside allowlist)", async () => {
-    const attachFn = async () => undefined;
-    const session = await ClaudeSession.attachExisting("gone", ["/tmp"], attachFn);
-    expect(session).toBeUndefined();
-  });
-
-  it("exists() forwards to the injected existsFn", async () => {
-    expect(await ClaudeSession.exists("present", async () => true)).toBe(true);
-    expect(await ClaudeSession.exists("absent", async () => false)).toBe(false);
+  it.each([
+    ["claude-idle-real.txt", "idle"],
+    ["claude-idle-stale.txt", "idle"],
+    ["claude-working-real.txt", "working"],
+  ])("read on %s gives %s", async (file, state) => {
+    vi.useFakeTimers();
+    const { fake } = fakeTerminal(screen(file));
+    const session = new HarnessSession(builtinClaude(), fake);
+    await session.read();
+    vi.advanceTimersByTime(2250);
+    expect((await session.read()).agentState).toBe(state);
+    const d = harnessDescriptor(builtinClaude());
+    expect(d.isReady!(screen(file))).toBe(state === "idle");
+    expect(d.isWorking!(screen(file))).toBe(state !== "idle");
   });
 });

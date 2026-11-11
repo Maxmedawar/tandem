@@ -1,6 +1,8 @@
 # Screen rules adapted from kbwo/ccmanager src/services/stateDetector/claude.ts (MIT, see ../NOTICE).
 # idle is a positive match of the prompt box: a `❯` line (then a space or NBSP) between two rule lines (real capture,
 # claude 2.1.321, ../claude-idle-real.txt). A footer alone is not idle. debounce_ms (default 1500) guards it.
+# An interrupt marker reads working only below the box's last rule line, at most 2 lines above its top rule,
+# or with no box; one further up is old transcript text (../claude-idle-stale.txt).
 name = "claude"
 program = "claude"
 has_prompts = true
@@ -12,8 +14,10 @@ waiting_for_approval = [
   '(?i)\d+\.\s*deny\s*\(esc\)',
 ]
 working = [
-  '(?i)esc to interrupt',
-  '(?i)ctrl\+c to interrupt',
+  '(?i)esc to interrupt[^\n]*\n(?:[^\n]*\n){0,2}─{20,}',
+  '(?i)esc to interrupt[^\n]*(?:\n[^─\n][^\n]*)*\z',
+  '(?i)ctrl\+c to interrupt[^\n]*\n(?:[^\n]*\n){0,2}─{20,}',
+  '(?i)ctrl\+c to interrupt[^\n]*(?:\n[^─\n][^\n]*)*\z',
   '^[✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆·•⏺▸▹∙⋅○●] \S+ing.*…',
   '(?i)\([^)]*\d[^)]*tokens\s*\)',
 ]

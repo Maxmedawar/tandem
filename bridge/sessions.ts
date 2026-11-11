@@ -29,17 +29,23 @@ import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import type { DrivableSession, EngineId } from './drivable.ts'
-import { buildEnabledEngines } from './engine-registry.ts'
+import { enabledEngineIds, loadedHarnesses } from './engine-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { readSessionProvenance } from './terminal-session.ts'
 
 const HOME = homedir()
 const SESSION_PREFIX = 'ccm-'
 
-/** Engine ids that are tmux-hosted (i.e. can appear as a ccm-* tmux session).
+/** Built-in engine ids that are tmux-hosted (i.e. can appear as a ccm-* tmux session).
  *  `hermes` is intentionally excluded — it is never tmux-hosted, so a tmux
  *  session claiming `@tandem_engine=hermes` is never valid provenance. */
 const TMUX_ENGINE_IDS = new Set<EngineId>(['claude', 'codex', 'shell'])
+
+/** A tmux engine tag is valid provenance when it names a tmux built-in or a loaded harness file. */
+function isTmuxEngineTag(tag: string): boolean {
+  return TMUX_ENGINE_IDS.has(tag) || loadedHarnesses().has(tag)
+}
+
 const SESSION_NAME_RE = /^[A-Za-z0-9._-]+$/
 const RELAY_NAME_RE = /^relay-/
 
@@ -168,7 +174,7 @@ interface LiveTmuxSession {
  * safely address. A raw `ccm-*` tmux session name is not sufficient proof —
  * anyone on the same OS user account could hand-create one (see
  * ./ownership.ts). A session is only included when its `@tandem_engine` tag is
- * a known tmux-hosted engine id AND its `@tandem_owner` tag exactly matches
+ * a known tmux-hosted engine id or a loaded harness name AND its `@tandem_owner` tag exactly matches
  * this installation's durable owner id (binding — Phase 2 correction E:
  * "Missing/mismatched tmux provenance must never appear as drivable").
  */
@@ -200,7 +206,7 @@ export async function listLiveTmuxSessions(
   for (const c of candidates) {
     const provenance = await provenanceReader(c.name)
     if (!provenance.owner || provenance.owner !== expectedOwner) continue
-    if (!TMUX_ENGINE_IDS.has(provenance.engine as EngineId)) continue
+    if (!isTmuxEngineTag(provenance.engine)) continue
     out.push({
       name: c.name,
       target: SESSION_PREFIX + c.name,
@@ -230,7 +236,8 @@ export async function listSessions(
 ): Promise<{ sessions: SessionInfo[] }> {
   const limit = opts.limit ?? 20
   const allowlist = opts.allowlist ?? buildAllowlist()
-  const enabledEngines = opts.enabledEngines ?? buildEnabledEngines()
+  // Built-ins plus the enabled harness names, so harness sessions list (U-R1A-11).
+  const enabledEngines = opts.enabledEngines ?? enabledEngineIds()
   const live = await listLiveTmuxSessions(opts.listingDependencies)
 
   // Registry entries are sessions this running bridge already admitted. This

@@ -29,7 +29,7 @@ import {
   dispatchSessionOp,
 } from "../bridge/fleet-dispatch.ts";
 import { createFleetRuntime, type FleetRuntime } from "../bridge/fleet-runtime.ts";
-import { KNOWN_ENGINE_IDS, loadedHarnesses } from "../bridge/engine-registry.ts";
+import { isBuiltinEngine, KNOWN_ENGINE_IDS, loadedHarnesses } from "../bridge/engine-registry.ts";
 import { ICON_MIME, ICON_DATA_URI } from "./icon.ts";
 
 /** Standing warning prepended to every tool description (real machine, real actions). */
@@ -90,8 +90,9 @@ export function buildMcpServer(fleet?: FleetRuntime): McpServer {
 
   /* ---- sessions ---- */
 
-  // The four built-in ids plus the name of each loaded harness file (harnesses/SCHEMA.md).
-  const harnessNames = [...loadedHarnesses().keys()];
+  // The four built-in ids plus the name of each loaded harness file (harnesses/SCHEMA.md);
+  // claude's own file keeps its built-in name, so it appears once.
+  const harnessNames = [...loadedHarnesses().keys()].filter((n) => !isBuiltinEngine(n));
   const engineIds = [...KNOWN_ENGINE_IDS, ...harnessNames] as [string, ...string[]];
   const harnessList = harnessNames.length > 0 ? harnessNames.join(", ") : "none loaded";
 
