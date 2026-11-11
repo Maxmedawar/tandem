@@ -322,6 +322,20 @@ describe("(d) the hook: due mail at a tool call or turn end, acked once, exit 0 
     }
   });
 
+  // Audit: a parent may hand the hook a non-blocking stdout; a short write must never be acked as delivered.
+  it.skipIf(!existsSync("/usr/bin/perl"))("10 messages of 16 KB into a non-blocking pipe read 1 s late: the whole JSON arrives, then the ack", () => {
+    const { cmds } = install("r1a25-d7");
+    const ids = Array.from({ length: 10 }, (_, i) => send("r1a25-d7", "fyi", `r1a25 d7 #${i} ${"z".repeat(16_000)}`));
+    const out = join(BOX, "d7.cmd");
+    writeFileSync(out, cmds.PostToolUse);
+    const nonblock = `/usr/bin/perl -MFcntl -e 'fcntl(STDOUT, F_SETFL, fcntl(STDOUT, F_GETFL, 0) | O_NONBLOCK); exec "sh", $ARGV[0]' '${out}' | (sleep 1; cat)`;
+    const r = run(nonblock, ev("PostToolUse"));
+    expect(r.status).toBe(0);
+    const text = context(r.stdout);
+    for (let i = 0; i < 10; i++) expect(text).toContain(`r1a25 d7 #${i} `);
+    expect(ids.every((id) => stateOf(id) === "delivered")).toBe(true);
+  });
+
   it.skipIf(!existsSync(NODE22))("the same hook under the bundled Node 22 delivers (skipped when that binary is absent)", () => {
     const { cmds } = install("r1a25-d6");
     const id = send("r1a25-d6", "fyi", "r1a25 d6 node22");

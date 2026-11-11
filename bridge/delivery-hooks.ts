@@ -198,7 +198,7 @@ async function runHook([event, name, db, dir]: string[]): Promise<void> {
           const out = event === 'Stop'
             ? { decision: 'block', reason: text }
             : { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: text } }
-          writeSync(1, `${JSON.stringify(out)}\n`)
+          writeAll(`${JSON.stringify(out)}\n`)
           printed = true
           box.ack(messages.map((m) => m.id))
         }
@@ -211,6 +211,23 @@ async function runHook([event, name, db, dir]: string[]): Promise<void> {
     const state = event === 'Stop' && !printed ? 'idle' : 'working'
     checkDir(dir)
     writeAtomic(turnFile(dir, name), JSON.stringify({ state, at: new Date().toISOString() }))
+  }
+}
+
+/**
+ * All of `text` to stdout before the ack: a non-blocking pipe takes a part (or EAGAIN) while its
+ * reader is behind, so the rest is tried again; the agent's hook timeout ends a reader that never reads.
+ */
+function writeAll(text: string): void {
+  const bytes = Buffer.from(text, 'utf8')
+  const pause = new Int32Array(new SharedArrayBuffer(4))
+  for (let done = 0; done < bytes.length;) {
+    try {
+      done += writeSync(1, bytes, done)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EAGAIN') throw e
+      Atomics.wait(pause, 0, 0, 5)
+    }
   }
 }
 
