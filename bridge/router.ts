@@ -67,7 +67,7 @@
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { validateModel, validateEffort, NeedsOwnerError, TerminalSession } from './terminal-session.ts'
-import { TmuxBusyError, type DrivableSession, type EngineId } from './drivable.ts'
+import { SendOutcomeUnknownError, TmuxBusyError, type DrivableSession, type EngineId } from './drivable.ts'
 import { TerminalAdapterSession } from './engines/terminal-adapter.ts'
 import { ADAPTERS, type AdapterOpenResult, type Harness } from './harness-registry.ts'
 import {
@@ -572,6 +572,13 @@ function tmuxBusy(route: string, name: string, session: DrivableSession): RpcRes
   return err(503, TMUX_BUSY)
 }
 
+/** U-R1A-19B: a send-keys call that ran and failed, or timed out: the keys may or may not have been
+ *  typed, so the answer is a 500 that invites no retry (commands never run twice). The session stays. */
+function sendOutcomeUnknown(route: string, name: string, session: DrivableSession): RpcResult {
+  audit({ route, name, engine: session.engine, denied: 'send-outcome-unknown' })
+  return err(500, 'send_outcome_unknown')
+}
+
 /** The 503 when tmux cannot say whether a tmux-hosted session is alive; gone and alive go on as before. */
 async function tmuxBusyCheck(route: string, name: string, session: DrivableSession): Promise<RpcResult | undefined> {
   if (!(session instanceof TerminalAdapterSession)) return undefined
@@ -668,6 +675,7 @@ async function handleSend(name: string, req: RpcRequest, from: InputFrom): Promi
     })
   } catch (e) {
     if (e instanceof TmuxBusyError) return tmuxBusy('POST /sessions/:name/send', name, session)
+    if (e instanceof SendOutcomeUnknownError) return sendOutcomeUnknown('POST /sessions/:name/send', name, session)
     return err(500, `send failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
@@ -715,6 +723,7 @@ async function handleInterrupt(name: string, from: InputFrom): Promise<RpcResult
     await session.interrupt()
   } catch (e) {
     if (e instanceof TmuxBusyError) return tmuxBusy('POST /sessions/:name/interrupt', name, session)
+    if (e instanceof SendOutcomeUnknownError) return sendOutcomeUnknown('POST /sessions/:name/interrupt', name, session)
     throw e
   }
   return ok({ ok: true, name, engine: session.engine })

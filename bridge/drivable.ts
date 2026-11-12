@@ -82,6 +82,17 @@ export class TmuxBusyError extends Error {
   }
 }
 
+/** A send-keys call that ran and then failed, or timed out (U-R1A-19B): its keys may or may not have
+ *  reached the pane, so nothing sends them again. The session is kept. */
+export class SendOutcomeUnknownError extends Error {
+  readonly tmuxFailure: 'call_failed' | 'timeout'
+  constructor(message: string, tmuxFailure: 'call_failed' | 'timeout') {
+    super(message)
+    this.name = 'SendOutcomeUnknownError'
+    this.tmuxFailure = tmuxFailure
+  }
+}
+
 /**
  * The one contract the router drives every session through, regardless of
  * engine. Required operations mirror the spec exactly; `attachHint` is a

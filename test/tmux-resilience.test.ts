@@ -11,7 +11,7 @@
  * fault, answers with it instead of running tmux; `h.after(argv, rc)` runs right after a real call.
  */
 import { describe, it, expect, afterEach, afterAll, beforeAll, vi } from "vitest";
-import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 // ---- SETUP START (BASE names only: copied to the (1b) base file) ----
@@ -44,7 +44,7 @@ const testEnv = await vi.hoisted(async () => {
   return { home, tandemHome, box, work };
 });
 
-type Fault = { code: number | null; stderr: string; killed?: boolean; signal?: string | null } | { stdout: string };
+type Fault = { code: number | string | null; stderr: string; killed?: boolean; signal?: string | null; deliver?: boolean } | { stdout: string };
 type Call = { argv: string[]; opts: Record<string, unknown>; rc?: unknown };
 const h = vi.hoisted(() => ({
   log: [] as { argv: string[]; opts: Record<string, unknown>; rc?: unknown }[],
@@ -62,7 +62,7 @@ vi.mock("node:child_process", async (importOriginal) => {
     const fault = h.fail?.(entry.argv) as Fault | undefined;
     if (fault) {
       entry.rc = "fault";
-      process.nextTick(() => {
+      const answer = () => {
         if ("stdout" in fault) return cb(null, fault.stdout, "");
         const e = Object.assign(new Error(`Command failed: tmux ${args.join(" ")}`), {
           code: fault.code,
@@ -70,7 +70,10 @@ vi.mock("node:child_process", async (importOriginal) => {
           signal: fault.signal ?? null,
         });
         cb(e, "", fault.stderr);
-      });
+      };
+      // `deliver`: the real tmux runs first (its keys reach the pane), then the call is reported as failed.
+      if ("deliver" in fault && fault.deliver) return real.execFile("tmux", args, opts as Parameters<typeof real.execFile>[2], answer);
+      process.nextTick(answer);
       return {};
     }
     return real.execFile("tmux", args, opts as Parameters<typeof real.execFile>[2], (e, so, se) => {
@@ -135,7 +138,7 @@ afterAll(async () => {
 // ---- SETUP END ----
 
 import { probeAlive, readLogPage, stripAnsi, tmux as runTmux, tmuxFailureKind, type TmuxExec } from "../bridge/terminal-session.ts";
-import { SessionGoneError, TmuxBusyError } from "../bridge/drivable.ts";
+import { SendOutcomeUnknownError, SessionGoneError, TmuxBusyError } from "../bridge/drivable.ts";
 import { listLiveTmuxSessions, listSessions } from "../bridge/sessions.ts";
 import { callerFolder, insideTandemSession } from "../bridge/caller-tokens.ts";
 import { engage, release } from "../bridge/kill-switch.ts";
@@ -432,8 +435,11 @@ describe("(19B) r routes on a registered session, passing failure: 503 tmux_busy
   const R = "r1a19b-r";
   let adapter: TerminalAdapterSession;
   const busy = { status: 503, body: { error: "tmux_busy" } };
+  const unknown = { status: 500, body: { error: "send_outcome_unknown" } };
+  let term: TerminalSession;
   beforeAll(async () => {
-    adapter = new TerminalAdapterSession("shell", await spawnShell(R));
+    term = await spawnShell(R);
+    adapter = new TerminalAdapterSession("shell", term);
     registerLive(adapter);
   }, 30_000);
   afterAll(() => unregisterLive(R));
@@ -476,9 +482,9 @@ describe("(19B) r routes on a registered session, passing failure: 503 tmux_busy
     expect(getLive(R)).toBe(adapter);
     expect(sendKeysSince(mark)).toEqual([]);
   }, 30_000);
-  it("(19B) r7 the probe passes, the first send-keys gets call_failed: owner send 503 (the catch path), still registered", async () => {
+  it("(19B) r7 the probe passes, the first send-keys runs and gets call_failed: owner send 500 send_outcome_unknown (never 503), still registered", async () => {
     h.fail = (a) => (cmdOf(a) === "send-keys" ? BUSY : undefined);
-    expect(await ownerReq("POST", `/sessions/${R}/send`, { text: "R7" })).toEqual(busy);
+    expect(await ownerReq("POST", `/sessions/${R}/send`, { text: "R7" })).toEqual(unknown);
     expect(getLive(R)).toBe(adapter);
   }, 30_000);
   it("(19B) r8 list-sessions answers empty, the session alive: owner send 200 and the pane shows the text", async () => {
@@ -486,6 +492,51 @@ describe("(19B) r routes on a registered session, passing failure: 503 tmux_busy
     const res = await ownerReq("POST", `/sessions/${R}/send`, { text: "echo R8_$((4+4))_OK" });
     expect(res.status).toBe(200);
     expect(paneOf(R)).toContain("R8_8_OK");
+  }, 30_000);
+  it("(19B) r9 a send-keys that delivers, then fails: 500 send_outcome_unknown, the text is in the pane once, nothing is sent again", async () => {
+    const mark = h.log.length;
+    const auditLines = () => readFileSync(join(testEnv.home, ".tandem", "bridge.log"), "utf8").split("\n").filter((l) => l.includes('"denied":"send-outcome-unknown"')).length;
+    const before = auditLines();
+    h.fail = (a) => (cmdOf(a) === "send-keys" && a.includes("R9_ONCE") ? { ...BUSY, deliver: true } : undefined);
+    expect(await ownerReq("POST", `/sessions/${R}/send`, { text: "R9_ONCE" })).toEqual(unknown);
+    h.fail = undefined;
+    expect(auditLines()).toBe(before + 1);
+    await sleep(300);
+    expect(sendKeysSince(mark).length).toBe(1);
+    expect(paneOf(R).match(/R9_ONCE/g)?.length).toBe(1);
+    expect(getLive(R)).toBe(adapter);
+    tx("send-keys", "-t", `=ccm-${R}:`, "C-u");
+  }, 30_000);
+  it("(19B) r10 a send-keys killed by the timeout: the same 500, one send-keys", async () => {
+    const mark = h.log.length;
+    h.fail = (a) => (cmdOf(a) === "send-keys" ? TIMEOUT : undefined);
+    expect(await ownerReq("POST", `/sessions/${R}/send`, { text: "R10" })).toEqual(unknown);
+    expect(sendKeysSince(mark).length).toBe(1);
+    expect(getLive(R)).toBe(adapter);
+  }, 30_000);
+  it("(19B) r11 a send-keys whose tmux never started (spawn EACCES): no key reached tmux, 503 tmux_busy", async () => {
+    h.fail = (a) => (cmdOf(a) === "send-keys" ? { code: "EACCES", stderr: "" } : undefined);
+    expect(await ownerReq("POST", `/sessions/${R}/send`, { text: "R11" })).toEqual(busy);
+    expect(await ownerReq("POST", `/sessions/${R}/interrupt`)).toEqual(busy);
+    expect(getLive(R)).toBe(adapter);
+  }, 30_000);
+  it("(19B) r12 owner interrupt, its send-keys run and get call_failed: 500 send_outcome_unknown, every key tried once", async () => {
+    const mark = h.log.length;
+    h.fail = (a) => (cmdOf(a) === "send-keys" ? BUSY : undefined);
+    expect(await ownerReq("POST", `/sessions/${R}/interrupt`)).toEqual(unknown);
+    expect(sendKeysSince(mark).length).toBe(2);
+    expect(getLive(R)).toBe(adapter);
+  }, 30_000);
+  it("(19B) r13 TerminalSession.send: a send-keys that ran and failed rejects SendOutcomeUnknownError, a gone session's send-keys error stays plain", async () => {
+    h.fail = (a) => (cmdOf(a) === "send-keys" ? BUSY : undefined);
+    const e = await term.send("R13").catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(SendOutcomeUnknownError);
+    expect((e as SendOutcomeUnknownError).tmuxFailure).toBe("call_failed");
+    expect(e).not.toBeInstanceOf(TmuxBusyError);
+    h.fail = (a) => (cmdOf(a) === "send-keys" ? { code: 1, stderr: "can't find session: ccm-x\n" } : undefined);
+    const g = await term.send("R13").catch((x: unknown) => x);
+    expect(g).not.toBeInstanceOf(SendOutcomeUnknownError);
+    expect(g).not.toBeInstanceOf(TmuxBusyError);
   }, 30_000);
 });
 

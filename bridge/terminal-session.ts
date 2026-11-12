@@ -57,7 +57,7 @@ import { chmod, open, mkdir } from 'node:fs/promises'
 import { cpus, homedir, loadavg } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { RE2JS } from 're2js'
-import { CLAUDE_DESCRIPTOR, SessionGoneError, TmuxBusyError, type EngineDescriptor } from './drivable.ts'
+import { CLAUDE_DESCRIPTOR, SendOutcomeUnknownError, SessionGoneError, TmuxBusyError, type EngineDescriptor } from './drivable.ts'
 import { HIGHLIGHTS, NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { KillSwitchError, killSwitchOn } from './kill-switch.ts'
@@ -457,6 +457,23 @@ async function scrubServerSecrets(): Promise<void> {
     await tmux(argv)
   } catch (e) {
     if (tmuxFailureKind(e) !== 'no_server') throw e
+  }
+}
+
+/**
+ * Every key Tandem presses in a session goes through here (U-R1A-19B). A tmux that never started (a
+ * spawn failure: an errno code) pressed nothing and stays a TmuxBusyError. One that ran and failed for
+ * a passing reason, or was killed by the timeout, may have pressed its keys: SendOutcomeUnknownError,
+ * so no caller is invited to send them again. A gone session's error is unchanged.
+ */
+async function sendKeys(args: string[]): Promise<void> {
+  try {
+    await tmux(['send-keys', ...args])
+  } catch (e) {
+    const code = (e as { code?: unknown }).code
+    const neverStarted = typeof code === 'string' && !code.startsWith('ERR_')
+    if (e instanceof TmuxBusyError && !neverStarted) throw Object.assign(new SendOutcomeUnknownError(e.message, e.tmuxFailure), { code })
+    throw e
   }
 }
 
@@ -1155,7 +1172,7 @@ export class TerminalSession {
     }
     // No dialog is answered while the kill switch is on: the start fails and spawn ends the session.
     if (killSwitchOn()) throw new KillSwitchError()
-    await tmux(['send-keys', '-t', this.tmuxTarget, key])
+    await sendKeys(['-t', this.tmuxTarget, key])
     watch.movedOn = pane
     return true
   }
@@ -1245,11 +1262,11 @@ export class TerminalSession {
     for (let i = 0; i < lines.length; i++) {
       if (i > 0) {
         // Dedicated literal newline = soft line break in the TUI input box.
-        await tmux(['send-keys', '-t', this.tmuxTarget, '-l', '--', '\n'])
+        await sendKeys(['-t', this.tmuxTarget, '-l', '--', '\n'])
       }
       const line = lines[i]
       if (line.length > 0) {
-        await tmux(['send-keys', '-t', this.tmuxTarget, '-l', '--', line])
+        await sendKeys(['-t', this.tmuxTarget, '-l', '--', line])
       }
     }
   }
@@ -1263,7 +1280,7 @@ export class TerminalSession {
     if ((await probeAlive(this._name)) === 'gone') throw new SessionGoneError(SESSION_PREFIX + this._name)
     await this.injectMultiline(text)
     await sleep(SUBMIT_PAUSE_MS)
-    await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+    await sendKeys(['-t', this.tmuxTarget, 'Enter'])
   }
 
   /**
@@ -1451,14 +1468,24 @@ export class TerminalSession {
   async interrupt(keys: readonly string[] = ['Escape', 'C-c']): Promise<void> {
     // U-R1A-19B: a gone session gets no key (as before, when its keys failed); a passing failure throws.
     if ((await probeAlive(this._name)) === 'gone') return
+    // Every key is still tried (best effort). Then: a key whose outcome is unknown throws that; when no
+    // key's tmux even started, nothing was pressed and its TmuxBusyError is thrown.
+    let unknown: SendOutcomeUnknownError | undefined
+    let neverStarted: TmuxBusyError | undefined
+    let started = 0
     for (const [i, key] of keys.entries()) {
       if (i > 0) await sleep(150)
       try {
-        await tmux(['send-keys', '-t', this.tmuxTarget, key])
-      } catch {
-        /* best effort: fall through to the next key */
+        await sendKeys(['-t', this.tmuxTarget, key])
+        started++
+      } catch (e) {
+        if (e instanceof SendOutcomeUnknownError) unknown ??= e
+        else if (e instanceof TmuxBusyError) neverStarted ??= e
+        else started++
       }
     }
+    if (unknown) throw unknown
+    if (neverStarted && started === 0) throw neverStarted
   }
 
   /** Kill the tmux session, revoke its caller token, then record its transcript pointer one last
