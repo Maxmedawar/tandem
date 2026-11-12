@@ -53,6 +53,8 @@ TOML. Every field not listed here is refused, at the top level and inside `state
 | `hook` | string | unset | the option that loads a per-session settings file Tandem writes, `^--[a-z][a-z0-9-]{0,31}$` |
 | `hook_format` | `"settings-file"` or `"config-overrides"` | `"settings-file"` | needs `hook`; how `hook` carries Tandem's hooks (see below) |
 | `mcp_env` | `"inherit"`, `"config-overrides"` or `"unknown"` | unset (unknown) | how the agent hands environment to a stdio MCP server it starts: `inherit` (its whole environment; verified for that agent and cited in its file), `config-overrides` (it filters the environment; Tandem registers its own server for the session through `hook`, which needs `hook_format = "config-overrides"`), `unknown` (not verified); see "How an agent's caller token reaches Tandem's MCP server" |
+| `usage` | `"statusline"` | unset | how Tandem reads the agent's account limits: `statusline` = its per-session settings file takes a `statusLine` command that receives its rate limits on stdin (bridge/usage/statusline-drop.ts; docs/USAGE.md); needs `delivery = "hook"` with the settings-file format, else `usage "statusline" needs a settings-file hook`; any other value: `bad usage: "statusline"` |
+| `account_dir` | string | unset | the agent's default account folder when its `account_env` variable is unset, starting `/` or `~/` (else `bad account_dir: must start with / or ~/`) |
 | `permission_hook` | boolean | `false` | |
 | `reports_context` | boolean | `false` | |
 | `adapter` | string | unset | a built-in adapter's name (`hermes`), built-in files only; such an agent has no program and the terminal fields go unused |

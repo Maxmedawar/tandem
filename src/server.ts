@@ -175,6 +175,7 @@ const hubLink = startConfiguredHubLink?.();
 // still restores the file.
 const { startKillSwitchGuard, runKillSwitchCommand } = await import("../bridge/kill-switch.ts");
 const killSwitchGuard = startKillSwitchGuard();
+const stopUsage = (await import("../bridge/usage/collector.ts")).startUsageCollector();
 let controlServer: { close(): Promise<void> } | undefined;
 try {
   const { startControlServer } = await import("../bridge/control-socket.ts");
@@ -195,6 +196,7 @@ async function shutdown(signal: string): Promise<void> {
     controlServer?.close() ?? Promise.resolve(),
   ]);
   killSwitchGuard.stop();
+  stopUsage();
   try {
     fabric?.close();
   } catch {

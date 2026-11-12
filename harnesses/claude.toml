@@ -16,6 +16,11 @@ hook = "--settings"
 # U-R1A-36C: Claude Code hands its own environment to a stdio MCP server it starts: under an empty
 # CLAUDE_CONFIG_DIR and HOME, `claude mcp list` started a probe server that saw TANDEM_CALLER_TOKEN.
 mcp_env = "inherit"
+# U-R1A-49: claude 2.1.321's statusLine input (binary text) carries `rate_limits` (five_hour,
+# seven_day: used_percentage 0-100, resets_at Unix seconds); a --settings statusLine runs for the
+# session (seen live). Its default account folder is ~/.claude when CLAUDE_CONFIG_DIR is unset.
+usage = "statusline"
+account_dir = "~/.claude"
 
 [states]
 waiting_for_approval = [

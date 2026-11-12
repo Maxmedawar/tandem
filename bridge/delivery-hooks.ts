@@ -23,11 +23,17 @@
  * message text and no path, to stderr. A message claimed but not printed stays delivering
  * (mailbox recover() makes it maybe_delivered at the next bridge start). While this computer's kill
  * switch is on (bridge/kill-switch.ts) a hook run hands nothing over and prints nothing.
+ *
+ * A harness file with `usage = "statusline"` (Claude, U-R1A-49) also gets a `statusLine` in that
+ * settings file: bridge/usage/statusline-drop.ts with the session's account name (bridge/usage/
+ * claude.ts), its drop folder `<TANDEM_HOME>/usage/<harness name>` and, when the account folder's
+ * own `settings.json` names a statusLine command, `<delivery dir>/<name>.statusline` holding that
+ * command, which the drop script runs so the owner's own line still shows (his `padding` is kept).
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Harness } from './harness-registry.ts'
 import { killSwitchOn } from './kill-switch.ts'
@@ -87,6 +93,39 @@ function writeAtomic(file: string, text: string): void {
 
 const settingsFile = (dir: string, name: string) => join(dir, `${name}.settings.json`)
 const turnFile = (dir: string, name: string) => join(dir, `${name}.turn`)
+const chainFile = (dir: string, name: string) => join(dir, `${name}.statusline`)
+
+/** What a session's statusLine is made of (bridge/usage/claude.ts usageSource). */
+export type UsageSource = (harness: Harness) => {
+  folder?: string
+  account: string
+  script: string
+  drops: string
+  own?: { command: string; padding?: number }
+}
+let usageSource: UsageSource | undefined
+/** Set by bridge/harness-registry.ts, so a hook run of this file loads no usage code. */
+export function setUsageSource(source: UsageSource): void {
+  usageSource = source
+}
+
+/**
+ * The statusLine for a `usage = "statusline"` harness and the owner's own command for the chain
+ * file (undefined: none, or it is the drop command itself). Throws, before anything is written,
+ * when a command part or the account folder holds `'` or a control character.
+ */
+function statusLinePlan(harness: Harness, name: string, dir: string, q: (s: string) => string) {
+  if (!usageSource) throw new Error('usage "statusline": the usage code is not loaded; refused')
+  const { folder, account, script, drops, own } = usageSource(harness)
+  const chain = chainFile(dir, name)
+  if ([process.execPath, script, account, drops, chain, folder ?? ''].some((p) => UNSAFE.test(p))) {
+    throw new Error('a statusLine command part holds a quote or a control character; refused')
+  }
+  const chained = own && !own.command.includes(basename(script)) ? own.command : undefined
+  const parts = [q(process.execPath), '--experimental-strip-types', q(script), q(account), q(drops), ...(chained === undefined ? [] : [q(chain)])]
+  const statusLine = { type: 'command', command: parts.join(' '), ...(own?.padding === undefined ? {} : { padding: own.padding }) }
+  return { statusLine, chained, chain }
+}
 
 /**
  * Writes `<delivery dir>/<name>.settings.json` for a hook harness and returns `[harness.hook, its
@@ -107,8 +146,9 @@ export function installHook(harness: Harness, name: string): string[] {
   if ([process.execPath, script, name, db, dir].some((p) => UNSAFE.test(p))) {
     throw new Error('a hook command part holds a quote or a control character; refused')
   }
-  deliveryDir()
   const q = (s: string) => `'${s}'`
+  const usage = harness.usage === 'statusline' && harness.hook_format !== 'config-overrides' ? statusLinePlan(harness, name, dir, q) : undefined
+  deliveryDir()
   const command = (event: string) => [q(process.execPath), '--experimental-strip-types', q(script), q(event), q(name), q(db), q(dir)].join(' ')
   if (harness.hook_format === 'config-overrides') {
     rmSync(turnFile(dir, name), { force: true })
@@ -121,9 +161,12 @@ export function installHook(harness: Harness, name: string): string[] {
       PostToolUse: [{ matcher: '*', hooks: hook('PostToolUse') }],
       Stop: [{ hooks: hook('Stop') }],
     },
+    ...(usage ? { statusLine: usage.statusLine } : {}),
   }
   const file = settingsFile(dir, name)
   rmSync(turnFile(dir, name), { force: true })
+  if (usage?.chained !== undefined) writeAtomic(usage.chain, usage.chained)
+  else rmSync(chainFile(dir, name), { force: true })
   writeAtomic(file, `${JSON.stringify(settings, null, 2)}\n`)
   return [harness.hook, file]
 }
@@ -200,12 +243,13 @@ export function mcpOverrides(harness: Harness): string[] {
   ]
 }
 
-/** Removes the session's settings and turn files. */
+/** Removes the session's settings, statusLine chain and turn files. */
 export function removeHook(name: string): void {
   if (!NAME.test(name)) return
   const dir = join(tandemHome(), 'delivery')
   checkDir(dir)
   rmSync(settingsFile(dir, name), { force: true })
+  rmSync(chainFile(dir, name), { force: true })
   rmSync(turnFile(dir, name), { force: true })
 }
 
