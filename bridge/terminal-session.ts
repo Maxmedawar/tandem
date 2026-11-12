@@ -328,8 +328,11 @@ export async function tmux(args: string[], exec: TmuxExec = execTmux): Promise<s
   // U-R1A-36F: a server keeps its starting client's argv for life, so a `-e` (a caller token) must never
   // start it: start it first with no token, every time (on a running server this only re-sets the option).
   // Stated cost: one idle Tandem tmux server stays up after the last session closes.
-  if (args[0] === 'new-session' && args.includes('-e')) await tmux(['start-server', ';', 'set-option', '-s', 'exit-empty', 'off'], exec)
-  const argv = ['-S', prepareTmuxSocket(), ...args]
+  // `-N` (never start a server) on the call that carries it: a server gone since the call above fails
+  // the open with "no server running" rather than being started by the token's own argv.
+  const carriesToken = args[0] === 'new-session' && args.includes('-e')
+  if (carriesToken) await tmux(['start-server', ';', 'set-option', '-s', 'exit-empty', 'off'], exec)
+  const argv = ['-S', prepareTmuxSocket(), ...(carriesToken ? ['-N'] : []), ...args]
   const env = { ...process.env }
   for (const name of BRIDGE_SECRET_SETTINGS) delete env[name]
   for (let attempt = 0; ; attempt++) {

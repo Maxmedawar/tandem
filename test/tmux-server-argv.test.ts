@@ -178,4 +178,25 @@ describe('U-R1A-36F the Tandem tmux server starts without a caller token', () =>
       revokeCallerToken('f36f')
     }
   }, 20_000)
+
+  it('(g) a server that dies between the start-server call and new-session is not restarted by the call that carries -e', async () => {
+    const sock = freshSocket()
+    const token = mintCallerToken('g36f', WORK)
+    try {
+      const log: string[][] = []
+      const racing: TmuxExec = (argv, opts, cb) => {
+        if (argv.includes('new-session')) {
+          raw(sock, ['kill-server'])
+          const gone = Date.now() + 5_000
+          while (serverPid(sock) > 0 && Date.now() < gone) spawnSync('sleep', ['0.05'])
+        }
+        spy(log)(argv, opts, cb)
+      }
+      await expect(tmux(['new-session', '-d', '-s', 'ccm-g36f', '-e', `TANDEM_CALLER_TOKEN=${token}`, '-c', WORK, 'cat'], racing)).rejects.toThrow(/no server running|error connecting to/)
+      expect(log.length).toBe(2)
+      expect(serverPid(sock)).toBe(0)
+    } finally {
+      revokeCallerToken('g36f')
+    }
+  }, 20_000)
 })
