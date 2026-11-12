@@ -170,6 +170,19 @@ try {
 
 const hubLink = startConfiguredHubLink?.();
 
+// The kill switch (U-R1A-35B): this runtime holds it on once seen, puts a removed file back, and
+// turns it off only for the owner over its own control socket. Without the socket the guard alone
+// still restores the file.
+const { startKillSwitchGuard, runKillSwitchCommand } = await import("../bridge/kill-switch.ts");
+const killSwitchGuard = startKillSwitchGuard();
+let controlServer: { close(): Promise<void> } | undefined;
+try {
+  const { startControlServer } = await import("../bridge/control-socket.ts");
+  controlServer = await startControlServer({ run: runKillSwitchCommand });
+} catch {
+  console.error("tandem: control socket unavailable; kill switch off goes by file only");
+}
+
 let shuttingDown = false;
 async function shutdown(signal: string): Promise<void> {
   if (shuttingDown) return;
@@ -179,7 +192,9 @@ async function shutdown(signal: string): Promise<void> {
     publicHandle?.close() ?? Promise.resolve(),
     privateHandle?.close() ?? Promise.resolve(),
     hubLink?.close() ?? Promise.resolve(),
+    controlServer?.close() ?? Promise.resolve(),
   ]);
+  killSwitchGuard.stop();
   try {
     fabric?.close();
   } catch {

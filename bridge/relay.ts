@@ -33,6 +33,7 @@ import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { TerminalSession, bypassPermissionsEnabled, readLogPage, type DialogAnswers } from './terminal-session.ts'
 import { loadedHarnesses } from './engine-registry.ts'
+import { KILL_SWITCH_ON, KillSwitchError, killSwitchOn } from './kill-switch.ts'
 import { harnessDescriptor } from './engines/harness-engine.ts'
 import { emitCompletion, emitEscalation, emitNeedsInput } from './events.ts'
 import {
@@ -340,13 +341,20 @@ async function sendRaced(
   | { kind: 'report'; report: string }
   | { kind: 'deadline' }
   | { kind: 'stopped' }
+  | { kind: 'killswitch' } // refused because the kill switch turned on: not a turn (U-R1A-35B)
 > {
   loop.active = session
   let watchdog: ReturnType<typeof setInterval> | undefined
   try {
     const sendP = session.send(text).then(
-      (r: { report: string }) => ({ kind: 'report' as const, report: r.report }),
-      (e: unknown) => ({ kind: 'report' as const, report: `(session error: ${e instanceof Error ? e.message : String(e)})` }),
+      (r: { report: string }) =>
+        // The refusal text counts as a refusal only while the switch reads on: a report that merely
+        // quotes it is a turn like any other (else its instruction would be sent again, uncounted).
+        r.report.includes(KILL_SWITCH_ON) && killSwitchOn() ? { kind: 'killswitch' as const } : { kind: 'report' as const, report: r.report },
+      (e: unknown) =>
+        e instanceof KillSwitchError || (e instanceof Error && e.message.includes(KILL_SWITCH_ON))
+          ? { kind: 'killswitch' as const }
+          : { kind: 'report' as const, report: `(session error: ${e instanceof Error ? e.message : String(e)})` },
     )
     const guard = new Promise<{ kind: 'deadline' } | { kind: 'stopped' }>((res) => {
       watchdog = setInterval(() => {
@@ -358,7 +366,7 @@ async function sendRaced(
       }, 500)
     })
     const winner = await Promise.race([sendP, guard])
-    if (winner.kind !== 'report') {
+    if (winner.kind === 'deadline' || winner.kind === 'stopped') {
       // We are abandoning this turn — stop the runaway TUI turn promptly.
       await session.interrupt().catch(() => {})
     }
@@ -366,6 +374,45 @@ async function sendRaced(
   } finally {
     if (watchdog) clearInterval(watchdog)
     loop.active = undefined
+  }
+}
+
+const PAUSE_POLL_MS = 1_000
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * While the kill switch is on and the loop runs, waits (polling every second) instead of sending
+ * (35 audit G2). The time waited moves loop.deadline later, so a pause never eats the task's wall
+ * clock, and it is not a turn; stop() ends the wait within one poll.
+ */
+async function waitWhileSwitchOn(loop: RelayLoop): Promise<void> {
+  if (!loop.running || !killSwitchOn()) return
+  const t0 = Date.now()
+  transcript(loop, 'SYS', 'paused: kill switch on')
+  while (loop.running && killSwitchOn()) await sleep(PAUSE_POLL_MS)
+  loop.deadline += Date.now() - t0
+  if (loop.running) transcript(loop, 'SYS', 'resumed')
+}
+
+/**
+ * sendRaced after any pause for the kill switch. A send refused because the switch turned on
+ * during it is not a turn: wait again, then send the SAME text; its refusal text never reaches the
+ * other session.
+ */
+async function sendHeld(
+  loop: RelayLoop,
+  session: TerminalSession,
+  text: string,
+): Promise<{ kind: 'report'; report: string } | { kind: 'deadline' } | { kind: 'stopped' }> {
+  for (;;) {
+    await waitWhileSwitchOn(loop)
+    if (!loop.running) return { kind: 'stopped' }
+    if (Date.now() >= loop.deadline) return { kind: 'deadline' }
+    const res = await sendRaced(loop, session, text)
+    if (res.kind !== 'killswitch') return res
+    // Refused while the switch reads off again already: one poll before the same text again (the
+    // deadline still runs, so a refusal that keeps coming cannot loop past it).
+    if (!killSwitchOn()) await sleep(PAUSE_POLL_MS)
   }
 }
 
@@ -434,7 +481,7 @@ async function runTask(loop: RelayLoop, firstLeadMessage: string, maxTurns: numb
 
     // --- LEAD turn: produce one instruction (or DONE/BLOCKED) ---
     transcript(loop, 'SYS', `--- turn ${turn}/${maxTurns} ---`)
-    const leadRes = await sendRaced(loop, loop.lead, leadMessage)
+    const leadRes = await sendHeld(loop, loop.lead, leadMessage)
     if (leadRes.kind === 'deadline') return { kind: 'deadline' }
     if (leadRes.kind === 'stopped') return { kind: 'stopped' }
     const leadInstruction = leadRes.report
@@ -475,7 +522,7 @@ async function runTask(loop: RelayLoop, firstLeadMessage: string, maxTurns: numb
     if (!loop.running) return { kind: 'stopped' }
 
     // --- WORKER turn: carry out the instruction, report back ---
-    const workerRes = await sendRaced(loop, loop.worker, leadInstruction)
+    const workerRes = await sendHeld(loop, loop.worker, leadInstruction)
     if (workerRes.kind === 'deadline') return { kind: 'deadline' }
     if (workerRes.kind === 'stopped') return { kind: 'stopped' }
     transcript(loop, 'WORKER', workerRes.report)
@@ -774,3 +821,7 @@ export function info(
     queued: readQueue(loop.memDir).length,
   }
 }
+
+// Test seam (U-R1A-35B): the turn loop driven with fake sessions.
+export { runTask as runTaskForTest }
+export type { RelayLoop }
