@@ -57,7 +57,7 @@ import { chmod, open, mkdir } from 'node:fs/promises'
 import { cpus, homedir, loadavg } from 'node:os'
 import { dirname, join, resolve, sep } from 'node:path'
 import { RE2JS } from 're2js'
-import { CLAUDE_DESCRIPTOR, type EngineDescriptor } from './drivable.ts'
+import { CLAUDE_DESCRIPTOR, SendOutcomeUnknownError, SessionGoneError, TmuxBusyError, type EngineDescriptor } from './drivable.ts'
 import { HIGHLIGHTS, NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { KillSwitchError, killSwitchOn } from './kill-switch.ts'
@@ -218,6 +218,20 @@ function pageEnd(buf: Buffer, len: number): number {
   return end
 }
 
+/** Where a page that reaches the file's end ends: before a lead byte whose character has fewer bytes
+ *  than it needs (it is still being written; read from there it comes whole once complete), else at
+ *  `len`. Bytes that can never complete a character (a lone continuation byte, 0xF8-0xFF, a lead
+ *  followed by a non-continuation byte) are returned as they are. */
+function wholeEnd(buf: Buffer, len: number): number {
+  for (let i = len - 1; i >= 0 && i >= len - 4; i--) {
+    const b = buf[i]!
+    if ((b & 0xc0) === 0x80) continue
+    const need = b >= 0xc0 && b <= 0xdf ? 2 : b >= 0xe0 && b <= 0xef ? 3 : b >= 0xf0 && b <= 0xf7 ? 4 : 1
+    return len - i < need ? i : len
+  }
+  return len
+}
+
 /**
  * One page of an append-only log from byte offset `from`: at most 65,536 bytes; when more bytes
  * remain it ends after its last newline (none: at a UTF-8 boundary); halved (same boundary rules,
@@ -240,13 +254,15 @@ export function readLogPage(path: string, from: number): { text: string; next: n
     const buf = Buffer.alloc(Math.min(LOG_PAGE_BYTES + 1, size - start))
     const read = readSync(fd, buf, 0, buf.length, start)
     let len = Math.min(read, LOG_PAGE_BYTES)
-    if (start + len < size) len = pageEnd(buf, len)
+    // At the file's end a character still being written is held back (U-R1A-19B): `end` stops before it.
+    const end = start + len < size ? size : start + wholeEnd(buf, len)
+    len = start + len < size ? pageEnd(buf, len) : end - start
     let text = buf.toString('utf8', 0, len)
     while (Buffer.byteLength(JSON.stringify(text)) > LOG_PAGE_JSON_BYTES) {
       len = pageEnd(buf, Math.max(1, Math.floor(len / 2)))
       text = buf.toString('utf8', 0, len)
     }
-    return { text, next: start + len, more: start + len < size }
+    return { text, next: start + len, more: start + len < end }
   } finally {
     closeSync(fd)
   }
@@ -310,7 +326,7 @@ function prepareTmuxSocket(): string {
 /** Runs one tmux process with argv only (execTmux below). Injectable so the retry is testable. */
 export type TmuxExec = (
   argv: string[],
-  opts: { maxBuffer: number; env: NodeJS.ProcessEnv },
+  opts: { maxBuffer: number; env: NodeJS.ProcessEnv; timeout: number; killSignal: NodeJS.Signals },
   cb: (error: (Error & { code?: unknown }) | null, stdout: string, stderr: string) => void,
 ) => void
 
@@ -321,6 +337,54 @@ const execTmux: TmuxExec = (argv, opts, cb) => {
 /** A tmux that failed to START with one of these is retried; one that ran and exited non-zero is not. */
 const TRANSIENT_SPAWN_CODES = new Set(['EAGAIN', 'ENOMEM', 'EMFILE', 'ENFILE'])
 const TMUX_RETRY_WAITS_MS = [50, 100, 150]
+/** U-R1A-19B: every tmux call is killed after this long (a timeout is a passing failure, never retried).
+ *  Synergy's runner has no timeout; this number is Tandem's own. */
+const TMUX_CALL_TIMEOUT_MS = 10_000
+/** has-session's one retry after a failed call, 40 ms later (Synergy's ALIVE_ENUM_RETRIES, ALIVE_ENUM_RETRY_MS). */
+const ALIVE_PROBE_RETRY_MS = 40
+
+/** How a tmux call failed (U-R1A-19B). no_server and no_session mean the session is not there; call_failed
+ *  (tmux ran, or could not start, while the server may be up) and timeout are passing failures. */
+export type TmuxFailureKind = 'no_server' | 'no_session' | 'call_failed' | 'timeout'
+
+/** Synergy's two patterns (bridge/tmux.ts), the texts tmux 3.4 and 3.6b print: no socket file is
+ *  `error connecting to <socket> (No such file or directory)`, a socket with nothing listening is
+ *  `no server running on <socket>`, server up and the exact session absent is `can't find session: <name>`.
+ *  Added (U-R1A-36F): list-panes on a server with zero sessions says `no current target`, no session.
+ *  Anything else (`server exited unexpectedly`, `lost server`, `duplicate session`, `error connecting to
+ *  <socket> (Permission denied)`) is call_failed. */
+const NO_SERVER = /no server running|error connecting to .* \(no such file or directory\)/i
+const NO_SESSION = /can't find session|session not found|no such session|no current target/i
+
+function textKind(text: string): TmuxFailureKind {
+  if (NO_SERVER.test(text)) return 'no_server'
+  if (NO_SESSION.test(text)) return 'no_session'
+  return 'call_failed'
+}
+
+/** The one classifier: the kind tmux() set on its error, else (an error that did not come from tmux(),
+ *  or a bare `{ stderr }`) its stderr or message read by the same patterns. */
+export function tmuxFailureKind(e: unknown): TmuxFailureKind {
+  const own = (e as { tmuxFailure?: unknown } | null | undefined)?.tmuxFailure
+  if (own === 'no_server' || own === 'no_session' || own === 'call_failed' || own === 'timeout') return own
+  return textKind(String((e as { stderr?: unknown } | null | undefined)?.stderr ?? (e as Error | null | undefined)?.message ?? e))
+}
+
+/** The error for one failed tmux call, kind decided once: a string code is a start failure (ENOENT, no
+ *  tmux program, is no_server; the rest call_failed), then a killed call is the timeout, then stderr.
+ *  The message is `tmux <cmd> failed: <stderr, else the code>`, never error.message (it holds the
+ *  whole argv, a caller token included). A passing failure is a TmuxBusyError. */
+function tmuxError(cmd: string, error: Error & { code?: unknown; killed?: unknown }, stderr: string): Error {
+  const code = error.code
+  const kind: TmuxFailureKind =
+    typeof code === 'string' ? (code === 'ENOENT' ? 'no_server' : 'call_failed') : error.killed === true ? 'timeout' : textKind(stderr)
+  const detail =
+    stderr ||
+    (typeof code === 'string' ? `spawn failed: ${code}` : kind === 'timeout' ? `timed out after ${TMUX_CALL_TIMEOUT_MS} ms` : `exited with code ${String(code)}`)
+  const message = `tmux ${cmd} failed: ${detail}`
+  const e = kind === 'call_failed' || kind === 'timeout' ? new TmuxBusyError(message, kind) : new Error(message)
+  return Object.assign(e, { code, tmuxFailure: kind })
+}
 
 /** The one tmux runner (bridge/sessions.ts uses it too): argv only, never a shell string;
  *  `-S <Tandem's socket>` first; the environment minus the bridge's secret settings. Resolves stdout. */
@@ -335,25 +399,30 @@ export async function tmux(args: string[], exec: TmuxExec = execTmux): Promise<s
  *  run once more, then the open fails; (3) success or failure, `exit-empty on` again, so the server
  *  still exits with its last session (no idle server is left). */
 async function startCarryingToken(args: string[], exec: TmuxExec): Promise<string> {
-  const noServer = /no server running|error connecting to/
-  let failed = false
+  const noServer = (e: unknown) => tmuxFailureKind(e) === 'no_server'
+  let created = false
   try {
     for (let attempt = 0; ; attempt++) {
       await runTmux(['start-server', ';', 'set-option', '-s', 'exit-empty', 'off'], exec)
       try {
-        return await runTmux(['-N', ...args], exec)
+        const out = await runTmux(['-N', ...args], exec)
+        created = true
+        return out
       } catch (e) {
-        if (attempt >= 1 || !noServer.test(String(e))) throw e
+        if (attempt >= 1 || !noServer(e)) throw e
       }
     }
-  } catch (e) {
-    failed = true
-    throw e
   } finally {
     try {
       await runTmux(['set-option', '-s', 'exit-empty', 'on'], exec)
     } catch (e) {
-      if (!failed && !noServer.test(String(e))) throw e
+      // Before a new session the open's own error is the one to report. U-R1A-19B: after a new session
+      // the session is kept (its token valid); the server only stays up after its last session.
+      if (created && !noServer(e)) {
+        process.stderr.write(
+          `[bridge] tmux: exit-empty on failed after a new session (${tmuxFailureKind(e)}); the tmux server stays up after its last session until the next open\n`,
+        )
+      }
     }
   }
 }
@@ -362,11 +431,12 @@ async function runTmux(args: string[], exec: TmuxExec): Promise<string> {
   const argv = ['-S', prepareTmuxSocket(), ...args]
   const env = { ...process.env }
   for (const name of BRIDGE_SECRET_SETTINGS) delete env[name]
+  const cmd = args[0] === '-N' ? args[1]! : args[0]!
   for (let attempt = 0; ; attempt++) {
     try {
       return await new Promise<string>((resolve, reject) => {
-        exec(argv, { maxBuffer: 16 * 1024 * 1024, env }, (error, stdout, stderr) => {
-          if (error) reject(Object.assign(new Error(`tmux ${args[0] === '-N' ? args[1] : args[0]} failed: ${stderr || error.message}`), { code: error.code }))
+        exec(argv, { maxBuffer: 16 * 1024 * 1024, env, timeout: TMUX_CALL_TIMEOUT_MS, killSignal: 'SIGKILL' }, (error, stdout, stderr) => {
+          if (error) reject(tmuxError(cmd, error, stderr))
           else resolve(stdout)
         })
       })
@@ -386,7 +456,44 @@ async function scrubServerSecrets(): Promise<void> {
   try {
     await tmux(argv)
   } catch (e) {
-    if (!/no server running|error connecting to/.test(String(e))) throw e
+    if (tmuxFailureKind(e) !== 'no_server') throw e
+  }
+}
+
+/**
+ * Every key Tandem presses in a session goes through here (U-R1A-19B). A tmux that never started (a
+ * spawn failure: an errno code) pressed nothing and stays a TmuxBusyError. One that ran and failed for
+ * a passing reason, or was killed by the timeout, may have pressed its keys: SendOutcomeUnknownError,
+ * so no caller is invited to send them again. A gone session's error is unchanged.
+ */
+async function sendKeys(args: string[]): Promise<void> {
+  try {
+    await tmux(['send-keys', ...args])
+  } catch (e) {
+    const code = (e as { code?: unknown }).code
+    const neverStarted = typeof code === 'string' && !code.startsWith('ERR_')
+    if (e instanceof TmuxBusyError && !neverStarted) throw Object.assign(new SendOutcomeUnknownError(e.message, e.tmuxFailure), { code })
+    throw e
+  }
+}
+
+/**
+ * U-R1A-19B: is ccm-<name> there? `has-session -t =ccm-<name>` (exact). Exit 0 is alive; no session or
+ * no server is gone (Tandem's own socket runs exit-empty on, so no server means no session; Synergy, on
+ * the shared default socket, read no server as passing). A failed call is asked once more 40 ms later,
+ * then throws its TmuxBusyError; a timeout throws at once. Any other failure (a refused socket folder)
+ * reads as gone, as before.
+ */
+export async function probeAlive(name: string, exec: TmuxExec = execTmux): Promise<'alive' | 'gone'> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await tmux(['has-session', '-t', sessionTarget(name)], exec)
+      return 'alive'
+    } catch (e) {
+      if (!(e instanceof TmuxBusyError)) return 'gone'
+      if (e.tmuxFailure === 'timeout' || attempt >= 1) throw e
+      await sleep(ALIVE_PROBE_RETRY_MS)
+    }
   }
 }
 
@@ -830,6 +937,7 @@ export class TerminalSession {
     // This session's own caller token, for its pane's process only (never the server's global
     // environment, never this process's env); a spawn that fails from here on revokes it.
     const callerToken = mintCallerToken(name, cwd)
+    let created = false
     try {
       await tmux([
         'new-session',
@@ -854,6 +962,7 @@ export class TerminalSession {
         '-u',
         'TANDEM_CALLER_TOKEN',
       ])
+      created = true
       // The switch turned on since the check above: engage() may have listed the sessions before this
       // one existed, so it is ended here (the file is written before the list, so one of the two sees it).
       if (killSwitchOn()) {
@@ -884,6 +993,11 @@ export class TerminalSession {
       }
       return session
     } catch (e) {
+      // U-R1A-19B: an open that fails once its session exists ends that session (its token goes below).
+      // Never after a failed new-session: a `duplicate session` is another session's.
+      // ponytail: a new-session killed by the timeout may leave a session this cannot tell is its own,
+      // and a kill-session that itself fails leaves the session; both stay as they are.
+      if (created) await tmux(['kill-session', '-t', sessionTarget(name)]).catch(() => {})
       try {
         revokeCallerToken(name)
       } catch {
@@ -954,9 +1068,9 @@ export class TerminalSession {
     return engine || undefined
   }
 
-  /** True if THIS session's tmux target is still alive. */
+  /** True if THIS session's tmux target is still alive (probeAlive); a passing failure throws TmuxBusyError. */
   async isAlive(): Promise<boolean> {
-    return TerminalSession.tmuxSessionExists(this._name)
+    return (await probeAlive(this._name)) === 'alive'
   }
 
   /** True if a turn is currently running. Marker-based engines check the pane
@@ -1058,7 +1172,7 @@ export class TerminalSession {
     }
     // No dialog is answered while the kill switch is on: the start fails and spawn ends the session.
     if (killSwitchOn()) throw new KillSwitchError()
-    await tmux(['send-keys', '-t', this.tmuxTarget, key])
+    await sendKeys(['-t', this.tmuxTarget, key])
     watch.movedOn = pane
     return true
   }
@@ -1148,11 +1262,11 @@ export class TerminalSession {
     for (let i = 0; i < lines.length; i++) {
       if (i > 0) {
         // Dedicated literal newline = soft line break in the TUI input box.
-        await tmux(['send-keys', '-t', this.tmuxTarget, '-l', '--', '\n'])
+        await sendKeys(['-t', this.tmuxTarget, '-l', '--', '\n'])
       }
       const line = lines[i]
       if (line.length > 0) {
-        await tmux(['send-keys', '-t', this.tmuxTarget, '-l', '--', line])
+        await sendKeys(['-t', this.tmuxTarget, '-l', '--', line])
       }
     }
   }
@@ -1162,9 +1276,11 @@ export class TerminalSession {
    *  mail notice and relay turn, and applyControls all come here). */
   private async typeAndSubmit(text: string): Promise<void> {
     if (killSwitchOn()) throw new KillSwitchError()
+    // U-R1A-19B: nothing is typed unless has-session says alive (a passing failure throws TmuxBusyError).
+    if ((await probeAlive(this._name)) === 'gone') throw new SessionGoneError(SESSION_PREFIX + this._name)
     await this.injectMultiline(text)
     await sleep(SUBMIT_PAUSE_MS)
-    await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
+    await sendKeys(['-t', this.tmuxTarget, 'Enter'])
   }
 
   /**
@@ -1350,14 +1466,26 @@ export class TerminalSession {
    *  TUI is wedged; Ctrl-C is the standard terminal interrupt for any foreground
    *  process. A harness session passes its file's `keys.interrupt`. */
   async interrupt(keys: readonly string[] = ['Escape', 'C-c']): Promise<void> {
+    // U-R1A-19B: a gone session gets no key (as before, when its keys failed); a passing failure throws.
+    if ((await probeAlive(this._name)) === 'gone') return
+    // Every key is still tried (best effort). Then: a key whose outcome is unknown throws that; when no
+    // key's tmux even started, nothing was pressed and its TmuxBusyError is thrown.
+    let unknown: SendOutcomeUnknownError | undefined
+    let neverStarted: TmuxBusyError | undefined
+    let started = 0
     for (const [i, key] of keys.entries()) {
       if (i > 0) await sleep(150)
       try {
-        await tmux(['send-keys', '-t', this.tmuxTarget, key])
-      } catch {
-        /* best effort: fall through to the next key */
+        await sendKeys(['-t', this.tmuxTarget, key])
+        started++
+      } catch (e) {
+        if (e instanceof SendOutcomeUnknownError) unknown ??= e
+        else if (e instanceof TmuxBusyError) neverStarted ??= e
+        else started++
       }
     }
+    if (unknown) throw unknown
+    if (neverStarted && started === 0) throw neverStarted
   }
 
   /** Kill the tmux session, revoke its caller token, then record its transcript pointer one last

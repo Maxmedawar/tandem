@@ -120,12 +120,15 @@ function createFile(path: string, text: string): boolean {
 
 /** The `ccm-` session names on Tandem's socket; no server is no sessions. */
 async function tandemSessions(): Promise<string[]> {
-  const { tmux } = await import('./terminal-session.ts')
+  const { tmux, tmuxFailureKind } = await import('./terminal-session.ts')
   try {
     const out = await tmux(['list-sessions', '-F', '#{session_name}'])
     return out.split('\n').filter((n) => n.startsWith(PREFIX))
   } catch (e) {
-    if (/no server running|error connecting to/.test(String(e))) return []
+    // U-R1A-19B's one classifier: a call that failed or timed out is never "nothing running". Nor is
+    // no tmux program to ask (the classifier's no_server): it throws here, as before 19B.
+    const kind = tmuxFailureKind(e)
+    if ((e as { code?: unknown }).code !== 'ENOENT' && (kind === 'no_server' || kind === 'no_session')) return []
     throw e
   }
 }
