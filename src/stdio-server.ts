@@ -101,16 +101,18 @@ const onWake = ({ names, room, eventId }: { names: string[]; room: string; event
 const fabric = await startFabric({ stdout: (value) => process.stderr.write(value), onWake });
 
 // No store here and a hub link set: the 11 fabric tools pass each call to the hub, which sends
-// it to the memory home. Nothing is stored on this computer.
+// it to the memory home. Nothing is stored on this computer. The link config is also kept for an
+// agent's signed commands to another computer (bridge/remote-command.ts, U-R1A-36B).
 let hubForward: FabricForward | undefined;
-if (!fabric && process.env.TANDEM_HUB_LINK_URL) {
+let hubLink: import("../bridge/hub-link.ts").HubLinkConfig | undefined;
+if (process.env.TANDEM_HUB_LINK_URL) {
   try {
     const { hubLinkConfigFromEnv } = await import("../bridge/hub-link.ts");
     const { fabricForward } = await import("../bridge/hub-rpc.ts");
-    const hubLinkConfig = hubLinkConfigFromEnv(process.env);
-    if (hubLinkConfig) hubForward = fabricForward(hubLinkConfig);
+    hubLink = hubLinkConfigFromEnv(process.env);
+    if (hubLink && !fabric) hubForward = fabricForward(hubLink);
   } catch {
-    console.error("tandem stdio: hub link configuration is invalid; memory tools are off");
+    if (!fabric) console.error("tandem stdio: hub link configuration is invalid; memory tools are off");
   }
 }
 // Out of the environment in every case, so no session this process starts inherits the secret.
@@ -156,7 +158,7 @@ try {
 } catch {
   console.error("transcripts: search unavailable; transcript tools are off");
 }
-const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence, transcripts);
+const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence, transcripts, hubLink);
 await server.connect(new StdioServerTransport());
 
 console.error("tandem MCP bridge ready on stdio (local, no token)");

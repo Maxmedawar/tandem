@@ -18,6 +18,10 @@
  * `/transcripts/get` with an object body answer its status and body; any other method or
  * path there is 404, any other body 400.
  *
+ * The path `/remote/command` is a signed command from another computer (U-R1A-36B): POST goes to
+ * ./remote-command.ts handleRemoteCommand with the parsed body (it decides by the envelope's
+ * signature and this computer's control_from, never by a hub header); any other method there is 404.
+ *
  * fabricForward is the other direction, for a computer with no store: its local MCP
  * servers pass each fabric call over HTTPS to the hub's link route, and the hub sends it
  * to the memory home. HTTPS, not a frame: the stdio server has no link socket.
@@ -35,6 +39,7 @@ import { openDeviceKey, verifySignature, type DeviceKey } from './device-keys.ts
 import { routeFabricRpc } from './fabric/rpc-router.ts'
 import type { LocalFabricHost } from './fabric/local-fabric-host.ts'
 import { deriveBridgeId, hubProofHeader, MAX_FRAME_BYTES } from './hub-link.ts'
+import { handleRemoteCommand } from './remote-command.ts'
 import { readRoster } from './roster.ts'
 import { route } from './router.ts'
 import type { TranscriptSearch } from './transcripts/search.ts'
@@ -270,6 +275,16 @@ async function transcriptRequest(frame: CcmHttpRequestFrame): Promise<CcmHttpRes
  */
 export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: LocalFabricHost, home?: MemoryHomeSigner): Promise<CcmHttpResponseFrame> {
   if (frame.path.startsWith('/transcripts/')) return transcriptRequest(frame)
+  if (frame.path === '/remote/command') {
+    if (frame.method.toUpperCase() !== 'POST') return response(frame.request_id, 404, { error: 'not found' })
+    try {
+      const result = await handleRemoteCommand(parseBody(frame.body_base64))
+      return response(frame.request_id, result.status, result.body)
+    } catch (error) {
+      process.stderr.write(`hub-rpc: remote command failed: ${error instanceof Error ? error.message : String(error)}\n`)
+      return response(frame.request_id, 500, { error: 'internal_error' })
+    }
+  }
   if (frame.path.startsWith('/fabric/')) {
     const body = parseBody(frame.body_base64)
     const challenges = frame.headers?.[MEMORY_CHALLENGE_HEADER]

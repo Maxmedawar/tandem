@@ -26,7 +26,11 @@
  * argument: the sender is `session:<name>` when this process serves an agent (an agent's own stdio
  * server, started with its session's caller token: bridge/caller-tokens.ts), else `owner`. Such an
  * agent reads only its own inbox, its room posts count as agent posts, and it acts on another
- * computer only through the hub (36B): a `device` other than local is refused here.
+ * computer only through the hub (36B): with the hub link config (`hubLink`), its open_session,
+ * send_to_session and close_session naming another computer go there as a command signed by this
+ * computer (bridge/remote-command.ts), run there only when that computer's limits file lists this
+ * one in control_from, and the tool answers that computer's body; it never interrupts there (403).
+ * With no hub link, or for list_sessions, such a `device` is refused here.
  * With a presence (bridge/presence.ts) who_is_up is added: read-only, who is up on this computer.
  * With a transcript search (bridge/transcripts/search.ts) transcript_search and transcript_get are
  * added: read-only, one project folder per call, secrets masked, every answer labelled untrusted.
@@ -45,6 +49,8 @@ import { createFleetRuntime, type FleetRuntime } from "../bridge/fleet-runtime.t
 import { routeFabricRpc } from "../bridge/fabric/rpc-router.ts";
 import type { LocalFabricHost } from "../bridge/fabric/local-fabric-host.ts";
 import type { FabricForward } from "../bridge/hub-rpc.ts";
+import type { HubLinkConfig } from "../bridge/hub-link.ts";
+import type { RemoteOp } from "../bridge/remote-command.ts";
 import { configureFabricTools, type FabricToolServer } from "./fabric/mcp-tools.ts";
 import { MailError, UNTRUSTED_MAIL, type Mailbox } from "../bridge/mailbox.ts";
 import type { Presence } from "../bridge/presence.ts";
@@ -88,6 +94,10 @@ function wrap(result: { status: number; body: unknown }) {
 }
 
 const AGENT_DEVICE = "device: an agent acts on another computer only through the hub, as that computer's control_from allows";
+const AGENT_INTERRUPT = "interrupt: an agent never interrupts a session";
+const REMOTE_OPTIONS = "model, effort and cursor: not taken for a session on another computer";
+/** A computer id (bridge/envelope.ts ID). */
+const COMPUTER = /^[a-z0-9._-]{1,64}$/;
 
 /**
  * Builds the MCP server. `fleet`, when supplied, is the SAME FleetRuntime the
@@ -98,7 +108,14 @@ const AGENT_DEVICE = "device: an agent acts on another computer only through the
  * resolution rules). The stdio transport uses a local-only runtime, so callers
  * get the same device-aware schema without opening a network listener.
  */
-export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricHost | FabricForward, mail?: Mailbox, presence?: Presence, transcripts?: TranscriptSearch): Promise<McpServer> {
+export async function buildMcpServer(
+  fleet?: FleetRuntime,
+  fabric?: LocalFabricHost | FabricForward,
+  mail?: Mailbox,
+  presence?: Presence,
+  transcripts?: TranscriptSearch,
+  hubLink?: Pick<HubLinkConfig, "url" | "token" | "bridgeId">,
+): Promise<McpServer> {
   const runtime = fleet ?? createFleetRuntime({});
   // The agent this process serves (set once at its start from a session's caller token), or
   // undefined for the owner's own client.
@@ -109,6 +126,23 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
     caller !== undefined &&
     ((device !== undefined && device !== "local") || (name !== undefined && name.includes(":") && name.slice(0, name.indexOf(":")) !== "local"));
   const refuseRemote = () => wrap({ status: 403, body: { error: AGENT_DEVICE } });
+  // The other computer an agent's call names and the session name there, or undefined: no hub link,
+  // this computer's own id, no computer id, or a "<device>:<name>" that names another device.
+  const remoteTarget = (name: string | undefined, device: string | undefined): { to: string; name?: string } | undefined => {
+    const at = name?.indexOf(":") ?? -1;
+    const prefix = at >= 0 ? name!.slice(0, at) : undefined;
+    const to = device !== undefined && device !== "local" ? device : prefix;
+    if (!hubLink || to === undefined || to === hubLink.bridgeId || !COMPUTER.test(to) || (prefix !== undefined && prefix !== to)) return undefined;
+    return { to, name: at >= 0 ? name!.slice(at + 1) : name };
+  };
+  // An agent's open, send or close on another computer: one signed command through the hub (36B).
+  const remoteCommand = async (to: string, op: RemoteOp, args: Record<string, string | undefined>) => {
+    const kept: Record<string, string> = {};
+    for (const [k, v] of Object.entries(args)) if (v !== undefined) kept[k] = v;
+    // Loaded here, not at the top: it reaches the hub link code, which a server with no hub (setup's copy) does not have.
+    const { sendRemoteCommand } = await import("../bridge/remote-command.ts");
+    return wrap(await sendRemoteCommand(hubLink!, { to, op, args: kept, caller: `session:${caller}` }));
+  };
   // `icons` rides in the server's implementation info (a self-contained data:
   // URI, so no public URL is needed). A spec-aware client renders the Tandem
   // agent mark next to the connector and its tools. The HTTP transport's
@@ -143,7 +177,12 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
       device: z.string().optional().describe(deviceParamDescription),
     },
     async ({ name, cwd, model, effort, engine, device }) => {
-      if (remote(name, device)) return refuseRemote();
+      if (remote(name, device)) {
+        const target = remoteTarget(name, device);
+        if (!target) return refuseRemote();
+        if (model !== undefined || effort !== undefined) return wrap({ status: 400, body: { error: REMOTE_OPTIONS } });
+        return remoteCommand(target.to, "open", { engine, name: target.name, cwd });
+      }
       return wrap(await dispatchOpenSession(runtime, { name, cwd, model, effort, engine, device }));
     },
   );
@@ -175,7 +214,12 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
       device: z.string().optional().describe(deviceParamDescription),
     },
     async ({ name, text, cursor, model, effort, device }) => {
-      if (remote(name, device)) return refuseRemote();
+      if (remote(name, device)) {
+        const target = remoteTarget(name, device);
+        if (!target) return refuseRemote();
+        if (model !== undefined || effort !== undefined || cursor !== undefined) return wrap({ status: 400, body: { error: REMOTE_OPTIONS } });
+        return remoteCommand(target.to, "send", { name: target.name, text: text ?? "" });
+      }
       return wrap(await dispatchSessionOp(runtime, "send", name, device, { text: text ?? "", cursor, model, effort }));
     },
   );
@@ -188,7 +232,7 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
       device: z.string().optional().describe(deviceParamDescription),
     },
     async ({ name, device }) => {
-      if (remote(name, device)) return refuseRemote();
+      if (remote(name, device)) return remoteTarget(name, device) ? wrap({ status: 403, body: { error: AGENT_INTERRUPT } }) : refuseRemote();
       return wrap(await dispatchSessionOp(runtime, "interrupt", name, device, {}));
     },
   );
@@ -201,7 +245,10 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
       device: z.string().optional().describe(deviceParamDescription),
     },
     async ({ name, device }) => {
-      if (remote(name, device)) return refuseRemote();
+      if (remote(name, device)) {
+        const target = remoteTarget(name, device);
+        return target ? remoteCommand(target.to, "close", { name: target.name }) : refuseRemote();
+      }
       return wrap(await dispatchSessionOp(runtime, "close", name, device, {}));
     },
   );
@@ -290,7 +337,7 @@ export async function buildMcpServer(fleet?: FleetRuntime, fabric?: LocalFabricH
     server.registerTool(
       "mail_send",
       {
-        description: `Leave a message in the inbox of a session, stored and never typed into the session; a session that is stopped finds it when it comes back. to is a session on this computer, or <computer>:<session> for a computer in this computer's roster: the hub carries it there, signed by this computer, and the outbox shows how it went. level fyi is due at the session's next tool call or when it is idle; ask waits until it is idle and expects a reply within replyByMinutes (1 to 1440, 10 if omitted); interrupt needs the sender listed in the limits file's interrupt_from. The receiving computer refuses ask from another computer, and takes interrupt only when its own interrupt_from lists machine:<this computer's id>/owner. ${whoSends} Returns { id, to, level, state, sentAt, replyBy? } or { error }. ${untrusted}`,
+        description: `Leave a message in the inbox of a session, stored and never typed into the session; a session that is stopped finds it when it comes back. to is a session on this computer, or <computer>:<session> for a computer in this computer's roster: the hub carries it there, signed by this computer, and the outbox shows how it went. level fyi is due at the session's next tool call or when it is idle; ask waits until it is idle and expects a reply within replyByMinutes (1 to 1440, 10 if omitted); interrupt needs the sender listed in the limits file's interrupt_from. The receiving computer takes ask from another computer only when its own limits file's control_from lists this computer, and interrupt only when its own interrupt_from lists the exact sender (machine:<this computer's id>/owner or machine:<this computer's id>/session:<name>). ${whoSends} Returns { id, to, level, state, sentAt, replyBy? } or { error }. ${untrusted}`,
         // Loose, so a sender passed as an argument is refused by name instead of silently dropped.
         inputSchema: z.looseObject({
           to: z.string().describe("A session name on this computer (A-Z a-z 0-9 . _ -), or <computer>:<session> for a computer in this computer's roster."),

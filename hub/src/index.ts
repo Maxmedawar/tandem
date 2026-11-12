@@ -27,6 +27,10 @@
  *     already bound): POST /__tunnel/mail/put, /__tunnel/mail/take and /__tunnel/presence. Each
  *     answers only a computer of the roster the hub holds, and the sender is always the computer
  *     the proof names. The hub never parses or vouches for mail or presence text.
+ *   - The command route (U-R1A-36B; same secret and proof, POST only, from an id already bound):
+ *     POST /__tunnel/command `{ to, envelope }` from a roster computer to another one, passed
+ *     unread as one request frame to `to`'s bridge, which checks the envelope's signature and its
+ *     own limits file's control_from before it runs anything. The hub never vouches for a command.
  *   - GET / is an unauthenticated health check.
  *
  * The provider routes: anything starting with the API routes (/mcp, /sse) and
@@ -274,13 +278,14 @@ async function handleRoster(request: Request, env: HandlerEnv, url: URL, route: 
   }
 }
 
-type MailRoute = { kind: 'put' | 'take' | 'presence'; cap: number; invalid: string }
+type MailRoute = { kind: 'put' | 'take' | 'presence' | 'command'; cap: number; invalid: string }
 
-/** The mail and presence routes (POST only): the body cap of each (bytes) and its 400 word. */
+/** The mail, presence and command routes (POST only): the body cap of each (bytes) and its 400 word. */
 const MAIL_ROUTES = new Map<string, MailRoute>([
   ['/__tunnel/mail/put', { kind: 'put', cap: WS_MAX_FRAME_BYTES, invalid: 'mail_invalid' }],
   ['/__tunnel/mail/take', { kind: 'take', cap: 1024, invalid: 'mail_invalid' }],
   ['/__tunnel/presence', { kind: 'presence', cap: WS_MAX_FRAME_BYTES, invalid: 'presence_invalid' }],
+  ['/__tunnel/command', { kind: 'command', cap: 65_536, invalid: 'command_invalid' }],
 ])
 /** A computer id (bridge/envelope.ts ID). */
 const COMPUTER_ID = /^[a-z0-9._-]{1,64}$/
@@ -301,7 +306,9 @@ function computerIds(to: unknown, sender: string, min: number): to is string[] {
  * a missing or wrong bearer 401, a body over the route's cap 413, then the device proof over these
  * exact bytes from an id already bound (a refusal as checkDevice says), then a body that is not
  * exactly the route's keys and types 400 with the route's word; then the TunnelDO's answer for the
- * computer the proof names: 403 not_in_roster unless it and every `to` are in the roster.
+ * computer the proof names: 403 not_in_roster unless it and every `to` are in the roster. A command
+ * (exactly `{ to, envelope }`, two strings) to the sender itself is 403 not_in_roster too; its answer
+ * is the receiving bridge's status and body as they come (TunnelDO.remoteCommand).
  */
 async function handleMail(request: Request, env: HandlerEnv, url: URL, route: MailRoute): Promise<Response> {
   if (url.searchParams.has('token')) return new Response('unauthorized', { status: 401 })
@@ -324,6 +331,12 @@ async function handleMail(request: Request, env: HandlerEnv, url: URL, route: Ma
   const { id, key } = device
   const invalid = jsonResponse({ error: route.invalid }, 400)
   let answer: { status: number; body: unknown }
+  if (route.kind === 'command') {
+    const body = bodyOf(bytes, { to: 'string', envelope: 'string' })
+    if (!body) return invalid
+    const sent = await stub.remoteCommand(id, key, body.to as string, body.envelope as string)
+    return new Response(sent.body, { status: sent.status, headers: { 'content-type': 'application/json' } })
+  }
   if (route.kind === 'put') {
     const body = bodyOf(bytes, { id: 'string', to: 'object', body: 'string' })
     if (!body || !MESSAGE_ID.test(body.id as string) || !computerIds(body.to, id, 1)) return invalid

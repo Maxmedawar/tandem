@@ -2,7 +2,9 @@
  * limits.ts: the limits file, the ceiling on what sessions may start on this computer for the
  * fields `folders`, `agents`, `shell` and `permission_skip` (plan section 3), who may send mail at
  * the Interrupt level, `interrupt_from` (bridge/mailbox.ts; absent means nobody), and the most
- * sessions at once, `session_cap` (bridge/kill-switch.ts reserveSessions; absent means 12). The
+ * sessions at once, `session_cap` (bridge/kill-switch.ts reserveSessions; absent means 12), and
+ * which other computers may open, type into and close sessions here or send Ask mail, `control_from`
+ * (bridge/remote-command.ts, bridge/mailbox.ts; absent means none: they send only FYI). The
  * bridge is the only place limits are enforced, and nothing remote can widen them.
  *
  * The file is `$TANDEM_HOME/limits.toml` when TANDEM_HOME is set, else `~/.tandem/limits.toml`,
@@ -45,11 +47,15 @@ export interface LimitsSnapshot {
   interrupt_from?: string[]
   /** The most sessions open at once on this computer, 1 to 100; 12 when absent, and when the file is missing or refused. */
   session_cap: number
+  /** Computer ids whose signed commands run here and whose Ask mail is stored here; [] when absent, missing or refused. */
+  control_from: string[]
   /** Why nothing is allowed (missing or refused file). */
   problem?: string
 }
 
-const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap']
+const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap', 'control_from']
+/** A computer id (bridge/envelope.ts ID). */
+const COMPUTER_ID = /^[a-z0-9._-]{1,64}$/
 const DEFAULT_SESSION_CAP = 12
 const AGENT_FIELDS = ['program', 'sha256']
 /** A harness name (harness-registry.ts). */
@@ -179,12 +185,17 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
   if (typeof session_cap !== 'number' || !Number.isInteger(session_cap) || session_cap < 1 || session_cap > 100) {
     fail('wrong type for session_cap: expected a whole number 1 to 100')
   }
+  const control_from = raw.control_from ?? []
+  if (!Array.isArray(control_from) || !control_from.every((id) => typeof id === 'string' && COMPUTER_ID.test(id)) || new Set(control_from).size !== control_from.length) {
+    fail('wrong type for control_from: expected an array of computer ids')
+  }
   const from = raw.interrupt_from
-  if (from === undefined) return { folders, shell: shell as boolean, permission_skip, agents, session_cap: session_cap as number }
+  const base = { folders, shell: shell as boolean, permission_skip, agents, session_cap: session_cap as number, control_from: control_from as string[] }
+  if (from === undefined) return base
   if (!Array.isArray(from) || !from.every(isInterruptSender)) {
     fail('wrong type for interrupt_from: expected an array of "owner", "session:<name>", "machine:<id>/owner" or "machine:<id>/session:<name>"')
   }
-  return { folders, shell: shell as boolean, permission_skip, agents, interrupt_from: from as string[], session_cap: session_cap as number }
+  return { ...base, interrupt_from: from as string[] }
 }
 
 /** Reads and checks the file; a missing or refused one allows nothing and says so on stderr. */
@@ -200,7 +211,7 @@ function readLimits(): LimitsSnapshot {
     }
   }
   process.stderr.write(`limits: ${problem}; nothing is allowed\n`)
-  return { folders: [], shell: false, permission_skip: [], agents: {}, digest: disk.digest, problem, session_cap: DEFAULT_SESSION_CAP }
+  return { folders: [], shell: false, permission_skip: [], agents: {}, digest: disk.digest, problem, session_cap: DEFAULT_SESSION_CAP, control_from: [] }
 }
 
 let snapshot = readLimits()
@@ -211,11 +222,12 @@ export function applyLimits(): void {
   snapshot = readLimits()
 }
 
-/** A copy of the applied snapshot. `session_cap` is on it but not enumerable, so the snapshot's
- *  listed fields (and every reader comparing or printing them) stay as they were before the cap. */
+/** A copy of the applied snapshot. `session_cap` and `control_from` are on it but not enumerable, so
+ *  the snapshot's listed fields (and every reader comparing or printing them) stay as they were before them. */
 export function limitsSnapshot(): LimitsSnapshot {
   const copy = structuredClone(snapshot)
   Object.defineProperty(copy, 'session_cap', { value: snapshot.session_cap, enumerable: false, writable: true, configurable: true })
+  Object.defineProperty(copy, 'control_from', { value: [...snapshot.control_from], enumerable: false, writable: true, configurable: true })
   return copy
 }
 
