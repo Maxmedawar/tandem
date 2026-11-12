@@ -55,7 +55,7 @@ const { DatabaseSync } = (await import('node:module')).createRequire(import.meta
 vi.setConfig({ testTimeout: 30_000 })
 
 const VERSION = (JSON.parse(readFileSync(join(repo, 'package.json'), 'utf8')) as { version: string }).version
-const DOC_KEYS = ['statusVersion', 'version', 'at', 'runtime', 'killSwitch', 'computers']
+const DOC_KEYS = ['statusVersion', 'version', 'at', 'runtime', 'killSwitch', 'computers', 'accounts']
 const COMPUTER_KEYS = ['computer', 'self', 'at', 'ageMs', 'stale', 'counts', 'sessions', 'more']
 const SESSION_KEYS = ['name', 'engine', 'project', 'state', 'stateAt', 'ageMs']
 const COUNT_KEYS = ['working', 'idle', 'waiting_for_approval', 'unknown']
