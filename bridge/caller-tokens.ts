@@ -168,7 +168,7 @@ async function programNameOf(pid: number): Promise<string> {
 /**
  * The Tandem session (its name without `ccm-`) whose pane process is `pid` or one of its parents
  * (stopping at pid 1 or a repeat), else undefined. The panes are read once from Tandem's socket
- * (bridge/terminal-session.ts tmux()); no server running is no session. Fails closed (throws) when
+ * (bridge/terminal-session.ts tmux()); no server running, or a server with no session, is no session. Fails closed (throws) when
  * it cannot tell: a parent id that cannot be read, a refused socket folder, more than 64 parents,
  * or no tmux program to ask while one of the parents is a tmux server (an agent that starts this
  * with a bare PATH is not the owner). The socket is the one TANDEM_HOME names for THIS process: a
@@ -180,7 +180,8 @@ export async function insideTandemSession(pid: number): Promise<string | undefin
   try {
     listed = await tmux(['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'])
   } catch (e) {
-    if (/no server running|error connecting to/.test(String(e))) return undefined
+    // A server with no session answers `no current target` (tmux 3.4 and 3.6b): no session either (36F G1).
+    if (/no server running|error connecting to|no current target/.test(String(e))) return undefined
     if ((e as { code?: unknown }).code !== 'ENOENT') throw e
   }
   const panes = new Map<number, string>()
