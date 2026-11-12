@@ -192,12 +192,14 @@ describe("(50) usage: Codex accounts report their limits from the tail of their 
     const realOpen = fs.openSync;
     const realReadFile = fs.readFileSync;
     const realRead = fs.readSync;
-    const o = vi.spyOn(fs, "openSync").mockImplementation(((p: any, ...rest: any[]) => { const fd = (realOpen as any)(p, ...rest); opened.push(String(p)); fds.set(fd, String(p)); return fd; }) as any);
+    // Each path is recorded before the real call, so an open refused by mode 0000 (EACCES, caught per folder) is still seen.
+    const o = vi.spyOn(fs, "openSync").mockImplementation(((p: any, ...rest: any[]) => { opened.push(String(p)); const fd = (realOpen as any)(p, ...rest); fds.set(fd, String(p)); return fd; }) as any);
     const rf = vi.spyOn(fs, "readFileSync").mockImplementation(((p: any, ...rest: any[]) => { opened.push(typeof p === "number" ? fds.get(p) ?? `fd:${p}` : String(p)); return (realReadFile as any)(p, ...rest); }) as any);
     const rs = vi.spyOn(fs, "readSync").mockImplementation(((fd: any, ...rest: any[]) => { opened.push(fds.get(fd) ?? `fd:${fd}`); return (realRead as any)(fd, ...rest); }) as any);
     syncBuiltinESMExports();
+    let got: any[] = [];
     try {
-      codexReadings(h, NOW);
+      got = codexReadings(h, NOW);
       collectUsage(NOW, [h]);
       readUsage(NOW);
     } finally {
@@ -206,6 +208,7 @@ describe("(50) usage: Codex accounts report their limits from the tail of their 
       rs.mockRestore();
       syncBuiltinESMExports();
     }
+    expect(got.map((r: any) => r.account).sort()).toEqual(["codex", "codex-b"]);
     expect(opened.some((p) => p.startsWith(join(DEFAULT, "sessions") + "/"))).toBe(true);
     expect(opened.some((p) => p.startsWith(join(B, "sessions") + "/"))).toBe(true);
     for (const p of opened) {
@@ -348,5 +351,17 @@ describe("(50) usage: Codex accounts report their limits from the tail of their 
     const f3 = folder("m3-folder");
     rollout(f3, "2026/11/12/rollout-m3.jsonl", [rlLine(limits(win(26, 10080), null), null)], S(NOW + 120_000));
     expect(readCodexFolder(f3, "m3", NOW)).toBeUndefined();
+  });
+
+  it("(50) n a reader error for one folder does not stop the others: one stderr line with agent, account and error code, no path", () => {
+    const f = folder("n-folder");
+    rollout(f, "2026/11/12/rollout-n.jsonl", [rlLine(limits(win(17, 10080), null))]);
+    // A path past PATH_MAX (mac 1024, Linux 4096): lstat fails with ENAMETOOLONG, as root too.
+    const long = join(BOX, ...Array.from({ length: 25 }, () => "n".repeat(200)));
+    usageToml([{ name: "codex-long", folder: long }, { name: "codex-n", folder: f }]);
+    const h = { ...codex(), name: "codex", account_dir: f };
+    const { out, lines } = stderrOf(() => codexReadings(h, NOW));
+    expect(out.map((r: any) => `${r.account}:${r.seven?.used}`)).toEqual(["codex-n:17"]);
+    expect(lines).toEqual(["usage: codex account codex-long not read (ENAMETOOLONG)"]);
   });
 });
