@@ -1,7 +1,8 @@
 /**
  * control-socket.ts: the one thing the owner tells a running runtime to do over its own socket
- * (U-R1A-35B): turn the kill switch off, or say how it stands; and `status` (U-R1A-40-R1), its own
- * sessions' states for `tandem status`.
+ * (U-R1A-35B): turn the kill switch off, or say how it stands; `status` (U-R1A-40-R1), its own
+ * sessions' states for `tandem status`; and `mail_send`, `mail_read` and `who` (U-R1A-41), which
+ * `tandem mail` asks of the runtime's mailbox and presence (bridge/mail-cli.ts).
  *
  * Copied from the earlier product's bridge/control-socket.ts (synergy 8fc22da, the file the
  * installed 0.1.0 runtime runs): newline-delimited JSON over a unix socket, the socket 0600 in a
@@ -43,6 +44,16 @@ export type ControlCommand =
  */
 export type StatusCommand = { readonly op: 'status' }
 
+/**
+ * `tandem mail` (U-R1A-41), answered by startControlServer's `mail` handler. Each carries the facts
+ * the runtime works the caller out from (bridge/mail-cli.ts runtimeMail), never a sender name.
+ */
+type CallerFacts = { readonly pid: number; readonly caller_token?: string }
+export type MailCommand =
+  | (CallerFacts & { readonly op: 'mail_send'; readonly to: string; readonly level: string; readonly text: string })
+  | (CallerFacts & { readonly op: 'mail_read'; readonly name?: string; readonly peek?: boolean; readonly limit?: number })
+  | (CallerFacts & { readonly op: 'who'; readonly all?: boolean })
+
 export interface ControlResult {
   readonly ok: boolean
   /** A short reason, never a path, a token, or a pid. */
@@ -60,15 +71,35 @@ export function controlSocketPath(): string {
 }
 
 const OFF_KEYS = new Set(['op', 'pid', 'caller_token', 'tmux'])
+/** Each mail op's keys: required ones with their type, then optional ones. */
+const MAIL_KEYS: Record<string, { need: Record<string, string>; may: Record<string, string> }> = {
+  mail_send: { need: { pid: 'number', to: 'string', level: 'string', text: 'string' }, may: { caller_token: 'string' } },
+  mail_read: { need: { pid: 'number' }, may: { caller_token: 'string', name: 'string', peek: 'boolean', limit: 'number' } },
+  who: { need: { pid: 'number' }, may: { caller_token: 'string', all: 'boolean' } },
+}
+
+function parseMailCommand(record: Record<string, unknown>): MailCommand | 'malformed' {
+  const { need, may } = MAIL_KEYS[record.op as string]!
+  for (const [key, value] of Object.entries(record)) {
+    if (key === 'op') continue
+    const type = Object.hasOwn(need, key) ? need[key] : Object.hasOwn(may, key) ? may[key] : undefined
+    if (type === undefined || typeof value !== type) return 'malformed'
+  }
+  if (Object.keys(need).some((key) => !Object.hasOwn(record, key))) return 'malformed'
+  const pid = record.pid as number
+  if (!Number.isSafeInteger(pid) || pid <= 1) return 'malformed'
+  return { ...record } as MailCommand
+}
 
 /**
  * Parses one command. Anything the runtime does not implement is refused by name rather than
  * ignored, so a caller learns that its command did not run; a known command with any other key or
  * type is `malformed`.
  */
-export function parseControlCommand(value: unknown): ControlCommand | StatusCommand | string {
+export function parseControlCommand(value: unknown): ControlCommand | StatusCommand | MailCommand | string {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return 'malformed'
   const record = value as Record<string, unknown>
+  if (typeof record.op === 'string' && Object.hasOwn(MAIL_KEYS, record.op)) return parseMailCommand(record)
   if (record.op === 'kill_switch_status') return Object.keys(record).length === 1 ? { op: 'kill_switch_status' } : 'malformed'
   if (record.op === 'status') return Object.keys(record).length === 1 ? { op: 'status' } : 'malformed'
   if (record.op !== 'kill_switch_off') return 'unknown_command'
@@ -99,6 +130,8 @@ export async function startControlServer(options: {
   readonly run: (command: ControlCommand) => Promise<ControlResult>
   /** Answers `status`; without it `status` answers `unavailable` (this runtime knows the command). */
   readonly status?: () => Promise<ControlResult>
+  /** Answers mail_send, mail_read and who; without it they answer `unknown_command` (an older runtime). */
+  readonly mail?: (command: MailCommand) => Promise<ControlResult>
   readonly socketPath?: string
   readonly log?: (message: string) => void
 }): Promise<ControlServer> {
@@ -125,7 +158,7 @@ export async function startControlServer(options: {
   const server: Server = createServer((connection) => {
     open.add(connection)
     connection.on('close', () => open.delete(connection))
-    handle(connection, options.run, options.status, options.log)
+    handle(connection, options.run, options.status, options.mail, options.log)
   })
   // One command at a time is more than this surface needs; the bound exists so
   // a caller cannot hold connections open faster than they are answered.
@@ -152,6 +185,7 @@ function handle(
   connection: Socket,
   run: (command: ControlCommand) => Promise<ControlResult>,
   status: (() => Promise<ControlResult>) | undefined,
+  mail: ((command: MailCommand) => Promise<ControlResult>) | undefined,
   log?: (message: string) => void,
 ): void {
   connection.setTimeout(CONNECTION_TIMEOUT_MS, () => connection.destroy())
@@ -195,7 +229,10 @@ function handle(
       answer({ ok: false, error: command })
       return
     }
-    const job = command.op !== 'status' ? run(command) : status ? status() : Promise.resolve({ ok: false, error: 'unavailable' })
+    let job: Promise<ControlResult>
+    if (command.op === 'status') job = status ? status() : Promise.resolve({ ok: false, error: 'unavailable' })
+    else if (command.op === 'kill_switch_off' || command.op === 'kill_switch_status') job = run(command)
+    else job = mail ? mail(command) : Promise.resolve({ ok: false, error: 'unknown_command' })
     void job
       .then(answer)
       .catch(() => {
@@ -208,12 +245,14 @@ function handle(
 
 /**
  * Sends one command to a running runtime. A failure rejects with the socket's error code
- * (ENOENT: no socket file, ECONNREFUSED: nobody listens) or ETIMEDOUT when no answer comes in time.
+ * (ENOENT: no socket file, ECONNREFUSED: nobody listens) or ETIMEDOUT when no answer comes in time;
+ * with `maxReplyBytes`, EMSGSIZE as soon as the answer grows past it (nothing more is read).
  */
 export async function sendControlCommand(
   socketPath: string,
-  command: ControlCommand | StatusCommand,
+  command: ControlCommand | StatusCommand | MailCommand,
   timeoutMs = 10_000,
+  maxReplyBytes = Infinity,
 ): Promise<ControlResult> {
   return new Promise<ControlResult>((resolve, reject) => {
     const connection = connect(socketPath)
@@ -227,7 +266,16 @@ export async function sendControlCommand(
 
     connection.setEncoding('utf8')
     connection.on('connect', () => connection.write(`${JSON.stringify(command)}\n`))
-    connection.on('data', (chunk) => { body += chunk })
+    let bytes = 0
+    connection.on('data', (chunk) => {
+      bytes += Buffer.byteLength(chunk, 'utf8')
+      if (bytes > maxReplyBytes) {
+        clearTimeout(timer)
+        fail('control response too large', 'EMSGSIZE')
+        return
+      }
+      body += chunk
+    })
     connection.on('error', (e: NodeJS.ErrnoException) => { clearTimeout(timer); fail('runtime unavailable', e.code ?? 'unknown') })
     connection.on('end', () => {
       clearTimeout(timer)
