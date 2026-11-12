@@ -12,13 +12,14 @@
  * SQLite text and no path.
  */
 import { createHash } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, realpathSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { readTranscript, transcriptFor, TRANSCRIPTS_DIR } from './index.ts'
 import type { Message } from './index.ts'
+import { ensureDbFile } from '../sqlite-file.ts'
 import { redact } from './redact.ts'
 
 // Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
@@ -162,9 +163,8 @@ export function openTranscriptSearch(options: { path?: string; refreshBudgetMs?:
     if (handle) return handle
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 })
     chmodSync(dirname(path), 0o700)
-    // Never let SQLite create the file under the process umask.
-    closeSync(openSync(path, 'a', 0o600))
-    chmodSync(path, 0o600)
+    // Never let SQLite create the file under the process umask; never close a plain handle of an existing one.
+    ensureDbFile(path)
     const d = new DatabaseSync(path)
     d.exec(`PRAGMA busy_timeout = 5000;
       PRAGMA journal_mode = WAL;

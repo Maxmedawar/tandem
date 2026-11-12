@@ -21,7 +21,7 @@
  * Every call carries the link bearer and a `tandem-proof` over the exact bytes; no token, key,
  * proof or reading is ever logged. `now` is the only clock.
  */
-import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs'
+import { chmodSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -32,6 +32,7 @@ import { EnvelopeError, openEnvelope, signEnvelope } from './envelope.ts'
 import { hubProofHeader, type HubLinkConfig } from './hub-link.ts'
 import type { Presence } from './presence.ts'
 import { readRoster, thisId, trustedKey } from './roster.ts'
+import { ensureDbFile } from './sqlite-file.ts'
 
 // Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
@@ -76,8 +77,7 @@ function openStore(path: string): NodeDatabaseSync {
   const dir = dirname(path)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
-  closeSync(openSync(path, 'a', 0o600))
-  chmodSync(path, 0o600)
+  ensureDbFile(path)
   const db: NodeDatabaseSync = new DatabaseSync(path)
   try {
     db.exec(`PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;
