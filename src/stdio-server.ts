@@ -14,6 +14,13 @@
  *
  * PROTOCOL HYGIENE: stdout is the JSON-RPC wire. Every diagnostic in this
  * process goes to stderr (the router/engine already follow this rule).
+ *
+ * CALLER (bridge/caller-tokens.ts): an agent inside a Tandem session starts this server as its
+ * child with its session's TANDEM_CALLER_TOKEN in the environment, so this process serves that one
+ * agent for its whole life. The variable is read and deleted at once (sessions this process opens
+ * get their own). A token that names a session makes every call here that agent's
+ * (`session:<name>`); one that names nothing refuses to start, never the owner. No variable: the
+ * owner's own client.
  */
 
 // Desktop apps spawn this process from an arbitrary cwd, so locate .env next to
@@ -22,6 +29,9 @@
 import { fileURLToPath } from "node:url";
 import { loadProtectedRuntimeConfigFromEnv } from "./runtime-config.ts";
 import type { FabricForward } from "../bridge/hub-rpc.ts";
+// Read once and out of the environment at once (never printed).
+const callerToken = process.env.TANDEM_CALLER_TOKEN;
+delete process.env.TANDEM_CALLER_TOKEN;
 try {
   const loadedProtectedConfig = await loadProtectedRuntimeConfigFromEnv();
   if (!loadedProtectedConfig) process.loadEnvFile(fileURLToPath(new URL("../.env", import.meta.url)));
@@ -38,6 +48,24 @@ try {
 // cwd allowlist) at module load.
 if (process.env.TANDEM_CWD_ALLOWLIST) process.env.CCM_CWD_ALLOWLIST = process.env.TANDEM_CWD_ALLOWLIST;
 if (process.env.TANDEM_DEFAULT_CWD) process.env.CCM_DEFAULT_CWD = process.env.TANDEM_DEFAULT_CWD;
+
+// The caller, before the server module reads it. Fail closed: an unresolved value is never the owner.
+if (callerToken !== undefined) {
+  const { resolveCallerToken, setProcessCaller } = await import("../bridge/caller-tokens.ts");
+  let callerName: string | undefined;
+  try {
+    callerName = resolveCallerToken(callerToken);
+  } catch {
+    callerName = undefined;
+  }
+  if (callerName === undefined) {
+    const refusal = "tandem stdio: caller token unknown; refusing to start\n";
+    await new Promise((done) => process.stderr.write(refusal, done));
+    process.exit(1);
+  }
+  setProcessCaller(callerName);
+  process.stderr.write(`tandem stdio: caller session:${callerName}\n`);
+}
 
 const { StdioServerTransport } = await import("@modelcontextprotocol/sdk/server/stdio.js");
 const { buildMcpServer } = await import("./mcp-server.ts");

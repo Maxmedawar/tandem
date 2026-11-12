@@ -36,6 +36,10 @@ export interface FabricRpcRouteRequest {
   readonly method: string
   readonly path: string
   readonly body: unknown
+  /** Who calls, set by the in-process caller (never from the body): an agent inside a Tandem
+   *  session (src/mcp-server.ts with a caller, bridge/caller-tokens.ts) or the owner (default).
+   *  Capabilities are the same for both; the actor decides, e.g., the room hop budget. */
+  readonly actor?: 'owner' | 'agent'
 }
 
 export interface FabricRpcRouteResult {
@@ -59,7 +63,8 @@ const ROUTES = new Set([
 /**
  * The only bridge ingress for public Fabric operations. The caller envelope is
  * accepted solely on the dedicated authenticated TunnelDO frame surface, then
- * converted into a trusted OWNER context inside this private process.
+ * converted into a trusted context inside this private process: the owner's, or an
+ * agent's when the in-process caller passes actor 'agent'.
  */
 export async function routeFabricRpc(request: FabricRpcRouteRequest): Promise<FabricRpcRouteResult> {
   if (request.trust !== FABRIC_MCP_TRUST || request.method !== 'POST') {
@@ -73,8 +78,9 @@ export async function routeFabricRpc(request: FabricRpcRouteRequest): Promise<Fa
   if (!ROUTES.has(request.path)) return denied()
   if (!request.client) return { status: 503, body: { error: 'fabric_unavailable' } }
 
+  const actor = request.actor === 'agent' ? 'agent' : 'owner'
   try {
-    const envelope = trustedEnvelope(request.body)
+    const envelope = trustedEnvelope(request.body, actor)
     const caller = envelope.caller
     const input = exactObject('input', envelope.input, inputKeys(request.path))
     const client = request.client
@@ -96,21 +102,21 @@ export async function routeFabricRpc(request: FabricRpcRouteRequest): Promise<Fa
       }
       case '/fabric/room/post': {
         validateProjectId(input.projectId)
-        const scoped = ownerContext(callerIdentity(caller), input.projectId)
+        const scoped = ownerContext(callerIdentity(caller), input.projectId, actor)
         const operation = withoutProjectId(input)
         validatePostRoomEventInput(operation)
         return ok(await client.postRoomEvent(scoped, operation))
       }
       case '/fabric/room/read': {
         validateProjectId(input.projectId)
-        const scoped = ownerContext(callerIdentity(caller), input.projectId)
+        const scoped = ownerContext(callerIdentity(caller), input.projectId, actor)
         const operation = withoutProjectId(input)
         validateReadRoomInput(operation)
         return ok(await client.readRoom(scoped, operation))
       }
       case '/fabric/memory/remember': {
         const projectId = optionalProjectId(input.projectId)
-        const scoped = ownerContext(callerIdentity(caller), projectId)
+        const scoped = ownerContext(callerIdentity(caller), projectId, actor)
         const operation = withoutProjectId(input)
         const scope = operation.scope as MemoryScope | undefined
         if (scope === 'user') operation.authorship = 'owner'
@@ -119,7 +125,7 @@ export async function routeFabricRpc(request: FabricRpcRouteRequest): Promise<Fa
       }
       case '/fabric/memory/search': {
         const projectId = optionalProjectId(input.projectId)
-        const scoped = ownerContext(callerIdentity(caller), projectId)
+        const scoped = ownerContext(callerIdentity(caller), projectId, actor)
         const operation = withoutProjectId(input)
         validateSearchMemoryInput(operation)
         return ok(await client.searchMemory(scoped, operation))
@@ -127,17 +133,17 @@ export async function routeFabricRpc(request: FabricRpcRouteRequest): Promise<Fa
       case '/fabric/memory/get': {
         const projectId = optionalProjectId(input.projectId)
         validateMemoryId(input.id)
-        return ok(await client.getMemory(ownerContext(callerIdentity(caller), projectId), input.id))
+        return ok(await client.getMemory(ownerContext(callerIdentity(caller), projectId, actor), input.id))
       }
       case '/fabric/memory/forget': {
         const projectId = optionalProjectId(input.projectId)
         validateMemoryId(input.id)
-        await client.forgetMemory(ownerContext(callerIdentity(caller), projectId), input.id)
+        await client.forgetMemory(ownerContext(callerIdentity(caller), projectId, actor), input.id)
         return ok({ ok: true })
       }
       case '/fabric/memory/promote': {
         validateProjectId(input.projectId)
-        const scoped = ownerContext(callerIdentity(caller), input.projectId)
+        const scoped = ownerContext(callerIdentity(caller), input.projectId, actor)
         const operation = withoutProjectId(input)
         validatePromoteRoomEventInput(operation)
         return ok(await client.promoteRoomEvent(scoped, operation))
@@ -152,11 +158,11 @@ export async function routeFabricRpc(request: FabricRpcRouteRequest): Promise<Fa
   }
 }
 
-function trustedEnvelope(value: unknown): { caller: ReturnType<typeof ownerContext>; input: unknown } {
+function trustedEnvelope(value: unknown, actor: 'owner' | 'agent'): { caller: ReturnType<typeof ownerContext>; input: unknown } {
   try {
     const envelope = exactObject('fabricEnvelope', value, ['caller', 'input'])
     return {
-      caller: trustedCaller(exactObject('caller', envelope.caller, ['ownerId', 'deviceId', 'agentId'])),
+      caller: trustedCaller(exactObject('caller', envelope.caller, ['ownerId', 'deviceId', 'agentId']), actor),
       input: envelope.input,
     }
   } catch {
@@ -164,22 +170,22 @@ function trustedEnvelope(value: unknown): { caller: ReturnType<typeof ownerConte
   }
 }
 
-function trustedCaller(value: Record<string, unknown>) {
+function trustedCaller(value: Record<string, unknown>, actor: 'owner' | 'agent') {
   assertIdentifier('ownerId', value.ownerId)
   assertIdentifier('deviceId', value.deviceId)
   assertIdentifier('agentId', value.agentId)
-  return ownerContext(value as unknown as TrustedFabricCallerEnvelope)
+  return ownerContext(value as unknown as TrustedFabricCallerEnvelope, undefined, actor)
 }
 
 function callerIdentity(caller: ReturnType<typeof ownerContext>): TrustedFabricCallerEnvelope {
   return { ownerId: caller.ownerId, deviceId: caller.deviceId, agentId: caller.agentId }
 }
 
-function ownerContext(identity: TrustedFabricCallerEnvelope, projectId?: string) {
+function ownerContext(identity: TrustedFabricCallerEnvelope, projectId?: string, actor: 'owner' | 'agent' = 'owner') {
   return createCallerContext({
     ...identity,
     ...(projectId === undefined ? {} : { projectId }),
-    actorType: 'owner',
+    actorType: actor,
     capabilities: OWNER_CAPABILITIES,
   })
 }
