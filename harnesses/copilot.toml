@@ -1,6 +1,8 @@
 # GitHub Copilot CLI, program `copilot`, checked against @github/copilot 1.0.109 (darwin-arm64, read
 # as text, never run). idle is the hint row `/ commands` (rendered `/ commands · ? help`), which
-# Copilot draws only under an empty prompt; unproven on a real screen until the live row runs.
+# Copilot draws only under an empty prompt, in the row right under its composer: form A (prompt
+# frame on) `╻▄…` / `┃` / `╹▀…`, form B (frame off) a `─` rule / `❯` / a `─` rule; the prompt is
+# empty when that composer's row holds nothing. Unproven on a real screen until the live row runs.
 # working is the busy hint `ctrl+c interrupt` and its variants (`stop agents`, `clear input`,
 # `exit shell mode`), or its Escape forms (`esc interrupt`, `esc stop agents`, `esc edit prompt`,
 # `esc again to ...`). waiting_for_approval is an approval box's reject row `..., and tell Copilot
@@ -26,22 +28,35 @@ delivery = "notice"
 # U-R1B-ANCHOR: every approval, plan and ask dialog replaces the composer, its hint row and footer
 # (1.0.109 cli-main.js: the dialog is returned instead of them), so a marker counts only when no
 # prompt row (`┃`) follows it to the screen end.
+# U-R1B-COPILOT-LAYOUT: a marker is ended by any composer row after it: `┃`, `╻`, `╹` (form A) or
+# a `─` rule (form B) as a line's first non-blank character.
 waiting_for_approval = [
-  ', and tell Copilot (?:what to do differently|why)[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
-  'Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\b(?:[^\n]*\n){0,20}?[^\n]*\(Esc[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
-  'ctrl\+e explain[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
-  'Extension "[^"\n]*" wants (?:elevated permissions|to read \d+ sensitive environment variables?)[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
-  'Accept plan and continue in (?:Autopilot|Interactive) execution mode[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
-  'Exit to Interactive execution mode without running the plan[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z',
+  ', and tell Copilot (?:what to do differently|why)[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)*\z',
+  'Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\b(?:[^\n]*\n){0,20}?[^\n]*\(Esc[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)*\z',
+  'ctrl\+e explain[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)*\z',
+  'Extension "[^"\n]*" wants (?:elevated permissions|to read \d+ sensitive environment variables?)[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)*\z',
+  'Accept plan and continue in (?:Autopilot|Interactive) execution mode[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)*\z',
+  'Exit to Interactive execution mode without running the plan[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)*\z',
 ]
 # U-R1B-ANCHOR: the busy hint counts only next to the prompt in use: at most one prompt row (`┃`)
 # after it, with at most 1 line before that row and 4 after it to the screen end (1.0.109 draws the
 # hint row under the input; the -src fixtures draw it above).
-working = ['ctrl\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?){0,4}\z', 'esc (?:interrupt|stop agents|edit prompt)[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?){0,4}\z', 'esc again to [^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?){0,4}\z']
+# U-R1B-COPILOT-LAYOUT: the lines after the busy hint start with none of `┃ ╻ ╹ ─` but the one `┃`
+# row of the old fixtures (the real busy row is under the composer, so nothing of it follows).
+working = ['ctrl\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,4}\z', 'esc (?:interrupt|stop agents|edit prompt)[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,4}\z', 'esc again to [^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,4}\z']
 # U-R1B-ANCHOR: the hint row counts only when no prompt row (`┃`) follows it to the screen end, like empty_prompt.
-idle = ['/ commands[^\n]*(?:\n[ \t]*(?:[^ \t┃\n][^\n]*)?)*\z']
+# U-R1B-COPILOT-LAYOUT: no composer row of form A (`┃ ╻ ╹`) or form B (a `─` rule) follows it either.
+idle = ['/ commands[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)*\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (a bare ❯ row, a blank line, then `/ commands`).
-empty_prompt = ['^┃ ❯[ \t]*\n[ \t]*\n/ commands[^\n]*(?:\n(?:[^┃\n][^\n]*)?)*\z']
+# U-R1B-COPILOT-LAYOUT: the old fixture layout, then form A (`╻▄…`, a bare `┃` row, `╹▀…`) and
+# form B (a `─` rule, a bare `❯` row, a `─` rule), each right above the `/ commands` hint row, with
+# at most 3 lines after that row (1.0.109 draws only a status line under it) and none of them a
+# composer row (`┃ ╻ ╹`, or a `─` rule): a quoted empty composer above a dialog box is not empty.
+empty_prompt = [
+  '^┃ ❯[ \t]*\n[ \t]*\n/ commands[^\n]*(?:\n(?:[^┃╻╹─\n][^\n]*)?){0,3}\z',
+  '^╻▄{20,}[ \t]*\n┃[ \t]*\n╹▀{20,}[ \t]*\n[^\n]*/ commands[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,3}\z',
+  '^─{20,}[ \t]*\n❯[ \t]*\n─{20,}[ \t]*\n[^\n]*/ commands[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,3}\z',
+]
 
 [keys]
 interrupt = ["C-c"]

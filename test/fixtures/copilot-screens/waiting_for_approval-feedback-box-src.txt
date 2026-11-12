@@ -1,0 +1,20 @@
+● Running the tests now.
+
+Permission request (2 remaining)
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ Run shell command                                                    │
+│ ──────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────╮ │
+│ │ npm test                                                         │ │
+│ ╰──────────────────────────────────────────────────────────────────╯ │
+│                                                                      │
+│ Do you want to run this command?                                     │
+│                                                                      │
+│   1. Yes                                                             │
+│   2. Yes, and approve `npm test` for the rest of the running session │
+│ ❯ 3. only the unit tests (Esc to stop)                               │
+│                                                                      │
+│ ↑/↓ to navigate · enter to select · esc to cancel                    │
+╰──────────────────────────────────────────────────────────────────────╯
+ main ✓

@@ -1,0 +1,21 @@
+● Reading the config.
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ Read files                                                           │
+│ ──────────────────────────────────────────────────────────────────── │
+│ ! This path will be read outside the sandbox, bypassing its          │
+│ protections.                                                         │
+│                                                                      │
+│                                                                      │
+│ ╭──────────────────────────────────────────────────────────────────╮ │
+│ │ /tmp/other/notes.txt                                             │ │
+│ ╰──────────────────────────────────────────────────────────────────╯ │
+│                                                                      │
+│ Do you want to read this path outside the sandbox?                   │
+│                                                                      │
+│ ❯ 1. Yes                                                             │
+│   2. No, and tell Copilot what to do differently (Esc to stop)       │
+│                                                                      │
+│ ↑/↓ to navigate · enter to select · esc to cancel                    │
+╰──────────────────────────────────────────────────────────────────────╯
+ main ✓

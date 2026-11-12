@@ -1,0 +1,23 @@
+╭──────────────────────────────────────────────────────────────────────╮
+│ Confirm folder trust                                                 │
+│ ──────────────────────────────────────────────────────────────────── │
+│ ╭──────────────────────────────────────────────────────────────────╮ │
+│ │ /tmp/work                                                        │ │
+│ ╰──────────────────────────────────────────────────────────────────╯ │
+│                                                                      │
+│ Copilot can read files in this folder and, with your permission,     │
+│ edit them or run code and shell commands. It will remember your      │
+│ permissions for the rest of this session.                            │
+│                                                                      │
+│ Git commands run in this folder may use configuration from the       │
+│ enclosing repository and execute programs configured by that         │
+│ repository.                                                          │
+│                                                                      │
+│ Do you trust the files in this folder?                               │
+│                                                                      │
+│ ❯ 1. Yes                                                             │
+│   2. Yes, and remember this folder for future sessions               │
+│   3. No (Esc)                                                        │
+│                                                                      │
+│ ↑/↓ to navigate · enter to select · esc to cancel                    │
+╰──────────────────────────────────────────────────────────────────────╯

@@ -132,15 +132,15 @@ describe("copilot: the built-in harness file", () => {
     expect(h.resume).toEqual(["--resume={id}"]);
     expect(h.keys).toEqual({ interrupt: ["C-c"], approve: "Enter", deny: "Escape" });
     expect(h.states?.waiting_for_approval).toEqual([
-      ", and tell Copilot (?:what to do differently|why)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
-      "Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\\b(?:[^\\n]*\\n){0,20}?[^\\n]*\\(Esc[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
-      "ctrl\\+e explain[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
-      'Extension "[^"\\n]*" wants (?:elevated permissions|to read \\d+ sensitive environment variables?)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z',
-      "Accept plan and continue in (?:Autopilot|Interactive) execution mode[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
-      "Exit to Interactive execution mode without running the plan[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z",
+      ", and tell Copilot (?:what to do differently|why)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z",
+      "Do you want to (?:(?:re-)?run|use|allow|approve|modify|read|list|create|delete|edit|write|update|move|perform|ignore)\\b(?:[^\\n]*\\n){0,20}?[^\\n]*\\(Esc[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z",
+      "ctrl\\+e explain[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z",
+      'Extension "[^"\\n]*" wants (?:elevated permissions|to read \\d+ sensitive environment variables?)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z',
+      "Accept plan and continue in (?:Autopilot|Interactive) execution mode[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z",
+      "Exit to Interactive execution mode without running the plan[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z",
     ]);
-    expect(h.states?.working).toEqual(["ctrl\\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?){0,4}\\z", "esc (?:interrupt|stop agents|edit prompt)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?){0,4}\\z", "esc again to [^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?){0,4}\\z"]);
-    expect(h.states?.idle).toEqual(["/ commands[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃\\n][^\\n]*)?)*\\z"]);
+    expect(h.states?.working).toEqual(["ctrl\\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?){0,4}\\z", "esc (?:interrupt|stop agents|edit prompt)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?){0,4}\\z", "esc again to [^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?){0,4}\\z"]);
+    expect(h.states?.idle).toEqual(["/ commands[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z"]);
     expect(h.states?.debounce_ms).toBe(1500);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.hook).toBeUndefined();
@@ -401,4 +401,160 @@ describe("copilot: a fake copilot in tmux on Tandem's own socket", () => {
     }
     expect(await session.isAlive()).toBe(false);
   }, 60_000);
+});
+
+// U-R1B-COPILOT-LAYOUT: Copilot 1.0.109 (cli-main.js, read as text, never run) draws its composer in
+// one of two forms, with the status row above it and ONE hint row under it: (A) prompt frame on, a
+// rail `╻▄…` / `┃ <text>` / `╹▀…` with no `❯` glyph; (B) prompt frame off, a `─` rule / `❯ <text>` /
+// a `─` rule. The fixtures are constructed from its strings, not captures. The frame's default could
+// not be read from the package, so both forms must read.
+const { isPromptEmpty } = await import("../../bridge/harness-detect.ts");
+const { decideInput } = await import("../../bridge/input-gate.ts");
+describe("copilot: the real composers (U-R1B-COPILOT-LAYOUT)", () => {
+  const NEW: [string, string, boolean][] = [
+    ["idle-frame-src.txt", "idle", true],
+    ["idle-plain-src.txt", "idle", true],
+    ["idle-frame-narrow-src.txt", "idle", true],
+    ["idle-plain-update-src.txt", "idle", true],
+    ["idle-frame-shell-src.txt", "idle", false],
+    ["idle-plain-shell-src.txt", "idle", false],
+    ["unknown-typed-frame-src.txt", "unknown", false],
+    ["unknown-typed-plain-src.txt", "unknown", false],
+    ["unknown-multiline-frame-src.txt", "unknown", false],
+    ["unknown-multiline-plain-src.txt", "unknown", false],
+    ["unknown-exitwarn-frame-src.txt", "unknown", false],
+    ["unknown-queue-edit-src.txt", "unknown", false],
+    ["working-frame-src.txt", "working", false],
+    ["working-plain-typed-src.txt", "working", false],
+    ["waiting_for_approval-shell-box-src.txt", "waiting_for_approval", false],
+    ["waiting_for_approval-feedback-box-src.txt", "waiting_for_approval", false],
+    ["waiting_for_approval-path-box-src.txt", "waiting_for_approval", false],
+    ["waiting_for_approval-url-box-src.txt", "waiting_for_approval", false],
+    ["waiting_for_approval-extension-box-src.txt", "waiting_for_approval", false],
+    ["waiting_for_approval-assisted-box-src.txt", "waiting_for_approval", false],
+    ["waiting_for_approval-plan-box-src.txt", "waiting_for_approval", false],
+    ["unknown-trust-box-src.txt", "unknown", false],
+  ];
+  it("(r1) the table names 22 files, each in the folder", () => {
+    expect(NEW).toHaveLength(22);
+    for (const [file] of NEW) expect(isFile(join(COP_SCREENS, file)), file).toBe(true);
+  });
+  it.each(NEW)("(r1) %s reads %s; empty prompt %s", (file, state, empty) => {
+    const s = screen(join(COP_SCREENS, file));
+    const h = builtinCopilot();
+    expect(readScreen(h, s)).toBe(state);
+    expect(isPromptEmpty(h, s)).toBe(empty);
+  });
+
+  const HINT = " / commands · ? help";
+  const ST = " ~/work [⎇ main]".padEnd(62) + "claude-sonnet-4.5";
+  const RA = (rows: string[], w = 80) => ["╻" + "▄".repeat(w - 1), ...rows.map((t) => (t ? "┃ " + t : "┃" + " ".repeat(w - 1))), "╹" + "▀".repeat(w - 1)];
+  const RB = (rows: string[], w = 80) => ["─".repeat(w), "❯ " + rows[0], ...rows.slice(1).map((t) => "  " + t), "─".repeat(w)];
+  const A = screen(join(COP_SCREENS, "idle-frame-src.txt"));
+  const B = screen(join(COP_SCREENS, "idle-plain-src.txt"));
+  /** Each edit must change the screen it is given. */
+  const derive = (s: string, edit: (t: string) => string) => {
+    const out = edit(s);
+    expect(out).not.toBe(s);
+    return out;
+  };
+  type Edit = [string, string, (t: string) => string];
+  const both = (label: string, edit: (t: string) => string): Edit[] => [[`A: ${label}`, A, edit], [`B: ${label}`, B, edit]];
+  const R2: Edit[] = [
+    ...both("the hint row ` / commands` only", (t) => t.replace(HINT, " / commands")),
+    ...both("the update notice in front of the hints", (t) => t.replace(HINT, " Update: 1.0.110 · next launch or /restart · / commands · ? help")),
+    ...both("a vim-mode label in front of the hints", (t) => t.replace(HINT, " -- INSERT -- · / commands · ? help")),
+    ...both("the `plan` mode label in front of the hints", (t) => t.replace(HINT, " plan · / commands · ? help")),
+    ...both("2 status rows above the composer", (t) => t.replace(ST, `${ST}\n  +3 -1 · sandbox`)),
+    ...both("3 status rows above the composer", (t) => t.replace(ST, ` ~/work\n ⎇ main  +3 -1\n claude-sonnet-4.5 · sandbox`)),
+    ...both("the footer line ` main ✓` under the hint row", (t) => t.replace(HINT, `${HINT}\n main ✓`)),
+    ["A: the composer at 40 columns", A, (t: string) => t.replace(RA([""]).join("\n"), RA([""], 40).join("\n"))],
+    ["A: the composer at 200 columns", A, (t: string) => t.replace(RA([""]).join("\n"), RA([""], 200).join("\n"))],
+    ["B: the composer at 40 columns", B, (t: string) => t.replace(RB([""]).join("\n"), RB([""], 40).join("\n"))],
+    ["B: the composer at 200 columns", B, (t: string) => t.replace(RB([""]).join("\n"), RB([""], 200).join("\n"))],
+    ["A: the `┃` row with its trailing spaces removed", A, (t: string) => t.replace(/^┃ +$/m, "┃")],
+    ["B: the `❯` row with its trailing space removed", B, (t: string) => t.replace(/^❯ $/m, "❯")],
+  ];
+  it.each(R2)("(r2) %s: idle and empty", (_label, s, edit) => {
+    const h = builtinCopilot();
+    const t = derive(s, edit);
+    expect(readScreen(h, t)).toBe("idle");
+    expect(isPromptEmpty(h, t)).toBe(true);
+  });
+
+  it.each([
+    ["A", A, (t: string) => t.replace(/^┃ +$/m, "┃ Refining your prompt…")],
+    ["B", B, (t: string) => t.replace(/^❯ $/m, "❯ Refining your prompt…")],
+  ])("(r3) %s: the `Refining your prompt…` placeholder is not an empty prompt", (_label, s, edit) => {
+    const h = builtinCopilot();
+    const t = derive(s, edit);
+    expect(readScreen(h, t)).toBe("idle");
+    expect(isPromptEmpty(h, t)).toBe(false);
+  });
+
+  const WA = screen(join(COP_SCREENS, "working-frame-src.txt"));
+  const WB = derive(B, (t) => t.replace(HINT, " ◐ Thinking  ctrl+c interrupt"));
+  it.each(
+    ["ctrl+c interrupt", "ctrl+c clear input", "ctrl+c stop agents", "ctrl+c exit shell mode", "esc again to edit prompt"].flatMap((hint) => [
+      ["A", hint, WA] as const,
+      ["B", hint, WB] as const,
+    ]),
+  )("(r4) %s: the busy row `%s` under the composer reads working", (_form, hint, s) => {
+    const h = builtinCopilot();
+    const t = hint === "ctrl+c interrupt" ? s : derive(s, (x) => x.replace("ctrl+c interrupt", hint));
+    expect(readScreen(h, t)).toBe("working");
+    expect(isPromptEmpty(h, t)).toBe(false);
+  });
+
+  const shellBox = screen(join(COP_SCREENS, "waiting_for_approval-shell-box-src.txt")).trimEnd().split("\n");
+  it.each([
+    ["A, a reply asking `Do you want to run`", A, ["● Do you want to run the README too?", ""]],
+    ["B, a reply asking `Do you want to run`", B, ["● Do you want to run the README too?", ""]],
+    ["A, a reply quoting an approval box (no column-0 row)", A, ["● This is the box I saw:", "", ...shellBox.map((l) => "  " + l), "", "  That is the screen I saw.", ""]],
+    ["B, a reply quoting an approval box (no column-0 row)", B, ["● This is the box I saw:", "", ...shellBox.map((l) => "  " + l), "", "  That is the screen I saw.", ""]],
+  ])("(r5) %s: reads as the prompt alone (idle and empty)", (_label, s, above) => {
+    const h = builtinCopilot();
+    const t = [...above, s].join("\n");
+    expect(readScreen(h, t)).toBe("idle");
+    expect(isPromptEmpty(h, t)).toBe(true);
+    expect(decideInput("owner", "type", readScreen(h, t))).toBe("enter");
+    expect(decideInput("agent", "type", readScreen(h, t))).toBe("enter");
+  });
+
+  // G3: the bottom-area function returns the permission dialog before the queue manager, but the
+  // root draws the queue manager's edit composer as a pinned footer UNDER whatever that function
+  // returned, so a permission dialog and a pinned queue-edit composer can be on screen together.
+  const dialog = shellBox.slice(0, -1);
+  it.each([
+    ["A", [...dialog, ...RA(["also fix lint"]), "editing queued item — enter save · esc cancel", " main ✓"]],
+    ["B", [...dialog, ...RB(["also fix lint"]), "editing queued item — enter save · esc cancel", " main ✓"]],
+  ])("(r6) %s: a permission dialog with the pinned queue-edit composer under it is neither idle nor empty", (_form, lines) => {
+    const h = builtinCopilot();
+    const t = lines.join("\n");
+    expect(readScreen(h, t)).not.toBe("idle");
+    expect(isPromptEmpty(h, t)).toBe(false);
+    expect(decideInput("agent", "type", readScreen(h, t))).toBe("held");
+  });
+  // Builder addition: an empty composer and its hint row quoted at column 0 in a reply, right above a
+  // real dialog that is not an approval (the ask-user `Question` box, the folder-trust box; each a
+  // Po box drawn instead of the composer, cli-main.js 1.0.109). Nothing composer-like follows the
+  // quote, so only the line count after the hint row tells it from the real prompt: 1.0.109 draws
+  // only a status line under the hint row. Read as empty, an agent's text would answer the dialog.
+  const ask = ["╭" + "─".repeat(70) + "╮", ...["Question", "─".repeat(68), "Which branch should I use?", "", "❯ 1. main", "  2. dev", "  3. Other (type your answer)", "", "↑/↓ to select · enter to confirm · esc to cancel"].map((r) => "│ " + r.padEnd(68) + " │"), "╰" + "─".repeat(70) + "╯"];
+  const trust = screen(join(COP_SCREENS, "unknown-trust-box-src.txt")).trimEnd().split("\n");
+  const QUOTES: [string, string[]][] = [
+    ["form A", [...RA([""]), HINT]],
+    ["form B", [...RB([""]), HINT]],
+    ["the old fixture layout", screen(IDLE_SRC).trimEnd().split("\n").slice(-4)],
+  ];
+  it.each(QUOTES.flatMap(([label, q]) => [[label, "the ask-user box", q, ask] as const, [label, "the folder-trust box", q, trust] as const]))(
+    "(r7) an empty composer of %s quoted at column 0 above %s is not an empty prompt",
+    (_label, _dialog, q, dialog) => {
+      const h = builtinCopilot();
+      const t = ["● This is what I saw:", "", ...q, "", ...dialog, " main ✓"].join("\n");
+      expect(isPromptEmpty(h, [...q].join("\n"))).toBe(true);
+      expect(isPromptEmpty(h, t)).toBe(false);
+      expect(readScreen(h, t)).not.toBe("waiting_for_approval");
+    },
+  );
 });

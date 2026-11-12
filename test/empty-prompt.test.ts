@@ -586,3 +586,87 @@ describe("(18D-2 audit) only the prompt in use counts, for every built-in agent"
     ]) expect(detect.isPromptEmpty!(h("cursor-agent"), screen)).toBe(false);
   });
 });
+
+// U-R1B-COPILOT-LAYOUT: Copilot 1.0.109's real composers (cli-main.js, read as text): (A) prompt frame
+// on, `╻▄…` / `┃ <text>` / `╹▀…`; (B) frame off, a `─` rule / `❯ <text>` / a rule; the hint row
+// `/ commands` under either only while the input is empty. Only the composer in use counts.
+describe("(layout) copilot: empty only in the composer in use", () => {
+  const T = "delete the old bra";
+  const cop = builtins.get("copilot")!;
+  const f = (p: string) => read(join(FIXTURES, "copilot-screens", p)).replace(/\s+$/, "");
+  it.each(["idle-frame-src.txt", "idle-plain-src.txt", "idle-frame-narrow-src.txt", "idle-plain-update-src.txt"])("(q) %s: reads idle and empty", (p) => {
+    expect(detect.readScreen!(cop, f(p))).toBe("idle");
+    expect(detect.isPromptEmpty!(cop, f(p))).toBe(true);
+  });
+  it.each(["unknown-typed-frame-src.txt", "unknown-typed-plain-src.txt", "unknown-multiline-frame-src.txt", "unknown-multiline-plain-src.txt"])(
+    "(s) %s: typed text reads unknown, not empty; agent text held (unknown)",
+    async (p) => {
+      expect(detect.readScreen!(cop, f(p))).toBe("unknown");
+      expect(detect.isPromptEmpty!(cop, f(p))).toBe(false);
+      expect(await gate.admitInput!(over(cop, f(p)), "agent", "type")).toStrictEqual({ verdict: "held", state: "unknown" });
+    },
+  );
+  it.each(["idle-frame-shell-src.txt", "idle-plain-shell-src.txt"])("(s2) %s: shell mode reads idle, not empty; agent text held (prompt not empty)", async (p) => {
+    expect(detect.readScreen!(cop, f(p))).toBe("idle");
+    expect(detect.isPromptEmpty!(cop, f(p))).toBe(false);
+    await heldNow(over(cop, f(p)));
+  });
+  it.each(["idle-frame-src.txt", "idle-plain-src.txt"])(
+    "(t) gate: agent text at %s enters after the debounce (1500 ms)",
+    async (p) => {
+      expect(cop.states?.debounce_ms).toBe(1500);
+      const { answer, took } = await timed(over(cop, f(p)), "agent", "type");
+      expect(answer).toStrictEqual(ENTER);
+      expect(took).toBeGreaterThanOrEqual(1500);
+    },
+    20_000,
+  );
+
+  // [form, the empty fixture, its typed fixture, the composer row holding text]
+  const FORMS: [string, string, string, (t: string) => string][] = [
+    ["A", "idle-frame-src.txt", "unknown-typed-frame-src.txt", (t) => "┃ " + t.replace(/\n */g, "\n┃ ")],
+    ["B", "idle-plain-src.txt", "unknown-typed-plain-src.txt", (t) => "❯ " + t],
+  ];
+  const EMPTY_ROW = /^(?:┃ +|❯ )$/m;
+  const TYPED_ROW = /^(?:┃|❯) fix the tests$/m;
+  const put = (s: string, re: RegExp, row: string) => {
+    const out = s.replace(re, row);
+    expect(out).not.toBe(s);
+    return out;
+  };
+  const tail = (s: string, n: number) => s.split("\n").slice(-n).join("\n");
+  it.each(FORMS)("(u) %s: a leftover empty composer above the composer in use holding text is not empty; agent text held", async (_form, empty, typed, row) => {
+    const s = f(empty);
+    expect(detect.isPromptEmpty!(cop, s)).toBe(true);
+    const inUse = tail(put(f(typed), TYPED_ROW, row(T)), 5);
+    for (const gap of ["\n", "\n\n"]) {
+      const screen = s + gap + inUse;
+      expect(detect.isPromptEmpty!(cop, screen)).toBe(false);
+      const st = detect.readScreen!(cop, screen);
+      const answer = await gate.admitInput!(over(cop, screen), "agent", "type");
+      expect(answer).toStrictEqual(st === "idle" ? HELD_REASON : { verdict: "held", state: st });
+    }
+  });
+  it.each(FORMS)("(u) %s: the composer holding text above the empty composer in use reads empty", (_form, empty, typed, row) => {
+    const screen = put(f(typed), TYPED_ROW, row(T)) + "\n" + tail(f(empty), 4);
+    expect(detect.readScreen!(cop, screen)).toBe("idle");
+    expect(detect.isPromptEmpty!(cop, screen)).toBe(true);
+  });
+
+  const VARIANTS: [string, string][] = [
+    ["short", T],
+    ["long", "x".repeat(300)],
+    ["wrapped", T + "\n  continued on the next row"],
+    ["pasted", "[Pasted text #1 +20 lines]"],
+    ["slash menu", "/"],
+    ["file menu", "@src/"],
+  ];
+  it.each(FORMS.flatMap(([form, empty, , row]) => VARIANTS.map(([v, t]) => [form, v, empty, row, t] as const)))(
+    "(v) %s: typed text (%s) with the `/ commands` hint row kept is never idle and empty",
+    (_form, _v, empty, row, t) => {
+      const screen = put(f(empty), EMPTY_ROW, row(t));
+      expect(screen).toContain("/ commands");
+      expect(detect.readScreen!(cop, screen) === "idle" && detect.isPromptEmpty!(cop, screen)).toBe(false);
+    },
+  );
+});

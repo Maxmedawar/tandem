@@ -344,3 +344,63 @@ describe("(live) real layouts of pi, cursor-agent, copilot, cline and droid keep
     }
   });
 });
+
+// U-R1B-COPILOT-LAYOUT: Copilot 1.0.109's real composers (cli-main.js, read as text): (A) prompt frame
+// on, `╻▄…` / `┃ <text>` / `╹▀…`; (B) frame off, a `─` rule / `❯ <text>` / a rule; the hint row under
+// either. Every copilot state file of the folder (read at run time), quoted above each real bottom,
+// reads as that bottom alone; the old fixture-style prompt quoted above a real composer holding the
+// owner's text never reads idle with an empty prompt (gap G1 of the U-R1B-ANCHOR-2 audit).
+describe("(layout) copilot: quoted markers above the real composers (U-R1B-COPILOT-LAYOUT)", () => {
+  const h = harnesses.get("copilot")!;
+  const REAL: [string, string][] = [
+    ["EMPTY-A", "copilot-screens/idle-frame-src.txt"],
+    ["TYPED-A", "copilot-screens/unknown-typed-frame-src.txt"],
+    ["EMPTY-B", "copilot-screens/idle-plain-src.txt"],
+    ["TYPED-B", "copilot-screens/unknown-typed-plain-src.txt"],
+  ];
+  const sources = stateFiles("copilot-screens", ["idle-typed-src.txt"]);
+  const rows = sources.flatMap(([file, state]) =>
+    REAL.flatMap(([label, bottom]) => (["verbatim", "indented"] as const).map((variant) => [`${file} (${state}) above ${label} (${variant})`, file, state, bottom, variant] as const)),
+  );
+  it("the table holds every copilot state file (old and new) above each of the 4 real bottoms, verbatim and indented", () => {
+    expect(sources.length).toBeGreaterThanOrEqual(21);
+    expect(rows).toHaveLength(sources.length * 8);
+    expect(REAL.map(([, b]) => readScreen(h, read(b)))).toEqual(["idle", "unknown", "idle", "unknown"]);
+    expect(REAL.map(([, b]) => isPromptEmpty(h, read(b)))).toEqual([true, false, true, false]);
+  });
+  it.each(rows)("%s", (_title, file, state, bottom, variant) => {
+    const block = blockOf(h, read(file), state);
+    expect(readScreen(h, block.join("\n")), "BLOCK alone reads the source state").toBe(state);
+    const lines = linesOf(read(bottom)).slice(-(38 - block.length));
+    const trimmed = lines.join("\n");
+    expect(readScreen(h, trimmed), "the trimmed bottom reads as the bottom").toBe(readScreen(h, read(bottom)));
+    const q = quoted(block, variant, lines);
+    expect(q.split("\n").length).toBeLessThanOrEqual(40);
+    const want = readScreen(h, trimmed);
+    expect(readScreen(h, q)).toBe(want);
+    if (want === "idle") expect(isPromptEmpty(h, q)).toBe(isPromptEmpty(h, trimmed));
+    expect(decideInput("owner", "type", readScreen(h, q))).toBe("enter");
+  });
+
+  // G1: the old fixture-style prompt (`┃ ❯`, a blank row, `/ commands`, a status line) quoted in a
+  // reply above a real composer.
+  const OLD = linesOf(read("copilot-screens/idle-src.txt")).slice(-4);
+  it.each(REAL.flatMap(([label, bottom]) => (["verbatim", "indented"] as const).map((variant) => [label, variant, bottom] as const)))(
+    "(G1) the old fixture-style prompt quoted above %s (%s) reads as the real composer alone",
+    (label, variant, bottom) => {
+      expect(OLD[0]).toBe("┃ ❯ ");
+      const real = read(bottom);
+      const q = quoted(OLD, variant, linesOf(real));
+      const st = readScreen(h, q);
+      const empty = isPromptEmpty(h, q);
+      if (label.startsWith("TYPED")) {
+        expect(st === "idle" && empty).toBe(false);
+        expect(st).toBe("unknown");
+        expect(decideInput("agent", "type", st)).toBe("held");
+      } else {
+        expect(st).toBe("idle");
+        expect(empty).toBe(true);
+      }
+    },
+  );
+});

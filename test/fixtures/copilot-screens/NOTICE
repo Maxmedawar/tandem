@@ -27,3 +27,34 @@ unknown-trust-src.txt: the folder-trust menu (`Confirm folder trust`) in a round
 unknown-login-src.txt: the sign-in account picker (`What account do you want to log into?`).
 
 None of these is a real screen. A real screen added here by a live run is named *-real.txt.
+
+U-R1B-COPILOT-LAYOUT: Copilot 1.0.109 draws its composer in one of two forms. Form A (prompt frame
+on) is a rail: a `╻` row of `▄`, one `┃ ` row per input line (no `❯` glyph), a `╹` row of `▀`.
+Form B (prompt frame off) is a rule of `─`, the row `❯ ` (or `! ` in shell mode) with the input, and
+a rule of `─`. In both the status row sits above the composer and one hint row under it. The frame
+is on when COPILOT_PROMPT_FRAME=1, off when it is 0, and otherwise follows the PROMPT_FRAME feature
+flag (not in Apple Terminal, and only when the theme's background colours are known); the flag's
+default is served at run time and could not be read from the package. The files below are
+constructed from cli-main.js 1.0.109 strings (same sha256 as above), not captures.
+idle-frame-src.txt: an empty composer under the hint row `/ commands · ? help` (form A frame on), constructed from cli-main.js 1.0.109 strings, not a capture.
+idle-plain-src.txt: an empty composer under the hint row `/ commands · ? help` (form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+idle-frame-narrow-src.txt: an empty composer 40 columns wide, the hint row narrowed to `/ commands` (form A frame on), constructed from cli-main.js 1.0.109 strings, not a capture.
+idle-plain-update-src.txt: an empty composer with the update notice in front of the hints (form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+idle-frame-shell-src.txt: shell mode, the placeholder `Execute shell command` in the input (form A frame on), constructed from cli-main.js 1.0.109 strings, not a capture.
+idle-plain-shell-src.txt: shell mode, the `!` glyph and the placeholder in the input (form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+unknown-typed-frame-src.txt: text typed in the input, the hint row `@ files/sessions · # issues` (form A frame on), constructed from cli-main.js 1.0.109 strings, not a capture.
+unknown-typed-plain-src.txt: text typed in the input, the hint row `@ files/sessions · # issues` (form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+unknown-multiline-frame-src.txt: two typed lines in the input (form A frame on), constructed from cli-main.js 1.0.109 strings, not a capture.
+unknown-multiline-plain-src.txt: two typed lines in the input, the second indented (form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+unknown-exitwarn-frame-src.txt: an empty composer, the hint row replaced by the exit warning after one Ctrl+C (form A frame on), constructed from cli-main.js 1.0.109 strings, not a capture.
+unknown-queue-edit-src.txt: the queue manager box `Queued messages` in edit mode and the pinned composer holding the queued text under it (form A frame on), constructed from cli-main.js 1.0.109 strings, not a capture.
+working-frame-src.txt: an empty composer, the busy row `ctrl+c interrupt` under it (form A frame on), constructed from cli-main.js 1.0.109 strings, not a capture.
+working-plain-typed-src.txt: text typed while a turn runs, the busy row `ctrl+c clear input · ctrl+q enqueue` and a status line under it (form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+waiting_for_approval-shell-box-src.txt: a command approval box drawn in place of the composer, the command in its own box, the reject row last (form A frame on / form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+waiting_for_approval-feedback-box-src.txt: the same box with the reject row selected and feedback typed into it (form A frame on / form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+waiting_for_approval-path-box-src.txt: the read-outside-the-sandbox approval (`Do you want to read this path outside the sandbox?`) (form A frame on / form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+waiting_for_approval-url-box-src.txt: a URL access approval (`Do you want to allow this access?`) (form A frame on / form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+waiting_for_approval-extension-box-src.txt: the extension elevated-permission dialog, rows `Yes` and `No (Esc)` (form A frame on / form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+waiting_for_approval-assisted-box-src.txt: the Assisted Permissions variant, its key-hint row with `ctrl+e explain` (form A frame on / form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+waiting_for_approval-plan-box-src.txt: the plan approval box (`Plan Ready for Review`, `Accept plan and continue in ... execution mode` rows, `Suggest changes`) (form A frame on / form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
+unknown-trust-box-src.txt: the startup folder-trust menu (`Confirm folder trust`) drawn in place of the composer (form A frame on / form B frame off), constructed from cli-main.js 1.0.109 strings, not a capture.
