@@ -178,7 +178,8 @@ describe('installing Tandem on a machine that has nothing', { timeout: 300_000 }
       // network client, or a database had to be fetched, this is where it
       // would show up.
       const installed = readdirSync(box.state).sort()
-      expect(installed).toEqual(['agents', 'current', 'run', 'versions'])
+      // the installer writes the limits file and its applied copy (U-R1A-48); its init audits to bridge.log and asks Tandem's tmux folder
+      expect(installed).toEqual(['agents', 'bridge.log', 'current', 'limits.applied.toml', 'limits.toml', 'run', 'tmux', 'versions'])
       expectServiceInstalled(box)
     } finally { box.cleanup() }
   })

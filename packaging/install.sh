@@ -224,6 +224,20 @@ previous=""
 
 ln -sfn "$target" "$current"
 
+# The limits file says what sessions here may do; with none, nothing is allowed. Asked once, on the
+# terminal when there is one (curl | sh in a terminal), else written allowing nothing; kept on a reinstall.
+if [ -e "$state/limits.toml" ] || [ -e "$state/limits.applied.toml" ]; then
+  say "keeping the limits file in $state"
+elif [ -t 1 ] && ( : </dev/tty ) 2>/dev/null; then
+  if ! "$current/bin/tandem" limits init </dev/tty; then
+    say "warning: the limits file was not written; run 'tandem limits init'"
+  fi
+else
+  if ! "$current/bin/tandem" limits init </dev/null; then
+    say "warning: the limits file was not written; run 'tandem limits init'"
+  fi
+fi
+
 if [ "$host_os" = "darwin" ]; then
   cat > "$agents/$label.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
