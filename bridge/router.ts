@@ -67,7 +67,8 @@
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { validateModel, validateEffort, NeedsOwnerError, TerminalSession } from './terminal-session.ts'
-import type { DrivableSession, EngineId } from './drivable.ts'
+import { TmuxBusyError, type DrivableSession, type EngineId } from './drivable.ts'
+import { TerminalAdapterSession } from './engines/terminal-adapter.ts'
 import { ADAPTERS, type AdapterOpenResult, type Harness } from './harness-registry.ts'
 import {
   resolveEngine,
@@ -229,8 +230,12 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
     const limit = req.query.get('limit') ? Number(req.query.get('limit')) : undefined
     const project = req.query.get('project') ?? undefined
     const engine = req.query.get('engine') ?? undefined
-    if (!engine || engine === 'all') return ok(await listSessions({ limit, project }))
-    const { sessions, ...rest } = await listSessions({ limit: Number.MAX_SAFE_INTEGER, project })
+    const all = !engine || engine === 'all'
+    const listed = await listSessions({ limit: all ? limit : Number.MAX_SAFE_INTEGER, project })
+    // U-R1A-19B: a list that could not run is not "no sessions".
+    if (listed.tmuxBusy) return err(503, TMUX_BUSY)
+    if (all) return ok(listed)
+    const { sessions, ...rest } = listed
     return ok({ ...rest, sessions: filterSessionsByEngine(sessions, engine, limit ?? DEFAULT_LIST_LIMIT) })
   }
 
@@ -558,6 +563,26 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
 }
 
+/** U-R1A-19B: a passing tmux failure (the call failed while the server is up, or timed out) answers 503
+ *  and types nothing; the session stays registered. */
+const TMUX_BUSY = 'tmux_busy'
+
+function tmuxBusy(route: string, name: string, session: DrivableSession): RpcResult {
+  audit({ route, name, engine: session.engine, denied: 'tmux-busy' })
+  return err(503, TMUX_BUSY)
+}
+
+/** The 503 when tmux cannot say whether a tmux-hosted session is alive; gone and alive go on as before. */
+async function tmuxBusyCheck(route: string, name: string, session: DrivableSession): Promise<RpcResult | undefined> {
+  if (!(session instanceof TerminalAdapterSession)) return undefined
+  try {
+    await session.isAlive()
+  } catch (e) {
+    if (e instanceof TmuxBusyError) return tmuxBusy(route, name, session)
+  }
+  return undefined
+}
+
 const WAITING_FOR_APPROVAL = 'waiting_for_approval: the session waits for a person to approve or deny; nothing was typed'
 const AGENT_INTERRUPT = 'input gate: an agent may not interrupt a session'
 
@@ -589,7 +614,7 @@ async function handleSend(name: string, req: RpcRequest, from: InputFrom): Promi
   // model/effort overrides are ignored here — there is no turn to apply them to.)
   if (!text) {
     const cursor = req.body['cursor'] !== undefined ? Number(req.body['cursor']) : 0
-    return readSession(name, cursor)
+    return readSession(name, cursor, 'POST /sessions/:name/send')
   }
 
   // Optional per-send model/effort override — Claude-only (binding — Phase 2
@@ -615,6 +640,8 @@ async function handleSend(name: string, req: RpcRequest, from: InputFrom): Promi
   // working; an unrecognized screen of an agent with rules (an update or trust menu reads
   // unknown, so owner text enters it; U-R1A-18B answers those at warmup); the relay's own lead
   // and worker sends, which call TerminalSession, not route() (both run with prompts off; U-R1B-54).
+  const busy = await tmuxBusyCheck('POST /sessions/:name/send', name, session)
+  if (busy) return busy
   const { verdict, state } = await admitInput(session, from, 'type')
   const line = { route: 'POST /sessions/:name/send', name, engine: session.engine, cwd: session.cwd, text, model, effort, from, state }
   if (verdict !== 'enter') return inputGateAnswer(verdict, 'type', name, session, line)
@@ -640,6 +667,7 @@ async function handleSend(name: string, req: RpcRequest, from: InputFrom): Promi
       attachHint: session.attachHint(),
     })
   } catch (e) {
+    if (e instanceof TmuxBusyError) return tmuxBusy('POST /sessions/:name/send', name, session)
     return err(500, `send failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
@@ -647,12 +675,14 @@ async function handleSend(name: string, req: RpcRequest, from: InputFrom): Promi
 /** Shared read used by GET /sessions/:name/read AND send poll-mode. Emits a
  *  completion event when a previously-running turn is observed to have finished
  *  (now idle AND produced fresh output since the cursor). */
-async function readSession(name: string, cursor: number): Promise<RpcResult> {
+async function readSession(name: string, cursor: number, route = 'GET /sessions/:name/read'): Promise<RpcResult> {
   const session = getLive(name)
   if (!session) {
     // Not live: nothing to stream. idle:true so a poll loop terminates cleanly.
     return ok({ text: '', cursor, idle: true, live: false })
   }
+  const busy = await tmuxBusyCheck(route, name, session)
+  if (busy) return busy
   try {
     const page = await session.read({ cursor })
     if (page.idle && page.text.trim().length > 0) {
@@ -661,6 +691,7 @@ async function readSession(name: string, cursor: number): Promise<RpcResult> {
     }
     return ok({ ...page, live: true, engine: session.engine, attachHint: session.attachHint() })
   } catch (e) {
+    if (e instanceof TmuxBusyError) return tmuxBusy(route, name, session)
     return err(500, `read failed: ${e instanceof Error ? e.message : String(e)}`)
   }
 }
@@ -673,12 +704,19 @@ async function handleRead(name: string, req: RpcRequest): Promise<RpcResult> {
 async function handleInterrupt(name: string, from: InputFrom): Promise<RpcResult> {
   const session = getLive(name)
   if (!session) return err(409, `session "${name}" is not live`)
+  const busy = await tmuxBusyCheck('POST /sessions/:name/interrupt', name, session)
+  if (busy) return busy
   // Interrupt keys are typed input: they can answer a prompt (a deny key is often Escape).
   const { verdict, state } = await admitInput(session, from, 'interrupt')
   const line = { route: 'POST /sessions/:name/interrupt', name, engine: session.engine, cwd: session.cwd, from, state }
   if (verdict !== 'enter') return inputGateAnswer(verdict, 'interrupt', name, session, line)
   audit(line)
-  await session.interrupt()
+  try {
+    await session.interrupt()
+  } catch (e) {
+    if (e instanceof TmuxBusyError) return tmuxBusy('POST /sessions/:name/interrupt', name, session)
+    throw e
+  }
   return ok({ ok: true, name, engine: session.engine })
 }
 

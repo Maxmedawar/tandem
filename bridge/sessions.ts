@@ -27,7 +27,7 @@
 import { realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
-import type { DrivableSession, EngineId } from './drivable.ts'
+import { TmuxBusyError, type DrivableSession, type EngineId } from './drivable.ts'
 import { enabledEngineIds, loadedHarnesses } from './engine-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { attachCommand, readSessionProvenance, tmux, TMUX_FIELD_SEP } from './terminal-session.ts'
@@ -174,8 +174,11 @@ export async function listLiveTmuxSessions(
   try {
     // A newline inside a folder name becomes `_` (tmux substitutes it), so a cwd cannot start a second row.
     raw = await tmuxFn(['list-sessions', '-F', ['#{session_name}', '#{session_created}', '#{s/\n/_/:pane_current_path}'].join(TMUX_FIELD_SEP)])
-  } catch {
-    return [] // tmux absent or no server running
+  } catch (e) {
+    // U-R1A-19B: a passing failure is not "no sessions". No server, a refused socket folder, a too-long
+    // path or no tmux program list nothing, as before.
+    if (e instanceof TmuxBusyError) throw e
+    return []
   }
   const candidates: { name: string; created: string; cwd: string }[] = []
   for (const line of raw.split('\n')) {
@@ -214,7 +217,9 @@ export async function listLiveTmuxSessions(
 /**
  * List sessions for the MCP `list_sessions` tool: LIVE, provenance-verified
  * ccm-* tmux sessions ONLY (with attach hint and engine). No history, no
- * sessions Tandem did not create. Sorted newest first, limited.
+ * sessions Tandem did not create. Sorted newest first, limited. Never throws for a tmux reason
+ * (U-R1A-19B): a passing failure of the list or of a registered session's probe adds `tmuxBusy: true`,
+ * and a registered session whose probe failed that way is kept (a passing failure hides nothing).
  */
 export async function listSessions(
   opts: {
@@ -224,12 +229,19 @@ export async function listSessions(
     enabledEngines?: Set<EngineId>
     listingDependencies?: LiveListingDependencies
   } = {},
-): Promise<{ sessions: SessionInfo[] }> {
+): Promise<{ sessions: SessionInfo[]; tmuxBusy?: true }> {
   const limit = opts.limit ?? 20
   const allowlist = opts.allowlist ?? buildAllowlist()
   // Built-ins plus the enabled harness names, so harness sessions list (U-R1A-11).
   const enabledEngines = opts.enabledEngines ?? enabledEngineIds()
-  const live = await listLiveTmuxSessions(opts.listingDependencies)
+  let tmuxBusy = false
+  let live: LiveTmuxSession[] = []
+  try {
+    live = await listLiveTmuxSessions(opts.listingDependencies)
+  } catch (e) {
+    if (!(e instanceof TmuxBusyError)) throw e
+    tmuxBusy = true
+  }
 
   // Registry entries are sessions this running bridge already admitted. This
   // is also the only source for adapter agents (Hermes), which have no tmux
@@ -237,7 +249,14 @@ export async function listSessions(
   // personal files. An adapter session has cwd '' and is labelled by its engine.
   const registered = (
     await Promise.all(
-      [...registry.values()].map(async (session) => ({ session, alive: await session.isAlive().catch(() => false) })),
+      [...registry.values()].map(async (session) => ({
+        session,
+        alive: await session.isAlive().catch((e) => {
+          if (!(e instanceof TmuxBusyError)) return false
+          tmuxBusy = true
+          return true
+        }),
+      })),
     )
   )
     .filter(({ session, alive }) => alive && enabledEngines.has(session.engine) && !RELAY_NAME_RE.test(session.id))
@@ -278,5 +297,6 @@ export async function listSessions(
     : all
 
   filtered.sort((a, b) => b.updatedAt - a.updatedAt)
-  return { sessions: filtered.slice(0, limit) }
+  const sessions = filtered.slice(0, limit)
+  return tmuxBusy ? { sessions, tmuxBusy: true } : { sessions }
 }

@@ -171,14 +171,18 @@ async function programNameOf(pid: number): Promise<string> {
  * start with another TANDEM_HOME looks at that home's sessions (stated limit, harnesses/SCHEMA.md).
  */
 export async function insideTandemSession(pid: number): Promise<string | undefined> {
-  const { tmux } = await import('./terminal-session.ts')
+  const { tmux, tmuxFailureKind } = await import('./terminal-session.ts')
   let listed: string | undefined
   try {
     listed = await tmux(['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'])
   } catch (e) {
-    // A server with no session answers `no current target` (tmux 3.4 and 3.6b): no session either (36F G1).
-    if (/no server running|error connecting to|no current target/.test(String(e))) return undefined
-    if ((e as { code?: unknown }).code !== 'ENOENT') throw e
+    // No tmux program: the parents are asked below. No server, or a server with no session (36F G1):
+    // no session. A call that failed or timed out: cannot tell (U-R1A-19B's one classifier).
+    if ((e as { code?: unknown }).code !== 'ENOENT') {
+      const kind = tmuxFailureKind(e)
+      if (kind === 'no_server' || kind === 'no_session') return undefined
+      throw e
+    }
   }
   const panes = new Map<number, string>()
   for (const line of (listed ?? '').split('\n')) {

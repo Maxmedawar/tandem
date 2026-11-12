@@ -514,8 +514,8 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
     await s.interrupt();
     expect(alive("b-keys-long")).toBe(true);
     const keys = calls().filter((c) => c.argv.startsWith("send-keys"));
-    expect(keys.length).toBeGreaterThan(0);
-    expect(keys.every((c) => c.rc !== 0)).toBe(true);
+    expect(keys).toEqual([]);
+    expect(calls().filter((c) => c.argv.startsWith("has-session -t =ccm-b-keys")).length).toBeGreaterThan(0);
   }, 30_000);
 
   it("b) capture-pane through tmuxTarget (send and read idle checks) cannot read a longer name", async () => {

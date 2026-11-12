@@ -61,6 +61,27 @@ export interface ReadResult {
   more?: boolean
 }
 
+/** The tmux session behind a registered session is gone (U-R1A-19B): nothing was typed. */
+export class SessionGoneError extends Error {
+  readonly tmuxName: string
+  constructor(tmuxName: string) {
+    super(`tmux session gone: ${tmuxName}`)
+    this.name = 'SessionGoneError'
+    this.tmuxName = tmuxName
+  }
+}
+
+/** A passing tmux failure (U-R1A-19B): the call failed while the server is up, or timed out. The
+ *  session may well be alive: it is kept, and nothing is typed. */
+export class TmuxBusyError extends Error {
+  readonly tmuxFailure: 'call_failed' | 'timeout'
+  constructor(message: string, tmuxFailure: 'call_failed' | 'timeout') {
+    super(message)
+    this.name = 'TmuxBusyError'
+    this.tmuxFailure = tmuxFailure
+  }
+}
+
 /**
  * The one contract the router drives every session through, regardless of
  * engine. Required operations mirror the spec exactly; `attachHint` is a
@@ -72,6 +93,8 @@ export interface DrivableSession {
   readonly id: string
   readonly engine: EngineId
   readonly cwd: string
+  /** A tmux-hosted session asks tmux (has-session): false when it is gone; a passing tmux failure
+   *  (the call failed while the server is up, or timed out) throws TmuxBusyError, never false. */
   isAlive(): Promise<boolean>
   isWorking(): Promise<boolean>
   send(text: string, options?: SendOptions): Promise<SendResult>
