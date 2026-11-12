@@ -400,6 +400,30 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
         this.toolResult(await this.rpc('/transcripts/get', 'POST', { hash, project }, machine)),
     )
 
+    this.server.registerTool(
+      'usage',
+      {
+        title: 'Account usage',
+        description:
+          'Read-only. Account usage on the owner\'s computers, per account of every agent: the 5-hour and 7-day ' +
+          'windows\' used share (0-100) and reset time (ms since the epoch), the plan, tokens and cost (today and ' +
+          'in total), when each was read and its age, and the computer the share reading came from. An account ' +
+          'read on several computers shows the freshest share reading; tokens and cost are summed over the ' +
+          'computers that read them. A reading over 30 minutes old is stale and the answer\'s notices say so; a ' +
+          'window past its reset reads used null (unknown), never 0. most_room names, per agent, the account with ' +
+          'the most room (100 minus the higher window share, fresh readings only). Agents with no limit source ' +
+          'show limit: not available. refresh: true re-reads the answering computer\'s readings first (tokens at ' +
+          'most once a minute); other computers\' readings arrive with their presence within seconds. Answered by ' +
+          'one connected computer (machine); every computer gives the same accounts. Returns { computer, at, ' +
+          'accounts, most_room, notices }. Numbers, names and times only, no session text.',
+        inputSchema: {
+          refresh: z.boolean().optional().describe('true re-reads the answering computer\'s readings first.'),
+          machine: z.string().optional().describe(MACHINE_DESC),
+        },
+      },
+      async ({ refresh, machine }) => this.toolResult(await this.rpc('/usage', 'POST', { refresh }, machine)),
+    )
+
     /* ---- capability #3: see which Macs are connected (read-only) ---- */
 
     this.server.registerTool(

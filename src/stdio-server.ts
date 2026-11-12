@@ -188,7 +188,7 @@ try {
 } catch {
   console.error("transcripts: search unavailable; transcript tools are off");
 }
-const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence, transcripts, hubLink);
+const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence, transcripts, hubLink, (await import("../bridge/usage/report.ts")).createUsageReport());
 const transport = new StdioServerTransport();
 // Loaded before connect, so the wrap below is in place before the first message can be read.
 const { callerStillLive } = await import("../bridge/caller-tokens.ts");
