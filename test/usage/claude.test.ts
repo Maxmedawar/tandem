@@ -470,4 +470,24 @@ describe("(49) usage: Claude Code accounts report their limits", () => {
     expect(names).toContain("x-ok");
     for (const n of ["x-text", "x-win", "x-bad", "Bad_Name", "x-open", "x-link"]) expect(names).not.toContain(n);
   });
+
+  it("(49) u16 audit: a drop file whose time is ahead of the clock, not a whole number, or whose reset is out of range is skipped; it never pins a row", () => {
+    const now = Date.now();
+    const win = { five_hour: { used_percentage: 3, resets_at: nowS() + 600 } };
+    const put = (n: string, text: string) => { writeFileSync(join(DROPS, n), text, { mode: 0o600 }); chmodSync(join(DROPS, n), 0o600); };
+    put("y-ahead.json", JSON.stringify({ at: now + 10 * 60_000, rate_limits: win }));
+    put("y-huge.json", `{"at":1e300,"rate_limits":${JSON.stringify(win)}}`);
+    put("y-frac.json", JSON.stringify({ at: now - 0.5, rate_limits: win }));
+    put("y-reset.json", `{"at":${now},"rate_limits":{"five_hour":{"used_percentage":3,"resets_at":1e300}}}`);
+    put("y-ok.json", JSON.stringify({ at: now, rate_limits: win }));
+    collectUsage(now, [claude()]);
+    const names = readUsage(now).map((r: any) => r.account);
+    expect(names).toContain("y-ok");
+    for (const n of ["y-ahead", "y-huge", "y-frac", "y-reset"]) expect(names).not.toContain(n);
+    for (const r of readUsage(now)) expect(r.ageMs).toBeGreaterThanOrEqual(0);
+    // The same account reports honestly later: its row is there and goes stale like any other.
+    put("y-ahead.json", JSON.stringify({ at: now + 1000, rate_limits: win }));
+    collectUsage(now + 2000, [claude()]);
+    expect(usageRow("y-ahead", now + 40 * 60_000)).toMatchObject({ stale: true });
+  });
 });

@@ -68,12 +68,14 @@ List them in `usage.toml` with different names to tell them apart.
 Tandem never edits an account's own `settings.json`. To have sessions you start yourself report
 too, add the drop command to that account's `settings.json` by hand:
 
-1. Save your current status line command, if you have one, to a file of its own:
+1. Save your current status line command, if you have one, to a file of its own. Keep it out of
+   `~/.tandem/delivery/`: Tandem writes and deletes `<session>.statusline` files there, so a session
+   of the same name would take yours with it.
 
    ```sh
-   mkdir -p ~/.tandem/delivery && chmod 700 ~/.tandem ~/.tandem/delivery
-   printf '%s' '<your current statusLine command>' > ~/.tandem/delivery/own-claude.statusline
-   chmod 600 ~/.tandem/delivery/own-claude.statusline
+   mkdir -p ~/.tandem/usage && chmod 700 ~/.tandem ~/.tandem/usage
+   printf '%s' '<your current statusLine command>' > ~/.tandem/usage/own-claude.statusline
+   chmod 600 ~/.tandem/usage/own-claude.statusline
    ```
 
 2. Set the account's `statusLine` to the drop command (absolute paths, single quotes; the last
@@ -82,7 +84,7 @@ too, add the drop command to that account's `settings.json` by hand:
    ```json
    "statusLine": {
      "type": "command",
-     "command": "'/path/to/node' --experimental-strip-types '/path/to/tandem/bridge/usage/statusline-drop.ts' 'claude' '/Users/you/.tandem/usage/claude' '/Users/you/.tandem/delivery/own-claude.statusline'"
+     "command": "'/path/to/node' --experimental-strip-types '/path/to/tandem/bridge/usage/statusline-drop.ts' 'claude' '/Users/you/.tandem/usage/claude' '/Users/you/.tandem/usage/own-claude.statusline'"
    }
    ```
 
