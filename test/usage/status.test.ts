@@ -80,9 +80,9 @@ const doc = (over: Json = {}) => status.statusDocument({ now, probe, ...over }) 
 const acct = (d: Json, pair: string) => d.accounts.find((a: Json) => `${a.agent}/${a.account}` === pair);
 
 describe("(53) accounts in the status document", () => {
-  it("(53) a1 shape: the key list ends with accounts, statusVersion 2, the report's accounts unchanged, 17 keys each, this computer alpha", async () => {
+  it("(53) a1 shape: the key list ends with accounts, accountsMore, statusVersion 2, the report's accounts unchanged, 17 keys each, this computer alpha", async () => {
     const d = await doc();
-    expect(Object.keys(d)).toEqual(["statusVersion", "version", "at", "runtime", "killSwitch", "computers", "accounts"]);
+    expect(Object.keys(d)).toEqual(["statusVersion", "version", "at", "runtime", "killSwitch", "computers", "accounts", "accountsMore"]);
     expect(d.statusVersion).toBe(2);
     expect(status.STATUS_VERSION).toBe(2);
     // G7: presence's computer under TANDEM_HUB_LINK_ID=alpha.

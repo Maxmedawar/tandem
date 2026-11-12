@@ -8,6 +8,8 @@
  * harness rules, no debounce; no inputState, a read that throws or no answer in 2000 ms is
  * `unknown`). Rows are read in parallel, so one reading waits about 2 s at most. It reads
  * screens and types nothing; no screen text, transcript or attach command is in any field.
+ * With `rowMs` (the runtime's status: 600 ms), a row whose read gives no answer in that time
+ * reads `unknown` and the late read is left to finish.
  *
  * Heartbeat: a reading younger than HEARTBEAT_MS is answered again (only ageMs grows); at
  * HEARTBEAT_MS or older, or with refresh, it reads first. Calls that arrive while a reading is
@@ -48,6 +50,8 @@ export function createPresence(options: {
   computer?: string
   /** Test seam: the other computers' readings (default readRemotePresence on state.db). */
   remote?: { read(): RemoteReading[] }
+  /** The longest one session's screen read may take before that row reads `unknown`; unset: readInput's own 2,000 ms. */
+  rowMs?: number
 } = {}): Presence {
   const now = options.now ?? Date.now
   const list = options.list ?? (async () => (await listSessions({ limit: Number.MAX_SAFE_INTEGER })).sessions)
@@ -61,7 +65,11 @@ export function createPresence(options: {
     try {
       const session = live(name)
       if (session === undefined) return 'unknown'
-      const { state } = await readInput(session)
+      const read = readInput(session).then((r) => r.state)
+      let timer: ReturnType<typeof setTimeout> | undefined
+      const state = options.rowMs === undefined
+        ? await read
+        : await Promise.race([read, new Promise<string>((done) => { timer = setTimeout(() => done('unknown'), options.rowMs) })]).finally(() => clearTimeout(timer))
       return STATES.has(state) ? (state as PresenceState) : 'unknown'
     } catch {
       return 'unknown'
