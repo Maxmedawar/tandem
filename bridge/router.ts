@@ -45,6 +45,11 @@
  *     only at a settled idle prompt, else it is held (200, status held, nothing typed or queued),
  *     and never interrupts (403). Poll mode, read, open, close and the relay routes type nothing
  *     and are not gated. What the gate does not stop is listed where it runs, in handleSend.
+ *   - KILL SWITCH (kill-switch.ts): while `<TANDEM_HOME>/kill-switch` exists, every route that
+ *     starts or types (open, send with text, relay start, inject, enqueue) answers 423 before its
+ *     handler; list, read, poll, interrupt, close and relay read/stop still answer. Nothing here
+ *     turns the switch off. SESSION CAP: a fresh spawn and a relay start reserve slots under the
+ *     limits file's `session_cap` (counted across every process) and answer 429 past it.
  *   - Audit log: every spawn / send / read / interrupt / close / relay control appends
  *     metadata only to a private ~/.tandem/bridge.log. Prompt, command, task,
  *     goal, context, report, output, and request-body values are replaced with
@@ -55,6 +60,7 @@
  * TANDEM_ENABLED_ENGINES opts engines in; none is on by default (see engine-registry.ts).
  */
 
+import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { validateModel, validateEffort, NeedsOwnerError, TerminalSession } from './terminal-session.ts'
 import type { DrivableSession, EngineId } from './drivable.ts'
@@ -80,7 +86,8 @@ import {
 import * as relay from './relay.ts'
 import { emitCompletion, summarize } from './events.ts'
 import { audit } from './audit.ts'
-import { limitsGate } from './limits.ts'
+import { limitsGate, limitsSnapshot } from './limits.ts'
+import { KILL_SWITCH_ON, KillSwitchError, killSwitchOn, reserveSessions } from './kill-switch.ts'
 import { admitInput, type InputAction, type InputFrom, type InputVerdict } from './input-gate.ts'
 import type { ReadState } from './harness-detect.ts'
 
@@ -172,11 +179,30 @@ export async function routeForTest(
   return route({ method, path, query: new URLSearchParams(rawQuery), body })
 }
 
+/** The route of a request that starts a session or a relay, or types into one (`undefined` for any other). */
+function startsOrTypes(m: string, parts: string[], body: unknown): string | undefined {
+  if (m !== 'POST') return undefined
+  if (parts.length === 2 && parts[0] === 'sessions' && parts[1] === 'open') return 'POST /sessions/open'
+  if (parts.length === 2 && parts[0] === 'relay' && parts[1] === 'start') return 'POST /relay/start'
+  if (parts.length !== 3) return undefined
+  if (parts[0] === 'relay' && (parts[2] === 'inject' || parts[2] === 'enqueue')) return `POST /relay/:loopId/${parts[2]}`
+  const text = typeof body === 'object' && body !== null ? (body as Record<string, unknown>)['text'] : undefined
+  if (parts[0] === 'sessions' && parts[2] === 'send' && String(text ?? '')) return 'POST /sessions/:name/send'
+  return undefined
+}
+
 export async function route(req: RpcRequest): Promise<RpcResult> {
   const parts = pathParts(req.path)
   const m = req.method.toUpperCase()
   // Who is typing, read once here for the input gate; nothing in the body can say it.
   const from: InputFrom = req.from ?? 'owner'
+
+  // THE KILL SWITCH, before any handler: read at this moment, for every caller (MCP, hub, relay routes).
+  const starting = startsOrTypes(m, parts, req.body)
+  if (starting !== undefined && killSwitchOn()) {
+    audit({ route: starting, denied: 'kill-switch' })
+    return err(423, KILL_SWITCH_ON)
+  }
 
   // GET /sessions, optionally one agent's rows (?engine=); the limit applies after the filter.
   if (m === 'GET' && parts.length === 1 && parts[0] === 'sessions') {
@@ -258,7 +284,7 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
 async function handleOpen(req: RpcRequest): Promise<RpcResult> {
   const rawName = req.body['name'] !== undefined ? String(req.body['name']) : generateName()
   const name = rawName.trim()
-  if (!NAME_RE.test(name)) {
+  if (!NAME_RE.test(name) || name === '.' || name === '..' || name === '.lock') {
     return err(400, `invalid session name (allowed: A-Z a-z 0-9 . _ -): ${name}`)
   }
   // The relay- namespace is reserved for relay.ts's internal sessions.
@@ -465,6 +491,18 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
     )
   }
 
+  // The session cap (kill-switch.ts reserveSessions): a slot for this name, counted across every
+  // process on this computer, held until the spawn ends (the session then counts on the socket).
+  let slot: Awaited<ReturnType<typeof reserveSessions>>
+  try {
+    slot = await reserveSessions([name], limitsSnapshot().session_cap)
+  } catch (e) {
+    return err(500, `failed to open session: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if ('refused' in slot) {
+    audit({ route: 'POST /sessions/open', name, engine, cwd, denied: 'session_cap' })
+    return err(429, slot.refused)
+  }
   try {
     // The folder check passed above, so warmup may answer trust and update dialogs here, and a
     // bypass dialog only where the agent starts with its prompts off (permission_skip).
@@ -486,11 +524,17 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
       ...(session.readinessWarning ? { warning: session.readinessWarning } : {}),
     })
   } catch (e) {
+    if (e instanceof KillSwitchError) {
+      audit({ route: 'POST /sessions/open', name, engine, cwd, denied: 'kill-switch' })
+      return err(423, KILL_SWITCH_ON)
+    }
     if (e instanceof NeedsOwnerError) {
       audit({ route: 'POST /sessions/open', name, engine, cwd, denied: 'dialog' })
       return err(409, e.message)
     }
     return err(500, `failed to open session: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    slot.release()
   }
 }
 
@@ -656,6 +700,19 @@ async function handleRelayStart(req: RpcRequest): Promise<RpcResult> {
   const maxTurns = req.body['maxTurns'] !== undefined ? Number(req.body['maxTurns']) : undefined
   const context = req.body['context'] !== undefined ? String(req.body['context']) : undefined
 
+  // The session cap: two slots (lead and worker; relay.ts names them itself), held until both exist.
+  const id = randomBytes(8).toString('hex')
+  let slot: Awaited<ReturnType<typeof reserveSessions>>
+  try {
+    slot = await reserveSessions([`relay-slot-${id}-1`, `relay-slot-${id}-2`], limitsSnapshot().session_cap)
+  } catch (e) {
+    return err(500, `failed to start relay: ${e instanceof Error ? e.message : String(e)}`)
+  }
+  if ('refused' in slot) {
+    audit({ route: 'POST /relay/start', cwd, denied: 'session_cap' })
+    return err(429, slot.refused)
+  }
+
   audit({ route: 'POST /relay/start', cwd, goal })
   try {
     const { loopId, leadName, workerName } = await relay.startRelay({
@@ -670,11 +727,17 @@ async function handleRelayStart(req: RpcRequest): Promise<RpcResult> {
     return ok({ status: 'running', loopId, leadName, workerName, cursor: 0 })
   } catch (e) {
     if (e instanceof relay.RelayConfigError) return err(400, e.message)
+    if (e instanceof KillSwitchError) {
+      audit({ route: 'POST /relay/start', cwd, denied: 'kill-switch' })
+      return err(423, KILL_SWITCH_ON)
+    }
     if (e instanceof NeedsOwnerError) {
       audit({ route: 'POST /relay/start', cwd, denied: 'dialog' })
       return err(409, e.message)
     }
     return err(500, `failed to start relay: ${e instanceof Error ? e.message : String(e)}`)
+  } finally {
+    slot.release()
   }
 }
 

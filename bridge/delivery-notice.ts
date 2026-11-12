@@ -13,6 +13,7 @@
  */
 import { audit } from './audit.ts'
 import { admitInput, readInput } from './input-gate.ts'
+import { killSwitchOn } from './kill-switch.ts'
 import { MailError, type Mailbox } from './mailbox.ts'
 import { getLive, liveSessionNames } from './sessions.ts'
 
@@ -31,6 +32,8 @@ export function noticeLine(n: number): string {
 export async function noticePass(box: Mailbox, interruptGapMs = 0): Promise<{ typed: string[]; held: string[] }> {
   const typed: string[] = []
   const held: string[] = []
+  // The kill switch on: no pass at all, so no notice is recorded as sent for a line TerminalSession would refuse.
+  if (killSwitchOn()) return { typed, held }
   for (const name of liveSessionNames()) {
     const session = getLive(name)
     if (!session || name.startsWith('relay-')) continue

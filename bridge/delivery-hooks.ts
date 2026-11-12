@@ -21,7 +21,8 @@
  * value with the trust record Codex needs for them (its own config folder is never touched).
  * A hook run always exits 0; on any error it prints nothing to stdout and one line, with no
  * message text and no path, to stderr. A message claimed but not printed stays delivering
- * (mailbox recover() makes it maybe_delivered at the next bridge start).
+ * (mailbox recover() makes it maybe_delivered at the next bridge start). While this computer's kill
+ * switch is on (bridge/kill-switch.ts) a hook run hands nothing over and prints nothing.
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
@@ -29,6 +30,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Harness } from './harness-registry.ts'
+import { killSwitchOn } from './kill-switch.ts'
 import type { Message, Point } from './mailbox.ts'
 
 /** A harness file's `hook` value: the option that loads one settings file (harnesses/SCHEMA.md). */
@@ -249,6 +251,9 @@ async function runHook([event, name, db, dir]: string[]): Promise<void> {
     if (point && stateDbExists(db)) {
       // The store's modules read the limits file at import: this computer's, beside its state.db.
       process.env.TANDEM_HOME = dirname(db)
+      // The kill switch (bridge/kill-switch.ts) on: claim and print nothing (a Stop answer would keep
+      // the agent going); the turn file below is still written.
+      if (killSwitchOn()) return
       const { openMailbox, due, UNTRUSTED_MAIL } = await import('./mailbox.ts')
       const box = openMailbox({ path: db })
       try {

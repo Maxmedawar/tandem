@@ -60,6 +60,7 @@ import { RE2JS } from 're2js'
 import { CLAUDE_DESCRIPTOR, type EngineDescriptor } from './drivable.ts'
 import { HIGHLIGHTS, NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
+import { KillSwitchError, killSwitchOn } from './kill-switch.ts'
 import { noteSessionClose, noteSessionStart, TRANSCRIPTS_DIR } from './transcripts/index.ts'
 
 const HOME = homedir()
@@ -751,6 +752,8 @@ export class TerminalSession {
     if (!SESSION_NAME_RE.test(name)) {
       throw new Error(`invalid session name: ${name}`)
     }
+    // The kill switch (bridge/kill-switch.ts): nothing starts while it is on (opens and both relay sessions spawn here).
+    if (killSwitchOn()) throw new KillSwitchError()
     // Flags are refused or validated here, before any cwd, tmux or file access.
     const engineArgv = spawnArgv(descriptor, opts)
     // Once per spawn (spawnArgv has no side effect; a harness engine calls it twice).
@@ -801,6 +804,12 @@ export class TerminalSession {
       cwd,
       ...engineArgv,
     ])
+    // The switch turned on since the check above: engage() may have listed the sessions before this
+    // one existed, so it is ended here (the file is written before the list, so one of the two sees it).
+    if (killSwitchOn()) {
+      await tmux(['kill-session', '-t', sessionTarget(name)]).catch(() => {})
+      throw new KillSwitchError()
+    }
     noteSessionStart({ name, agent: descriptor.id, cwd, startedAtMs })
 
     // Provenance tags (binding — Phase 2 correction A): required before a later
@@ -820,7 +829,7 @@ export class TerminalSession {
     try {
       await session.warmup()
     } catch (e) {
-      if (e instanceof NeedsOwnerError) await session.close()
+      if (e instanceof NeedsOwnerError || e instanceof KillSwitchError) await session.close()
       throw e
     }
     return session
@@ -989,6 +998,8 @@ export class TerminalSession {
     } else {
       watch.answered.add(d.name)
     }
+    // No dialog is answered while the kill switch is on: the start fails and spawn ends the session.
+    if (killSwitchOn()) throw new KillSwitchError()
     await tmux(['send-keys', '-t', this.tmuxTarget, key])
     watch.movedOn = pane
     return true
@@ -1088,8 +1099,11 @@ export class TerminalSession {
     }
   }
 
-  /** Every typed-then-submitted text goes through here: type it, pause, then one Enter. */
+  /** Every typed-then-submitted text goes through here: type it, pause, then one Enter. While the
+   *  kill switch is on it throws KillSwitchError before any tmux call (send, so every send_to_session,
+   *  mail notice and relay turn, and applyControls all come here). */
   private async typeAndSubmit(text: string): Promise<void> {
+    if (killSwitchOn()) throw new KillSwitchError()
     await this.injectMultiline(text)
     await sleep(SUBMIT_PAUSE_MS)
     await tmux(['send-keys', '-t', this.tmuxTarget, 'Enter'])
