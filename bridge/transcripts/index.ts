@@ -14,17 +14,12 @@
 import { createHash } from 'node:crypto'
 import { chmodSync, createReadStream, mkdirSync, type Dirent, type Stats } from 'node:fs'
 import { lstat, readdir, stat } from 'node:fs/promises'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { loadedHarnesses } from '../engine-registry.ts'
-import { ensureDbFile } from '../sqlite-file.ts'
+import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from '../sqlite-file.ts'
 import * as claudeReader from './readers/claude.ts'
 import * as codexReader from './readers/codex.ts'
-
-// Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
 
 /** Tandem's transcript folder: pane logs (terminal-session.ts) and the pointer index. */
 export const TRANSCRIPTS_DIR = join(process.env.TANDEM_HOME || join(homedir(), '.tandem'), 'transcripts')

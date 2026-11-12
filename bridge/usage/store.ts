@@ -8,13 +8,9 @@
  * (bridge/usage/ccusage.ts): tokens and cost (today and total) as numbers, or NULLs and the reason.
  */
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
-import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
-import { ensureDbFile } from '../sqlite-file.ts'
+import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from '../sqlite-file.ts'
 import { tandemHome } from './claude.ts'
-
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
 
 export const STALE_MS = 30 * 60_000
 const PLAN = /^[a-z0-9_-]{1,32}$/

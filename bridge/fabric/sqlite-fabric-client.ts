@@ -1,9 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { homedir, userInfo } from 'node:os'
 import { dirname, isAbsolute, resolve, sep } from 'node:path'
-import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type DatabaseSync as NodeDatabaseSync } from '../sqlite-file.ts'
 import {
   assertCapability,
   FabricAccessError,
@@ -53,10 +52,6 @@ import { DeterministicEmbeddingProvider, type EmbeddingProvider } from './memory
 import { hybridScore, normalizeMemoryText } from './memory/ranker.ts'
 import { createLocalVectorStore, type LocalVectorStore, type VectorBackend } from './memory/vector-store.ts'
 import { redact } from '../transcripts/redact.ts'
-
-// Vitest 2 does not know about this Node 22 builtin. Native require preserves
-// the real node:sqlite implementation without adding a package dependency.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
 
 export const CURRENT_FABRIC_SCHEMA_VERSION = 13
 /** The 5th agent post in a row in one room wakes nobody; an owner post starts the count again. */

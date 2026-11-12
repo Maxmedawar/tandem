@@ -30,17 +30,12 @@
  */
 import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { MAX_ROOM_EVENT_BODY_BYTES } from '../src/fabric/types.ts'
 import { audit } from './audit.ts'
-import { ensureDbFile } from './sqlite-file.ts'
+import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from './sqlite-file.ts'
 import { isMailSender, isRemoteSender, limitsSnapshot, thisId, trustedKey } from './limits.ts'
-
-// Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
 
 export type Level = 'fyi' | 'ask' | 'interrupt'
 /** Where a deliverer stands: at the agent's tool call, or idle (a turn end counts as idle). */

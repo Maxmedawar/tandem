@@ -718,7 +718,7 @@ describe("U-R1A-24-R1 audit table", () => {
   it("(5) bridge/mailbox.ts imports only node builtins, the body limit, audit and limits", () => {
     const source = readFileSync(join(repo, "bridge", "mailbox.ts"), "utf8")
     const froms = [...source.matchAll(/(?:from|import\(|require\(|createRequire\(import\.meta\.url\)\()\s*["\x27]([^"\x27]+)["\x27]/g)].map((x) => x[1]).sort()
-    expect(froms).toEqual(["../src/fabric/types.ts", "./audit.ts", "./limits.ts", "./sqlite-file.ts", "node:crypto", "node:fs", "node:module", "node:os", "node:path", "node:sqlite", "node:sqlite", "node:sqlite"])
+    expect(froms).toEqual(["../src/fabric/types.ts", "./audit.ts", "./limits.ts", "./sqlite-file.ts", "node:crypto", "node:fs", "node:os", "node:path"])
     expect(source).not.toMatch(/child_process|tmux|terminal-session|router|input-gate|harness|send-keys|spawn|exec(File|Sync)/)
   })
 })
