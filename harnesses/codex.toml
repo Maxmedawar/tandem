@@ -15,6 +15,12 @@ history = "~/.codex/sessions"
 delivery = "hook"
 hook = "--config"
 hook_format = "config-overrides"
+# U-R1A-36C: Codex starts a stdio MCP server with a short default environment plus the server's
+# `env_vars` (its 0.167.1 binary's text holds "env_vars entry" and the default list LOGNAME SHELL
+# __CF_USER_TEXT_ENCODING LC_ALL TMPDIR TZ ...), so Tandem registers its own `tandem` server for the
+# session through --config values naming TANDEM_CALLER_TOKEN among its env_vars; `codex mcp get
+# tandem --json` under an empty CODEX_HOME listed that command, those args and those env_vars.
+mcp_env = "config-overrides"
 
 [states]
 waiting_for_approval = [

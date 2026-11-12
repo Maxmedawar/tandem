@@ -13,6 +13,9 @@ account_env = "CLAUDE_CONFIG_DIR"
 history = "~/.claude/projects"
 delivery = "hook"
 hook = "--settings"
+# U-R1A-36C: Claude Code hands its own environment to a stdio MCP server it starts: under an empty
+# CLAUDE_CONFIG_DIR and HOME, `claude mcp list` started a probe server that saw TANDEM_CALLER_TOKEN.
+mcp_env = "inherit"
 
 [states]
 waiting_for_approval = [
