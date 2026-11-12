@@ -34,6 +34,8 @@
  * With a presence (bridge/presence.ts) who_is_up is added: read-only, who is up on this computer.
  * With a transcript search (bridge/transcripts/search.ts) transcript_search and transcript_get are
  * added: read-only, one project folder per call, secrets masked, every answer labelled untrusted.
+ * With a usage report (bridge/usage/report.ts) usage is added: read-only account usage of the
+ * owner's computers, the same answer for the owner and an agent (it holds no project or session data).
  * Scope (U-R1A-47): for an agent, the limits file's memory_scope ("project" by default) keeps every
  * fabric call to projects whose workspaceRef holds its session's folder (caller_tokens.folder, read
  * at each call, never from an input), and transcript_scope ("project" by default) keeps transcript
@@ -62,6 +64,7 @@ import { configureFabricTools, type FabricToolServer } from "./fabric/mcp-tools.
 import { MailError, UNTRUSTED_MAIL, type Mailbox } from "../bridge/mailbox.ts";
 import type { Presence } from "../bridge/presence.ts";
 import type { TranscriptSearch } from "../bridge/transcripts/search.ts";
+import type { UsageReport } from "../bridge/usage/report.ts";
 import { FABRIC_BRIDGE_READY_PATH, FABRIC_MCP_TRUST } from "./fabric/rpc-contract.ts";
 import { isBuiltinEngine, KNOWN_ENGINE_IDS, loadedHarnesses } from "../bridge/engine-registry.ts";
 import { ICON_MIME, ICON_DATA_URI } from "./icon.ts";
@@ -127,6 +130,7 @@ export async function buildMcpServer(
   presence?: Presence,
   transcripts?: TranscriptSearch,
   hubLink?: Pick<HubLinkConfig, "url" | "token" | "bridgeId">,
+  usage?: UsageReport,
 ): Promise<McpServer> {
   const runtime = fleet ?? createFleetRuntime({});
   // The agent this process serves (set once at its start from a session's caller token), or
@@ -458,6 +462,28 @@ export async function buildMcpServer(
         },
       },
       async ({ hash, project }) => wrap(outsideScope(project) ?? (await transcripts.get({ hash, project }))),
+    );
+  }
+
+  /* ---- account usage (with a usage report) ---- */
+
+  if (usage) {
+    server.registerTool(
+      "usage",
+      {
+        description:
+          "Read-only. Account usage on the owner's computers, per account of every agent: the 5-hour and 7-day windows' used share (0-100) and reset time (ms since the epoch), the plan, tokens and cost (today and in total), when each was read and its age, and the computer the share reading came from. An account read on several computers shows the freshest share reading; tokens and cost are summed over the computers that read them. A reading over 30 minutes old is stale and the answer's notices say so; a window past its reset reads used null (unknown), never 0. most_room names, per agent, the account with the most room (100 minus the higher window share, fresh readings only). Agents with no limit source show limit: not available. refresh: true re-reads this computer's readings first (tokens at most once a minute); other computers' readings arrive with their presence within seconds. Returns { computer, at, accounts: [{ agent, account, computer, at, ageMs, stale, five_hour: { used, resets_at }, seven_day: { used, resets_at }, plan, room, tokens: { today, total }, cost_usd: { today, total }, tokens_at, tokens_age_ms, tokens_computers, tokens_note, limit_note }], most_room: [{ agent, account, computer, room }], notices }. Numbers, names and times only, no session text.",
+        inputSchema: { refresh: z.boolean().optional().describe("true re-reads this computer's readings first instead of answering the last ones.") },
+      },
+      async ({ refresh }) => {
+        try {
+          return wrap({ status: 200, body: await usage.read({ refresh }) });
+        } catch (e) {
+          const code = (e as { code?: unknown } | undefined)?.code;
+          process.stderr.write(`usage: the report could not be read (${typeof code === "string" && /^[A-Z_0-9]{1,40}$/.test(code) ? code : "error"})\n`);
+          return wrap({ status: 500, body: { error: "usage unavailable" } });
+        }
+      },
     );
   }
 

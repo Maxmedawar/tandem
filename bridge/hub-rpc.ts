@@ -18,6 +18,10 @@
  * `/transcripts/get` with an object body answer its status and body; any other method or
  * path there is 404, any other body 400.
  *
+ * The path `/usage` is the `usage` tool asked at the hub (U-R1A-52): POST with no body or
+ * `{ refresh?: boolean }` answers this process's usage report (./usage/report.ts, made on first
+ * use); any other method is 404, any other body 400.
+ *
  * The path `/remote/command` is a signed command from another computer (U-R1A-36B): POST goes to
  * ./remote-command.ts handleRemoteCommand with the parsed body (it decides by the envelope's
  * signature and this computer's control_from, never by a hub header); any other method there is 404.
@@ -43,6 +47,7 @@ import { handleRemoteCommand } from './remote-command.ts'
 import { readRoster } from './roster.ts'
 import { route } from './router.ts'
 import type { TranscriptSearch } from './transcripts/search.ts'
+import type { UsageReport } from './usage/report.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
 import { PROOF_HEADER } from '../hub/src/devices.ts'
 
@@ -269,12 +274,38 @@ async function transcriptRequest(frame: CcmHttpRequestFrame): Promise<CcmHttpRes
   }
 }
 
+let report: Promise<UsageReport> | undefined
+
+async function usageRequest(frame: CcmHttpRequestFrame): Promise<CcmHttpResponseFrame> {
+  if (frame.method.toUpperCase() !== 'POST') return response(frame.request_id, 404, { error: 'not found' })
+  let body: unknown = {}
+  if (frame.body_base64) {
+    try {
+      body = JSON.parse(Buffer.from(frame.body_base64, 'base64').toString('utf8'))
+    } catch {
+      body = null
+    }
+  }
+  const ok = typeof body === 'object' && body !== null && !Array.isArray(body) &&
+    Object.keys(body).every((k) => k === 'refresh') && ['undefined', 'boolean'].includes(typeof (body as { refresh?: unknown }).refresh)
+  if (!ok) return response(frame.request_id, 400, { error: 'body: only refresh (true or false)' })
+  try {
+    report ??= import('./usage/report.ts').then((m) => m.createUsageReport())
+    return response(frame.request_id, 200, await (await report).read({ refresh: (body as { refresh?: boolean }).refresh }))
+  } catch {
+    report = undefined
+    process.stderr.write('hub-rpc: usage report failed\n')
+    return response(frame.request_id, 500, { error: 'usage unavailable' })
+  }
+}
+
 /**
  * `home`: who signs a `/fabric/` answer whose request carries a challenge (tests); default this
  * computer's link id and device key, opened at signing time.
  */
 export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: LocalFabricHost, home?: MemoryHomeSigner): Promise<CcmHttpResponseFrame> {
   if (frame.path.startsWith('/transcripts/')) return transcriptRequest(frame)
+  if (frame.path === '/usage') return usageRequest(frame)
   if (frame.path === '/remote/command') {
     if (frame.method.toUpperCase() !== 'POST') return response(frame.request_id, 404, { error: 'not found' })
     try {

@@ -18,6 +18,12 @@
  * this computer's clock from no later than its arrival), it is not connected, or the last sync is
  * over STALE_MS old. Names, engines and projects with hidden characters are refused (`shape`). Every state change happens after the store
  * wrote it: a failed call or store changes nothing here, so the next sync does the work again.
+ *
+ * Usage (U-R1A-52): the body may carry one more key, `usage`: this computer's account usage rows
+ * (usageWire: numbers, names and times only, each row exactly WIRE_KEYS and usageRowOk), 1 to
+ * MAX_USAGE_ROWS of them; a computer with none omits the key, so its body is the one above. The
+ * sender sends only rows usageRowOk passes and the receiver refuses a body holding any other
+ * (`shape`), so an honest sender's body is never refused. readRemoteUsage reads them back.
  * Every call carries the link bearer and a `tandem-proof` over the exact bytes; no token, key,
  * proof or reading is ever logged. `now` is the only clock.
  */
@@ -31,18 +37,29 @@ import { hubProofHeader, type HubLinkConfig } from './hub-link.ts'
 import type { Presence } from './presence.ts'
 import { readRoster, thisId, trustedKey } from './roster.ts'
 import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from './sqlite-file.ts'
+import { ACCOUNT } from './usage/claude.ts'
+import { readUsage, tokenRows } from './usage/store.ts'
 
 export const PRESENCE_EVERY_MS = 2000
 export const PUSH_HEARTBEAT_MS = 10_000
 export const STALE_MS = 30_000
 export const PRESENCE_MAX_AGE_MS = 60_000
 export const MAX_READING_BYTES = 16_384
+/** ponytail: a computer's 25th account is not carried; raise this with the worst-case size case if anyone has more. */
+export const MAX_USAGE_ROWS = 24
 
 const SLOW_DOWN_MS = 60_000
 const TIMEOUT_MS = 10_000
 const LOG_EVERY_MS = 60_000
 const ROUTE = '/__tunnel/presence'
 const BODY_KEYS = ['at', 'kind', 'more', 'sessions', 'v'].join()
+const USAGE_BODY_KEYS = ['at', 'kind', 'more', 'sessions', 'usage', 'v'].join()
+const WIRE_KEYS = ['agent', 'account', 'at', 'five_used', 'five_resets', 'seven_used', 'seven_resets', 'plan', 'tokens_at', 'tokens_today', 'tokens_total', 'cost_today', 'cost_total', 'reason'] as const
+const SORTED_WIRE_KEYS = [...WIRE_KEYS].sort().join()
+const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/
+const PLAN = /^[a-z0-9_-]{1,32}$/
+/** Every reason bridge/usage/ccusage.ts and store.ts can keep. */
+const REASON = /^(helper missing|timed out|exit -?[0-9]{1,5}|signal [A-Z0-9]{1,20}|output not readable|folder name has a comma|folder missing|spawn [A-Z_0-9]{1,40}|spawn error)$/
 const ROW_KEYS = ['engine', 'name', 'project', 'state', 'stateAt'].join()
 const STATES = ['working', 'idle', 'waiting_for_approval', 'unknown']
 /** A session name or engine as this product makes them (bridge/sessions.ts), at most 300 characters. */
@@ -55,13 +72,61 @@ const plain = (s: string) => s.length <= 300 && !HIDDEN.test(s)
 export type RemoteSession = { name: string; engine: string; project: string; state: string; stateAt: number; ageMs: number }
 export type RemoteReading = { computer: string; at: number | null; ageMs: number | null; stale: boolean; sessions: RemoteSession[]; more: number }
 type Row = Omit<RemoteSession, 'ageMs'>
-type Body = { v: 1; kind: 'presence'; at: number; sessions: Row[]; more: number }
+/** One account's usage as it crosses computers: numbers, names and times only (ms since the epoch). */
+export type UsageWire = {
+  agent: string; account: string; at: number | null; five_used: number | null; five_resets: number | null; seven_used: number | null; seven_resets: number | null
+  plan: string | null; tokens_at: number | null; tokens_today: number | null; tokens_total: number | null; cost_today: number | null; cost_total: number | null; reason: string | null
+}
+type Body = { v: 1; kind: 'presence'; at: number; sessions: Row[]; more: number; usage?: UsageWire[] }
 type Json = Record<string, unknown>
 
 const httpOrigin = (wsOrigin: string) => wsOrigin.replace(/^ws(s?):\/\//, 'http$1://')
 const isTime = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0
 const isObject = (v: unknown): v is Json => typeof v === 'object' && v !== null && !Array.isArray(v)
 const byName = (a: { name: string }, b: { name: string }) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0)
+
+/**
+ * One usage row as it may cross computers, `ts` the envelope's signed time: exactly WIRE_KEYS; names
+ * by their rules; `at` at most a minute after `ts` (a drop file may be that far ahead), `tokens_at`
+ * not after it, not both null; shares 0-100; the four token numbers all set or all null.
+ */
+export function usageRowOk(row: unknown, ts: number): row is UsageWire {
+  if (!isObject(row) || Object.keys(row).sort().join() !== SORTED_WIRE_KEYS) return false
+  const r = row as Json
+  const time = (v: unknown, max = Infinity) => v === null || (Number.isSafeInteger(v) && (v as number) > 0 && (v as number) <= max)
+  const share = (v: unknown) => v === null || (typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100)
+  const count = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0
+  const cost = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0
+  const tokens = [r.tokens_today, r.tokens_total, r.cost_today, r.cost_total]
+  return typeof r.agent === 'string' && AGENT.test(r.agent) && typeof r.account === 'string' && ACCOUNT.test(r.account) &&
+    time(r.at, ts + 60_000) && time(r.tokens_at, ts) && (r.at !== null || r.tokens_at !== null) &&
+    time(r.five_resets) && time(r.seven_resets) && share(r.five_used) && share(r.seven_used) &&
+    (r.plan === null || (typeof r.plan === 'string' && PLAN.test(r.plan))) &&
+    (r.reason === null || (typeof r.reason === 'string' && REASON.test(r.reason))) &&
+    (tokens.every((v) => v === null) || (count(r.tokens_today) && count(r.tokens_total) && cost(r.cost_today) && cost(r.cost_total)))
+}
+
+/** This computer's usage rows to send: the store's readings joined with its token runs by agent and account, rows usageRowOk refuses dropped, sorted, the first MAX_USAGE_ROWS. */
+export function usageWire(now: number): UsageWire[] {
+  const rows = new Map<string, UsageWire>()
+  const row = (agent: string, account: string) => {
+    const key = JSON.stringify([agent, account])
+    let r = rows.get(key)
+    if (!r) {
+      r = { agent, account, at: null, five_used: null, five_resets: null, seven_used: null, seven_resets: null, plan: null, tokens_at: null, tokens_today: null, tokens_total: null, cost_today: null, cost_total: null, reason: null }
+      rows.set(key, r)
+    }
+    return r
+  }
+  for (const u of readUsage(now)) {
+    Object.assign(row(u.agent, u.account), { at: u.at, five_used: u.five_hour.used, five_resets: u.five_hour.resetsAt, seven_used: u.seven_day.used, seven_resets: u.seven_day.resetsAt, plan: u.plan })
+  }
+  for (const t of tokenRows()) {
+    Object.assign(row(t.agent, t.account), { tokens_at: t.read_ms, tokens_today: t.tokens_today, tokens_total: t.tokens_total, cost_today: t.cost_today, cost_total: t.cost_total, reason: t.reason })
+  }
+  return [...rows.values()].filter((r) => usageRowOk(r, now)).sort((a, b) => cmp(a.agent, b.agent) || cmp(a.account, b.account)).slice(0, MAX_USAGE_ROWS)
+}
 
 function stateFile(): string {
   return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db')
@@ -93,7 +158,8 @@ function presenceBody(text: string, ts: number): Body | undefined {
   } catch {
     return undefined
   }
-  if (!isObject(b) || Object.keys(b).sort().join() !== BODY_KEYS) return undefined
+  const keys = isObject(b) ? Object.keys(b).sort().join() : ''
+  if (!isObject(b) || (keys !== BODY_KEYS && keys !== USAGE_BODY_KEYS)) return undefined
   if (b.v !== 1 || b.kind !== 'presence' || !isTime(b.at) || b.at > ts || ts - b.at > PRESENCE_MAX_AGE_MS || !isTime(b.more) || !Array.isArray(b.sessions)) return undefined
   const sessions: Row[] = []
   for (const r of b.sessions as unknown[]) {
@@ -105,12 +171,18 @@ function presenceBody(text: string, ts: number): Body | undefined {
     if (!isTime(stateAt) || stateAt > ts || ts - stateAt > PRESENCE_MAX_AGE_MS) return undefined
     sessions.push({ name, engine, project, state: state as string, stateAt })
   }
-  return { v: 1, kind: 'presence', at: b.at, sessions, more: b.more }
+  if (keys === BODY_KEYS) return { v: 1, kind: 'presence', at: b.at, sessions, more: b.more }
+  const usage = b.usage
+  if (!Array.isArray(usage) || usage.length === 0 || usage.length > MAX_USAGE_ROWS || !usage.every((r) => usageRowOk(r, ts))) return undefined
+  if (new Set(usage.map((r: UsageWire) => JSON.stringify([r.agent, r.account]))).size !== usage.length) return undefined
+  // Rebuilt in WIRE_KEYS order from the checked fields only.
+  const rows = usage.map((r: UsageWire) => Object.fromEntries(WIRE_KEYS.map((k) => [k, r[k]])) as UsageWire)
+  return { v: 1, kind: 'presence', at: b.at, sessions, more: b.more, usage: rows }
 }
 
 export function hubPresence(
   config: Pick<HubLinkConfig, 'url' | 'token' | 'bridgeId'>,
-  opts: { presence: Presence; key?: DeviceKey; now?: () => number; trusted?: (id: string) => string | undefined; path?: string },
+  opts: { presence: Presence; key?: DeviceKey; now?: () => number; trusted?: (id: string) => string | undefined; path?: string; usage?: (now: number) => UsageWire[] },
 ): { syncOnce(): Promise<void>; start(): () => void } {
   const { presence } = opts
   const now = opts.now ?? Date.now
@@ -132,10 +204,10 @@ export function hubPresence(
   /** openEnvelope's replay store: every nonce is new; a replayed reading is caught by its `at`. */
   const fresh = { remember: () => true }
 
-  /** One envelope from this computer to `to`, rows dropped from the end until it fits MAX_READING_BYTES. */
-  function envelopeTo(to: string, at: number, rows: Row[]): string {
+  /** One envelope from this computer to `to`, session rows dropped from the end until it fits MAX_READING_BYTES; the usage rows (none: no key) always ride. */
+  function envelopeTo(to: string, at: number, rows: Row[], usage: UsageWire[]): string {
     for (let n = rows.length; ; n--) {
-      const body = JSON.stringify({ v: 1, kind: 'presence', at, sessions: rows.slice(0, n), more: rows.length - n })
+      const body = JSON.stringify({ v: 1, kind: 'presence', at, sessions: rows.slice(0, n), more: rows.length - n, ...(usage.length > 0 ? { usage } : {}) })
       const text = JSON.stringify(signEnvelope(signer(), { from: self, to, body }, now()))
       if (Buffer.byteLength(text, 'utf8') <= MAX_READING_BYTES || n === 0) return text
     }
@@ -187,7 +259,14 @@ export function hubPresence(
     if (changed || now() - last!.at >= PUSH_HEARTBEAT_MS) {
       const reading = await presence.whoIsUp(changed ? { refresh: true } : {})
       const rows = [...reading.sessions].sort(byName).map(({ name, engine, project, state, stateAt }) => ({ name, engine, project: plain(project) ? project : '', state, stateAt }))
-      for (const to of members) items.push({ to, envelope: envelopeTo(to, reading.at, rows) })
+      // A usage store that fails never stops presence: no usage rows this push.
+      let usage: UsageWire[] = []
+      try {
+        usage = (opts.usage ?? usageWire)(now())
+      } catch {
+        usage = []
+      }
+      for (const to of members) items.push({ to, envelope: envelopeTo(to, reading.at, rows, usage) })
     }
     const body = JSON.stringify({ presence: items })
     let status: number | undefined
@@ -298,6 +377,27 @@ export function readRemotePresence(opts: { now?: () => number; path?: string; se
         sessions: [...b.sessions].sort(byName).map((s) => ({ ...s, ageMs: since(s.stateAt) })),
         more: b.more,
       }
+    })
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * The usage rows each other computer of the roster last sent inside its presence (sorted by id),
+ * with the time that reading arrived here; [] for a kept reading without usage. [] with no roster or
+ * a roster of this computer alone (state.db is then not opened).
+ */
+export function readRemoteUsage(opts: { path?: string; self?: string; members?: () => { id: string }[] | undefined } = {}): { computer: string; receivedMs: number; rows: UsageWire[] }[] {
+  const self = opts.self ?? thisId()
+  const ids = [...new Set(((opts.members ?? readRoster)() ?? []).map((m) => m.id).filter((id) => id !== self))].sort()
+  if (ids.length === 0) return []
+  const db = openStore(opts.path ?? stateFile())
+  try {
+    const one = db.prepare('SELECT reading, received_ms FROM presence_remote WHERE computer = ?')
+    return ids.flatMap((computer) => {
+      const row = one.get(computer) as { reading: string; received_ms: number } | undefined
+      return row ? [{ computer, receivedMs: row.received_ms, rows: (JSON.parse(row.reading) as Body).usage ?? [] }] : []
     })
   } finally {
     db.close()

@@ -156,3 +156,49 @@ too, add the drop command to that account's `settings.json` by hand:
    line; a session you start yourself shows it.
 
 To undo, put your old command back as the `statusLine` command and delete the saved file.
+
+## Reading usage: the `usage` tool
+
+Agents and MCP clients read usage with the tool `usage`, read-only, on each computer (the stdio
+server) and at the hub (with `machine`). Owner and agents get the same answer: it holds no
+project, folder or session data.
+
+The answer is `{ computer, at, accounts, most_room, notices }`: the computer that answered and
+when. One row in `accounts` per account of every agent on the owner's computers, sorted by agent
+and account, with:
+
+- `five_hour` and `seven_day`: the window's used share (`used`, 0 to 100) and its reset time
+  (`resets_at`, ms since the epoch), and the `plan` when the agent names one;
+- `computer`, `at` and `ageMs`: the computer the share reading came from, when it was read and
+  its age;
+- `stale`: the reading is over 30 minutes old (an account with no share reading: its token reading
+  is); the answer's `notices` say so;
+- `room`: 100 minus the higher window share, for a fresh reading; null when stale or unknown;
+- `tokens` and `cost_usd` (today and in total), `tokens_at` and `tokens_age_ms`, `tokens_computers`
+  (the computers whose counts are added) and `tokens_note` (a computer whose count failed, with its
+  reason); `limit_note` is `limit: not available` for Grok, Antigravity and OpenCode.
+
+A window past its reset reads `used: null` (unknown, never 0) with a notice, until the next
+reading. `most_room` names, per agent, the account with the most room, fresh readings only (ties
+go to the lower name); an agent with none gets nulls and, when it has a limit source, a notice.
+
+`refresh: true` re-reads this computer's drop files and Codex logs first, and its tokens when the
+last count is a minute old or more (a second caller within the minute gets the last count). The
+answer waits at most 30 seconds for tokens; past that it says `refresh: tokens are still being
+read` and the count lands for the next call. Other computers are not asked: their readings arrive
+within seconds anyway.
+
+### Across computers
+
+Each computer's usage rows ride inside its signed presence (the same envelope who_is_up's
+`others` come from), at most 24 accounts per computer. A row is numbers, names and times only:
+agent, account, the reading's time, each window's share and reset, the plan, the token count time,
+tokens and cost (today and total) and a failure reason from a fixed list. A receiving computer
+refuses a presence holding anything else. Nothing else is sent: no session, folder, model or
+screen text, no file and no login.
+
+For an account seen on several computers the freshest share reading wins and names its computer
+(a computer's times count no later than when its reading arrived here). Tokens and cost are added
+up over the computers, since each counts only its own logs. Every computer holds the same merged
+view, so the hub's answer (one connected computer, the default or `machine`) is the same whichever
+computer gives it.
