@@ -1,0 +1,53 @@
+{
+  "_source": "shape from claude 2.1.321 binary text (V2), not a capture",
+  "session_id": "",
+  "session_name": "",
+  "prompt_id": "",
+  "transcript_path": "",
+  "cwd": "",
+  "model": { "id": "", "display_name": "" },
+  "workspace": {
+    "current_dir": "",
+    "project_dir": "",
+    "added_dirs": [],
+    "git_worktree": "",
+    "repo": { "host": "", "owner": "", "name": "" }
+  },
+  "version": "",
+  "output_style": { "name": "" },
+  "context_window": {
+    "total_input_tokens": 41234,
+    "total_output_tokens": 812,
+    "context_window_size": 200000,
+    "current_usage": { "input_tokens": 12, "output_tokens": 812, "cache_creation_input_tokens": 3021, "cache_read_input_tokens": 38201 },
+    "used_percentage": 21,
+    "remaining_percentage": 79
+  },
+  "effort": { "level": "" },
+  "thinking": { "enabled": true },
+  "rate_limits": {
+    "five_hour": { "used_percentage": 37.5, "resets_at": 4102444800 },
+    "seven_day": { "used_percentage": 12, "resets_at": 4102963200 },
+    "spend_limit": { "used_percentage": 64, "resets_at": 4103049600, "used_usd": 32.1, "limit_usd": 50, "period": "" }
+  },
+  "prompt_cache": {
+    "warm": true,
+    "caching_observed": true,
+    "ttl": "",
+    "expires_at": 4102444500,
+    "requests": 7,
+    "misses": 1,
+    "expected_rebuilds": 0,
+    "hit_ratio": 0.92,
+    "cache_write_tokens": 3021,
+    "miss_recache_tokens": 1200,
+    "last_miss_at": 4102444000,
+    "last_miss_cause": { "causes": [], "tools_added": 0, "tools_removed": 0, "system_char_delta": 14 },
+    "miss_causes": {},
+    "recache_tokens_if_cold": 41000
+  },
+  "vim": { "mode": "" },
+  "agent": { "name": "", "type": "" },
+  "pr": { "number": 42, "url": "", "review_state": "", "kind": "" },
+  "worktree": { "name": "", "path": "", "branch": "", "original_cwd": "", "original_branch": "" }
+}

@@ -18,9 +18,13 @@ import { basename, delimiter, isAbsolute, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
 import { RE2JS } from 're2js'
-import { HOOK_OPTION } from './delivery-hooks.ts'
+import { HOOK_OPTION, setUsageSource } from './delivery-hooks.ts'
 import type { DrivableSession, EngineDescriptor } from './drivable.ts'
 import { openHermes } from './engines/hermes.ts'
+import { usageSource } from './usage/claude.ts'
+
+// installHook gives a `usage = "statusline"` harness its statusLine through this (bridge/usage/claude.ts).
+setUsageSource(usageSource)
 
 export type StateName = 'working' | 'idle' | 'waiting_for_approval'
 export type KeySpec = string | string[]
@@ -47,6 +51,10 @@ export interface Harness {
   hook_format?: 'settings-file' | 'config-overrides'
   /** How the agent hands environment to a stdio MCP server it starts (U-R1A-36C); absent = unknown. */
   mcp_env?: 'inherit' | 'config-overrides' | 'unknown'
+  /** How the agent reports its account's limits (U-R1A-49): `statusline` = a statusLine command in its settings file. */
+  usage?: 'statusline'
+  /** The agent's default account folder when its `account_env` variable is unset (`/` or `~/`). */
+  account_dir?: string
   permission_hook: boolean
   reports_context: boolean
   adapter?: string
@@ -80,7 +88,7 @@ const NAMED_KEY = /^(Enter|Escape|Tab|BTab|Space|BSpace|Up|Down|Left|Right|Home|
 /** Command text: no control, format (bidi, zero-width) or line-separator character, no shell character, no brace once `{id}` is removed. */
 const BAD_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}`$;|&<>{}]/u
 const FIELDS = ['name', 'program', 'args', 'skip_prompts_args', 'resume', 'fork', 'has_prompts', 'account_env', 'history',
-  'states', 'keys', 'dialogs', 'delivery', 'hook', 'hook_format', 'mcp_env', 'permission_hook', 'reports_context', 'adapter', 'logo']
+  'states', 'keys', 'dialogs', 'delivery', 'hook', 'hook_format', 'mcp_env', 'usage', 'account_dir', 'permission_hook', 'reports_context', 'adapter', 'logo']
 const STATE_NAMES: StateName[] = ['working', 'idle', 'waiting_for_approval']
 const KEY_NAMES = ['approve', 'deny', 'interrupt'] as const
 /** Text that is never typed as a dialog answer, and a screen showing it is never answered (sign-in, purchase). */
@@ -251,6 +259,12 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
   if (mcp_env !== undefined && mcp_env !== 'inherit' && mcp_env !== 'config-overrides' && mcp_env !== 'unknown') fail('bad mcp_env: "inherit", "config-overrides" or "unknown"')
   // Tandem's own MCP server rides on the hook's --config values (bridge/delivery-hooks.ts mcpOverrides).
   if (mcp_env === 'config-overrides' && hook_format !== 'config-overrides') fail('mcp_env "config-overrides" needs hook_format "config-overrides"')
+  const usage = raw.usage
+  if (usage !== undefined && usage !== 'statusline') fail('bad usage: "statusline"')
+  // The statusLine rides in the per-session settings file (bridge/delivery-hooks.ts installHook).
+  if (usage === 'statusline' && (delivery !== 'hook' || hook_format === 'config-overrides')) fail('usage "statusline" needs a settings-file hook')
+  const account_dir = str(raw, 'account_dir')
+  if (account_dir !== undefined && !account_dir.startsWith('/') && !account_dir.startsWith('~/')) fail('bad account_dir: must start with / or ~/')
   const logo = str(raw, 'logo')
   if (logo !== undefined && !LOGO.test(logo)) fail('bad logo')
 
@@ -263,6 +277,7 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
     has_prompts, account_env, history, states, keys, dialogs,
     delivery: delivery as Harness['delivery'], hook, hook_format: hook_format as Harness['hook_format'],
     mcp_env: mcp_env as Harness['mcp_env'],
+    usage: usage as Harness['usage'], account_dir,
     permission_hook: bool(raw, 'permission_hook') ?? false,
     reports_context: bool(raw, 'reports_context') ?? false,
     adapter, logo,
