@@ -12,13 +12,14 @@
  * path and no text.
  */
 import { createHash } from 'node:crypto'
-import { chmodSync, closeSync, createReadStream, mkdirSync, openSync, type Dirent, type Stats } from 'node:fs'
+import { chmodSync, createReadStream, mkdirSync, type Dirent, type Stats } from 'node:fs'
 import { lstat, readdir, stat } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { loadedHarnesses } from '../engine-registry.ts'
+import { ensureDbFile } from '../sqlite-file.ts'
 import * as claudeReader from './readers/claude.ts'
 import * as codexReader from './readers/codex.ts'
 
@@ -78,9 +79,8 @@ function db(): NodeDatabaseSync {
   if (handle) return handle
   mkdirSync(TRANSCRIPTS_DIR, { recursive: true, mode: 0o700 })
   chmodSync(TRANSCRIPTS_DIR, 0o700)
-  // Never let SQLite create the file under the process umask.
-  closeSync(openSync(DB_PATH, 'a', 0o600))
-  chmodSync(DB_PATH, 0o600)
+  // Never let SQLite create the file under the process umask; never close a plain handle of an existing one.
+  ensureDbFile(DB_PATH)
   const d = new DatabaseSync(DB_PATH)
   d.exec(`CREATE TABLE IF NOT EXISTS transcript_pointers (
     name TEXT NOT NULL, agent TEXT NOT NULL, cwd TEXT NOT NULL, started_at INTEGER NOT NULL,

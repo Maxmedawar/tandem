@@ -29,13 +29,14 @@
  * fyi only.
  */
 import { randomUUID } from 'node:crypto'
-import { chmodSync, closeSync, mkdirSync, openSync } from 'node:fs'
+import { chmodSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { MAX_ROOM_EVENT_BODY_BYTES } from '../src/fabric/types.ts'
 import { audit } from './audit.ts'
+import { ensureDbFile } from './sqlite-file.ts'
 import { isMailSender, isRemoteSender, limitsSnapshot, thisId, trustedKey } from './limits.ts'
 
 // Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
@@ -257,9 +258,8 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   const dir = dirname(path)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
-  // Never let SQLite create the file under the process umask.
-  closeSync(openSync(path, 'a', 0o600))
-  chmodSync(path, 0o600)
+  // Never let SQLite create the file under the process umask; never close a plain handle of an existing one.
+  ensureDbFile(path)
   const db: NodeDatabaseSync = new DatabaseSync(path)
   try {
     db.exec(`PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;

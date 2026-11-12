@@ -12,13 +12,14 @@
  * a replay is refused after a restart too. Nothing is printed or audited here: the caller audits.
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, constants, fchmodSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { verifySignature } from './device-keys.ts'
 import type { DeviceKey } from './device-keys.ts'
+import { ensureDbFile } from './sqlite-file.ts'
 
 // Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
@@ -172,18 +173,12 @@ export function openReplayStore(options: { path?: string; now?: () => number } =
     throw new Error(`replay store ${path} refused: the folder has mode 0${dirMode.toString(8)}, not 0700`)
   }
   // Never let SQLite create the file under the process umask, and never follow a symlinked file.
-  let fd: number
   try {
-    fd = openSync(path, constants.O_RDWR | constants.O_CREAT | constants.O_NOFOLLOW, 0o600)
+    ensureDbFile(path)
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code
     if (code === 'ELOOP' || code === 'EMLINK') throw new Error(`replay store ${path} refused: the file is a symlink`)
     throw e
-  }
-  try {
-    fchmodSync(fd, 0o600)
-  } finally {
-    closeSync(fd)
   }
   const db: NodeDatabaseSync = new DatabaseSync(path)
   try {
