@@ -19,7 +19,7 @@
  * Exit codes: 0 done, 1 refused or failed (this command's own line is the last stderr line), 2 usage.
  */
 import { createHash } from 'node:crypto'
-import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
+import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -61,6 +61,8 @@ function realish(p: string): string {
     return up === p ? p : join(realish(up), basename(p))
   }
 }
+/** Something is at `p`, a link to nothing included: the readers (bridge/limits.ts copyKey) look the same way. */
+const there = (p: string) => lstatSync(p, { throwIfNoEntry: false }) !== undefined
 const within = (path: string, root: string) => path === root || path.startsWith(root.endsWith(sep) ? root : root + sep)
 
 /** Lines from `input`, one at a time; undefined at the end. A last line with no line end is not a line. */
@@ -234,7 +236,7 @@ async function init(rest: string[], input: Input, lines: Lines): Promise<number>
   const copyFile = join(dir, 'limits.applied.toml')
   if (!force) {
     for (const f of [file, copyFile]) {
-      if (existsSync(f)) {
+      if (there(f)) {
         warn(`tandem: ${f} already exists; nothing was written (edit it and run tandem limits apply)`)
         return 1
       }
@@ -304,7 +306,7 @@ async function init(rest: string[], input: Input, lines: Lines): Promise<number>
       return 1
     }
   } else {
-    const copy = existsSync(copyFile)
+    const copy = there(copyFile)
     printDiff(file, appliedFields(limits), fields, limits.FIELDS, copy)
     process.stdout.write('Type yes to replace the limits file and apply it: ')
     if ((await lines.next()) !== 'yes') {

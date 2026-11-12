@@ -12,7 +12,7 @@
  * that folder, then removes it.
  */
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { appendFileSync, chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { dirname, join } from 'node:path'
@@ -344,6 +344,14 @@ describe('U-R1A-48 tandem limits', () => {
     const copyOnly = await cli(['init'])
     expect([copyOnly.code, copyOnly.err]).toEqual([1, `tandem: ${APPLIED} already exists; nothing was written (edit it and run tandem limits apply)\n`])
     expect(existsSync(LIMITS)).toBe(false)
+    // a copy that is a link to nothing is still a copy (every reader refuses it, nothing allowed): init leaves it alone
+    rmSync(APPLIED)
+    symlinkSync(join(BOX, 'nowhere'), APPLIED)
+    const linked = await cli(['init', '--folder', WORK])
+    expect([linked.code, lastLine(linked.err)]).toEqual([1, `tandem: ${APPLIED} already exists; nothing was written (edit it and run tandem limits apply)`])
+    expect([existsSync(LIMITS), readlinkSync(APPLIED)]).toEqual([false, join(BOX, 'nowhere')])
+    rmSync(APPLIED)
+    writeFileSync(APPLIED, before[1]!, { mode: 0o600 })
     writeFileSync(LIMITS, before[0]!, { mode: 0o600 })
     const piped = await cli(['init', '--force', '--folder', OTHER], { input: pipe() })
     expect([piped.code, piped.out, piped.err]).toEqual([1, '', 'tandem: limits init --force needs you at this computer: run it in a terminal, not from a pipe or a script\n'])
