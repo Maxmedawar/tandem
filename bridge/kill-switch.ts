@@ -10,6 +10,21 @@
  * Only `tandem kill-switch off` at this computer removes the file: no route, tool or frame calls
  * release().
  *
+ * A running runtime holds the switch on (U-R1A-35B, startKillSwitchGuard): once it has seen the
+ * switch on it keeps it on in memory, puts the file back when it disappears without `off` (one
+ * `kill_switch.tampered` audit line) and turns it off only when `tandem kill-switch off` asks over
+ * the runtime's control socket (bridge/control-socket.ts) from outside every Tandem session: no
+ * caller token, no TMUX naming Tandem's socket, no Tandem pane among the asking process's parents.
+ * The CLI makes the same check on itself first, so an agent is refused with no runtime running.
+ *
+ * Stated limits: every agent is the same OS user as the owner (T23). It can kill or stop the
+ * runtime (then remove the file), connect to the control socket itself with made-up facts (an empty
+ * token, no TMUX, another process's pid), or detach to parent pid 1 before asking; a runtime
+ * restarted by launchd/systemd starts unlatched if the file is gone by then. The switch is a
+ * best-effort stop against a hostile same-user agent; isolation = 36A tokens + R3 sandboxes. Other
+ * processes read the file, so they see a removed file for up to one guard tick (1 s) before it is
+ * back; the runtime itself never does.
+ *
  * engage() writes the file first, then presses each `ccm-` session's own interrupt key on Tandem's
  * own tmux socket (or ends it with `close`). It never signals a process and never stops the tmux
  * server. The tmux and harness modules are imported when needed, so the hook and the router load
@@ -19,10 +34,12 @@
  * socket plus the live reservations: files `<TANDEM_HOME>/opening/<name>` younger than 120 s,
  * written under the lock `<TANDEM_HOME>/opening/.lock`.
  */
-import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, realpathSync, rmSync, unlinkSync, writeSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import type { ControlCommand, ControlResult } from './control-socket.ts'
 
 export const KILL_SWITCH_ON =
   'kill switch on: nothing may start or be typed into on this computer until the owner runs tandem kill-switch off here'
@@ -52,8 +69,19 @@ export function killSwitchPath(): string {
   return join(tandemHome(), 'kill-switch')
 }
 
-/** True when anything is at the path or the check fails with anything but ENOENT. */
+/** This process's guard (a running runtime), or none. */
+type Guard = { latched: boolean; tampered: number; lastTamperedAt?: number; failing?: boolean }
+let guard: Guard | undefined
+
+/**
+ * True when anything is at the path or the check fails with anything but ENOENT; in a process that
+ * runs a guard, also while the guard is latched.
+ */
 export function killSwitchOn(): boolean {
+  return guard?.latched === true || switchFileOn()
+}
+
+function switchFileOn(): boolean {
   try {
     lstatSync(killSwitchPath())
     return true
@@ -142,6 +170,13 @@ export async function engage(opts: { close?: boolean } = {}): Promise<{ stopped:
         if (opts.close) {
           await tmux(['kill-session', '-t', `=${full}`])
           closed.push(name)
+          // The ended session's caller token goes too (36A audit G2). A failure is ignored: a stdio
+          // server already refuses a token whose session is gone (36A F2), so a left row is harmless.
+          try {
+            ;(await import('./caller-tokens.ts')).revokeCallerToken(name)
+          } catch {
+            /* harmless, as above */
+          }
           return
         }
         for (const [i, key] of (await interruptKeys(name)).entries()) {
@@ -173,6 +208,241 @@ export function release(): boolean {
   if (!isFile) throw new Error(`tandem: ${path} is not a regular file; it stays on until you remove it yourself`)
   unlinkSync(path)
   return true
+}
+
+const restoredText = () => `on ${new Date().toISOString()} restored\n`
+
+/**
+ * The runtime's hold on the switch. At start it latches when the switch reads on; each tick a file
+ * that reads on latches it, and while latched a missing file (ENOENT) is written back exactly as
+ * engage() writes it, with one `kill_switch.tampered` audit line. A folder or symlink at the path
+ * reads on and is left alone. While it runs, killSwitchOn() in this process answers latched or the
+ * file; only the control socket's kill_switch_off (runKillSwitchCommand) unlatches it.
+ */
+export function startKillSwitchGuard(opts: { everyMs?: number } = {}): {
+  stop(): void
+  state(): { latched: boolean; tampered: number; lastTamperedAt?: number }
+} {
+  if (guard) throw new Error('tandem: a kill switch guard already runs in this process')
+  const g: Guard = { latched: switchFileOn(), tampered: 0 }
+  guard = g
+  const tick = () => {
+    if (guard !== g) return
+    if (switchFileOn()) {
+      g.latched = true
+      g.failing = false
+      return
+    }
+    if (!g.latched) return
+    let restored = false
+    try {
+      mkdirSync(tandemHome(), { recursive: true, mode: 0o700 })
+      createFile(killSwitchPath(), restoredText())
+      restored = switchFileOn()
+    } catch {
+      restored = false
+    }
+    // One record per removal; a restore that failed is tried again each tick without another record.
+    if (!g.failing) {
+      g.tampered++
+      g.lastTamperedAt = Date.now()
+      void import('./audit.ts').then(({ audit }) => audit({ event: 'kill_switch.tampered', restored }))
+      // The latch keeps this process refusing either way.
+      if (!restored) process.stderr.write('tandem: the kill switch file was removed without off and could not be restored; this runtime still refuses\n')
+    }
+    g.failing = !restored
+  }
+  const timer = setInterval(tick, opts.everyMs ?? 1_000)
+  timer.unref?.()
+  return {
+    stop() {
+      clearInterval(timer)
+      if (guard === g) guard = undefined
+    },
+    state: () => ({ latched: g.latched, tampered: g.tampered, ...(g.lastTamperedAt === undefined ? {} : { lastTamperedAt: g.lastTamperedAt }) }),
+  }
+}
+
+/** The parent of `pid`: /proc/<pid>/stat on Linux, else `ps -o ppid= -p <pid>`; undefined when there is no such process. */
+export function parentPidOf(pid: number): number | undefined {
+  let text: string
+  if (process.platform === 'linux') {
+    try {
+      text = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    } catch (e) {
+      if (codeOf(e) === 'ENOENT' || codeOf(e) === 'ESRCH') return undefined
+      throw e
+    }
+    // `pid (comm) state ppid ...`: comm may hold spaces and parentheses, so read after the last `)`.
+    const ppid = Number(text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[1])
+    if (!Number.isInteger(ppid)) throw new Error(`cannot read the parent of ${pid}`)
+    return ppid
+  }
+  try {
+    text = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch (e) {
+    // ps exits 1 with nothing printed when there is no such process.
+    if ((e as { status?: unknown }).status === 1 && !String((e as { stdout?: unknown }).stdout ?? '').trim()) return undefined
+    throw e
+  }
+  const ppid = Number(text.trim())
+  if (!Number.isInteger(ppid)) throw new Error(`cannot read the parent of ${pid}`)
+  return ppid
+}
+
+/**
+ * The Tandem session `pid` runs inside (its name without `ccm-`), or undefined: the pane pids of
+ * the `ccm-` sessions on Tandem's socket (no server or no tmux program: none), then `pid` and its
+ * parents (at most 64 steps, stopping at 1 or a repeat); the first pane pid names the session. Any
+ * other failure throws.
+ */
+export async function insideTandemSession(pid: number): Promise<string | undefined> {
+  const { tmux } = await import('./terminal-session.ts')
+  let out: string
+  try {
+    out = await tmux(['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'])
+  } catch (e) {
+    if (codeOf(e) === 'ENOENT' || /no server running|error connecting to/.test(String(e))) return undefined
+    throw e
+  }
+  const panes = new Map<number, string>()
+  for (const line of out.split('\n')) {
+    const [session, panePid] = line.split(' ')
+    if (session?.startsWith(PREFIX) && /^\d+$/.test(panePid ?? '')) panes.set(Number(panePid), session.slice(PREFIX.length))
+  }
+  if (panes.size === 0) return undefined
+  const seen = new Set<number>()
+  let cur: number | undefined = pid
+  for (let step = 0; step < 64 && cur !== undefined && cur > 1 && !seen.has(cur); step++) {
+    const name = panes.get(cur)
+    if (name !== undefined) return name
+    seen.add(cur)
+    cur = parentPidOf(cur)
+  }
+  return undefined
+}
+
+/** The facts an `off` carries about who asks. */
+type OffFacts = { pid: number; caller_token?: string; tmux?: string }
+
+/**
+ * Why `off` with these facts is refused, or undefined for the owner: `agent_refused` for a caller
+ * token, a TMUX naming Tandem's socket, or a pid inside a Tandem session; `cannot_tell` when that
+ * cannot be worked out.
+ */
+export async function offRefusal(facts: OffFacts): Promise<'agent_refused' | 'cannot_tell' | undefined> {
+  if (typeof facts.caller_token === 'string' && facts.caller_token !== '') return 'agent_refused'
+  try {
+    const { tmuxSocketPath } = await import('./terminal-session.ts')
+    const sock = tmuxSocketPath()
+    let real = sock
+    try {
+      real = realpathSync(sock)
+    } catch {
+      /* no socket yet */
+    }
+    if (typeof facts.tmux === 'string' && (facts.tmux.startsWith(`${sock},`) || facts.tmux.startsWith(`${real},`))) return 'agent_refused'
+    return (await insideTandemSession(facts.pid)) === undefined ? undefined : 'agent_refused'
+  } catch {
+    return 'cannot_tell'
+  }
+}
+
+/** The runtime's answer to a control command (src/server.ts passes this to startControlServer). */
+export async function runKillSwitchCommand(command: ControlCommand): Promise<ControlResult> {
+  if (command.op === 'kill_switch_status') {
+    return {
+      ok: true,
+      detail: {
+        on: killSwitchOn(),
+        latched: guard?.latched ?? false,
+        tampered: guard?.tampered ?? 0,
+        last_tampered_at: guard?.lastTamperedAt === undefined ? null : new Date(guard.lastTamperedAt).toISOString(),
+      },
+    }
+  }
+  const refused = await offRefusal(command)
+  if (refused) return { ok: false, error: refused }
+  // Unlatch and remove in one synchronous step: no tick can run between them and latch again.
+  const wasLatched = guard?.latched === true
+  let removed: boolean
+  try {
+    if (guard) guard.latched = false
+    removed = release()
+  } catch {
+    // Not a regular file: it reads on, so the next tick latches again.
+    return { ok: false, error: 'stays_on' }
+  }
+  const { audit } = await import('./audit.ts')
+  audit({ event: 'kill_switch.off', by: 'control' })
+  return { ok: true, detail: { was_on: wasLatched || removed } }
+}
+
+const OFF_REFUSED = {
+  agent_refused: 'tandem: kill switch off refused: run it from your own terminal, not from inside a Tandem session',
+  cannot_tell: 'tandem: kill switch off refused: cannot tell whether this runs inside a Tandem session',
+} as const
+
+/** `tandem kill-switch off`: the owner check here, then the runtime's control socket, else the file. */
+async function off(say: (line: string) => void): Promise<number> {
+  const warn = (line: string) => process.stderr.write(`${line}\n`)
+  const token = process.env.TANDEM_CALLER_TOKEN
+  const tmuxEnv = process.env.TMUX
+  const facts: OffFacts = {
+    pid: process.pid,
+    ...(token === undefined ? {} : { caller_token: token }),
+    ...(tmuxEnv === undefined ? {} : { tmux: tmuxEnv }),
+  }
+  const own = await offRefusal(facts)
+  if (own) {
+    warn(OFF_REFUSED[own])
+    return 1
+  }
+  const { controlSocketPath, sendControlCommand } = await import('./control-socket.ts')
+  let answer: ControlResult
+  try {
+    answer = await sendControlCommand(controlSocketPath(), { op: 'kill_switch_off', ...facts })
+  } catch (e) {
+    if (codeOf(e) === 'ENOENT' || codeOf(e) === 'ECONNREFUSED') {
+      // No runtime: the file alone, as before.
+      say(release() ? 'tandem: kill switch off' : 'tandem: kill switch was already off')
+      return 0
+    }
+    warn('tandem: the runtime did not answer; the switch stays on')
+    return 1
+  }
+  if (answer.ok) {
+    const wasOn = (answer.detail as { was_on?: unknown } | undefined)?.was_on
+    say(wasOn === false ? 'tandem: kill switch was already off' : 'tandem: kill switch off')
+    return 0
+  }
+  if (answer.error === 'agent_refused' || answer.error === 'cannot_tell') {
+    warn(OFF_REFUSED[answer.error])
+    return 1
+  }
+  if (answer.error === 'unknown_command') {
+    const removed = release()
+    warn('tandem: the running runtime is older and keeps no switch record')
+    say(removed ? 'tandem: kill switch off' : 'tandem: kill switch was already off')
+    return 0
+  }
+  warn(`tandem: kill switch off failed (${String(answer.error)}); the switch stays on`)
+  return 1
+}
+
+/** The runtime's restore count line for `status`, when a runtime answers and has restored the file. */
+async function restoredLine(): Promise<string | undefined> {
+  try {
+    const { controlSocketPath, sendControlCommand } = await import('./control-socket.ts')
+    const answer = await sendControlCommand(controlSocketPath(), { op: 'kill_switch_status' })
+    const d = answer.detail as { tampered?: unknown; last_tampered_at?: unknown } | undefined
+    if (answer.ok && typeof d?.tampered === 'number' && d.tampered > 0) {
+      return `tandem: the runtime restored the switch ${d.tampered} times after it was removed without off (last ${String(d.last_tampered_at)})`
+    }
+  } catch {
+    /* no runtime: nothing more to say */
+  }
+  return undefined
 }
 
 /** Takes `<dir>/.lock`, removing one older than 30 s; undefined when still busy after 5 s. */
@@ -270,14 +540,13 @@ export async function main(args: string[]): Promise<number> {
       for (const name of failed) say(`tandem: not stopped: ${name}`)
       return failed.length ? 1 : 0
     }
-    if (command === 'off' && rest.length === 0) {
-      say(release() ? 'tandem: kill switch off' : 'tandem: kill switch was already off')
-      return 0
-    }
+    if (command === 'off' && rest.length === 0) return await off(say)
     if (command === 'status' && rest.length === 0) {
       say(`tandem: kill switch ${killSwitchOn() ? 'on' : 'off'}`)
       const odd = oddSwitch()
       if (odd) process.stderr.write(`${odd}\n`)
+      const restored = await restoredLine()
+      if (restored) say(restored)
       return 0
     }
     process.stderr.write(USAGE)
