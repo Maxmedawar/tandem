@@ -272,6 +272,15 @@ describe("(19B) x permission denied is call_failed in all three callers", () => 
       release();
     }
   });
+  it("(19B) x4 the kill switch's session list throws with no tmux program, as before 19B (never `nothing running`)", async () => {
+    h.fail = (a) => (cmdOf(a) === "list-sessions" ? ({ code: "ENOENT", stderr: "" } as unknown as Fault) : undefined);
+    try {
+      await expect(engage()).rejects.toThrow(/could not be listed.*ENOENT/);
+    } finally {
+      h.fail = undefined;
+      release();
+    }
+  });
 });
 
 describe("(19B) p probeAlive: has-session -t =ccm-<name>", () => {

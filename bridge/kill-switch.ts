@@ -125,9 +125,10 @@ async function tandemSessions(): Promise<string[]> {
     const out = await tmux(['list-sessions', '-F', '#{session_name}'])
     return out.split('\n').filter((n) => n.startsWith(PREFIX))
   } catch (e) {
-    // U-R1A-19B's one classifier: a call that failed or timed out is never "nothing running".
+    // U-R1A-19B's one classifier: a call that failed or timed out is never "nothing running". Nor is
+    // no tmux program to ask (the classifier's no_server): it throws here, as before 19B.
     const kind = tmuxFailureKind(e)
-    if (kind === 'no_server' || kind === 'no_session') return []
+    if ((e as { code?: unknown }).code !== 'ENOENT' && (kind === 'no_server' || kind === 'no_session')) return []
     throw e
   }
 }
