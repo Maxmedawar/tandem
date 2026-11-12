@@ -144,14 +144,17 @@ for (const k of ["TANDEM_CONFIG_FILE", "TANDEM_DEVICE_READY_FILE", "TANDEM_OWNER
 process.env.TANDEM_HERMES_DISABLE_LIVE = "1";
 
 // TANDEM_HOME, live mode included (U-R1A-HOMEPATH): an inherited one is kept only when its real path
-// is strictly under the test temp root TMP_ROOT; anything else, a missing one included, is replaced by
+// is strictly under the test temp root TMP_ROOT and, as before, outside the real home (a TMPDIR set
+// inside the real home keeps nothing); anything else, a missing one included, is replaced by
 // a made tandem-test-th- folder there (0700). Live runs keep it after the run; otherwise cleanup stops
 // its tmux server, removes it and unsets TANDEM_HOME (a dropped inherited value never comes back).
 guard("TANDEM_HOME", () => {
   const th = process.env.TANDEM_HOME;
   if (th) {
-    const rel = relative(fold(real(TMP_ROOT)), fold(real(resolve(th))));
-    if (rel !== "" && rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel)) return;
+    const from = (root: string): string => relative(fold(real(root)), fold(real(resolve(th))));
+    const outside = (rel: string): boolean => rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel);
+    const rel = from(TMP_ROOT);
+    if (rel !== "" && !outside(rel) && outside(from(userInfo().homedir))) return;
   }
   process.env.TANDEM_HOME = make("th", "TANDEM_HOME", TMP_ROOT, "tandem-test-th-");
 });

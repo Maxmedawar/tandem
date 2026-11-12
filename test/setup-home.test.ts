@@ -611,4 +611,15 @@ describe("(HOMEPATH) TANDEM_HOME in every mode", () => {
       if (r.out.TH && alive()) spawnSync("tmux", ["-S", sock, "kill-server"], { env, stdio: "ignore" }); // the server this case started; never any other
     }
   });
+
+  // review-fix (audit): the rule of the first describe still holds when the temp root itself is inside
+  // the real home. Strings only: the TMPDIR named here is never created, so the made folder cannot be
+  // either and the setup stops, naming the variable, instead of keeping the inherited value.
+  it("(HOMEPATH) n8 live, TMPDIR an absent folder inside the real home, TANDEM_HOME inside it: not kept", () => {
+    const root = join(userInfo().homedir, `.r1ahomepath-n8-absent-${process.pid}`);
+    const r = thProbe({ TANDEM_LIVE: "1", HOME: nBox(), TMPDIR: root, TMUX_TMPDIR: nBox(), TANDEM_HOME: join(root, "th") });
+    expect(r.out.TH, "an inherited TANDEM_HOME inside the real home was kept").toBe(null);
+    expect(r.status !== 0 && r.stderr.includes("could not isolate TANDEM_HOME"), `setup exit ${r.status} ${r.stderr}`).toBe(true);
+    expect(existsSync(root), "nothing made in the real home").toBe(false);
+  });
 });
