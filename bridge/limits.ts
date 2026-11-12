@@ -4,8 +4,10 @@
  * the Interrupt level, `interrupt_from` (bridge/mailbox.ts; absent means nobody), and the most
  * sessions at once, `session_cap` (bridge/kill-switch.ts reserveSessions; absent means 12), and
  * which other computers may open, type into and close sessions here or send Ask mail, `control_from`
- * (bridge/remote-command.ts, bridge/mailbox.ts; absent means none: they send only FYI). The
- * bridge is the only place limits are enforced, and nothing remote can widen them.
+ * (bridge/remote-command.ts, bridge/mailbox.ts; absent means none: they send only FYI), and how far
+ * an agent's memory and transcript search reach, `memory_scope` ("project" or "all") and
+ * `transcript_scope` ("project" or "computer"; src/mcp-server.ts; absent, missing or refused means
+ * "project"). The bridge is the only place limits are enforced, and nothing remote can widen them.
  *
  * The file is `$TANDEM_HOME/limits.toml` when TANDEM_HOME is set, else `~/.tandem/limits.toml`,
  * worked out at each read. It is read once when this module is first imported (the bridge imports
@@ -49,11 +51,15 @@ export interface LimitsSnapshot {
   session_cap: number
   /** Computer ids whose signed commands run here and whose Ask mail is stored here; [] when absent, missing or refused. */
   control_from: string[]
+  /** How far an agent's memory calls reach: its own project folder, or every project; "project" when absent, missing or refused. */
+  memory_scope: 'project' | 'all'
+  /** How far an agent's transcript search reaches: its own session's folder, or this computer; "project" when absent, missing or refused. */
+  transcript_scope: 'project' | 'computer'
   /** Why nothing is allowed (missing or refused file). */
   problem?: string
 }
 
-const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap', 'control_from']
+const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap', 'control_from', 'memory_scope', 'transcript_scope']
 /** A computer id (bridge/envelope.ts ID). */
 const COMPUTER_ID = /^[a-z0-9._-]{1,64}$/
 const DEFAULT_SESSION_CAP = 12
@@ -189,8 +195,17 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
   if (!Array.isArray(control_from) || !control_from.every((id) => typeof id === 'string' && COMPUTER_ID.test(id)) || new Set(control_from).size !== control_from.length) {
     fail('wrong type for control_from: expected an array of computer ids')
   }
+  const memory_scope = raw.memory_scope ?? 'project'
+  if (memory_scope !== 'project' && memory_scope !== 'all') fail('wrong type for memory_scope: expected "project" or "all"')
+  const transcript_scope = raw.transcript_scope ?? 'project'
+  if (transcript_scope !== 'project' && transcript_scope !== 'computer') {
+    fail('wrong type for transcript_scope: expected "project" or "computer" ("all" needs search across computers, which is not built)')
+  }
   const from = raw.interrupt_from
-  const base = { folders, shell: shell as boolean, permission_skip, agents, session_cap: session_cap as number, control_from: control_from as string[] }
+  const base = {
+    folders, shell: shell as boolean, permission_skip, agents, session_cap: session_cap as number, control_from: control_from as string[],
+    memory_scope: memory_scope as LimitsSnapshot['memory_scope'], transcript_scope: transcript_scope as LimitsSnapshot['transcript_scope'],
+  }
   if (from === undefined) return base
   if (!Array.isArray(from) || !from.every(isInterruptSender)) {
     fail('wrong type for interrupt_from: expected an array of "owner", "session:<name>", "machine:<id>/owner" or "machine:<id>/session:<name>"')
@@ -211,7 +226,10 @@ function readLimits(): LimitsSnapshot {
     }
   }
   process.stderr.write(`limits: ${problem}; nothing is allowed\n`)
-  return { folders: [], shell: false, permission_skip: [], agents: {}, digest: disk.digest, problem, session_cap: DEFAULT_SESSION_CAP, control_from: [] }
+  return {
+    folders: [], shell: false, permission_skip: [], agents: {}, digest: disk.digest, problem, session_cap: DEFAULT_SESSION_CAP, control_from: [],
+    memory_scope: 'project', transcript_scope: 'project',
+  }
 }
 
 let snapshot = readLimits()
@@ -222,12 +240,15 @@ export function applyLimits(): void {
   snapshot = readLimits()
 }
 
-/** A copy of the applied snapshot. `session_cap` and `control_from` are on it but not enumerable, so
- *  the snapshot's listed fields (and every reader comparing or printing them) stay as they were before them. */
+/** A copy of the applied snapshot. `session_cap`, `control_from`, `memory_scope` and `transcript_scope` are on it
+ *  but not enumerable, so the snapshot's listed fields (and every reader comparing or printing them) stay as they were before them. */
 export function limitsSnapshot(): LimitsSnapshot {
   const copy = structuredClone(snapshot)
   Object.defineProperty(copy, 'session_cap', { value: snapshot.session_cap, enumerable: false, writable: true, configurable: true })
   Object.defineProperty(copy, 'control_from', { value: [...snapshot.control_from], enumerable: false, writable: true, configurable: true })
+  for (const field of ['memory_scope', 'transcript_scope'] as const) {
+    Object.defineProperty(copy, field, { value: snapshot[field], enumerable: false, writable: true, configurable: true })
+  }
   return copy
 }
 

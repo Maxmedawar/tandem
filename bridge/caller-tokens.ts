@@ -13,6 +13,10 @@
  * SHA-256 is stored, and a lookup goes by that hash, so the token itself is never compared, stored
  * or logged. One row per exact name (case kept): a new spawn of a name replaces its token. A row
  * outlives a bridge restart, so an adopted session keeps the token its agent already has.
+ * The row also keeps the session's real start folder (`folder`, U-R1A-47; spawn passes its checked
+ * cwd), which src/mcp-server.ts reads at each memory or transcript call (callerFolder) to keep an
+ * agent's reach to its own project. A table made before that gains the column at first use; its
+ * rows have no folder, and such an agent gets no memory or transcript tools until it is reopened.
  *
  * Stated limits (T23, same user): the token names an agent, it does not wall agents of one user
  * off from each other. An agent that strips the variable before starting its stdio server is
@@ -32,7 +36,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { ensureDbFile } from './sqlite-file.ts'
 
 // Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
@@ -55,7 +59,17 @@ function withTokens<T>(fn: (db: InstanceType<typeof DatabaseSync>) => T): T {
   const db = new DatabaseSync(path)
   try {
     db.exec(`PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;
-      CREATE TABLE IF NOT EXISTS caller_tokens (name TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, created_ms INTEGER NOT NULL)`)
+      CREATE TABLE IF NOT EXISTS caller_tokens (name TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, created_ms INTEGER NOT NULL, folder TEXT)`)
+    // A table from before U-R1A-47 has no folder column. Two processes may add it at once: the
+    // loser's ALTER fails and the column is there all the same.
+    const hasFolder = () => (db.prepare('PRAGMA table_info(caller_tokens)').all() as { name?: unknown }[]).some((c) => c.name === 'folder')
+    if (!hasFolder()) {
+      try {
+        db.exec('ALTER TABLE caller_tokens ADD COLUMN folder TEXT')
+      } catch (e) {
+        if (!hasFolder()) throw e
+      }
+    }
     return fn(db)
   } finally {
     db.close()
@@ -69,15 +83,31 @@ function checkName(name: string): string {
   return name
 }
 
-/** A fresh token for `name`, replacing that exact name's row. Only its hash is stored. */
-export function mintCallerToken(name: string): string {
+/**
+ * A fresh token for `name`, replacing that exact name's row. Only its hash is stored, with the
+ * session's real start folder (an absolute path, else this throws). TerminalSession.spawn always
+ * passes it; a row minted without one has no folder, so its agent gets no memory or transcript tools
+ * under the project scopes (fail closed).
+ */
+export function mintCallerToken(name: string, folder?: string): string {
   checkName(name)
+  if (folder !== undefined && (typeof folder !== 'string' || !isAbsolute(folder) || folder.includes('\0'))) {
+    throw new Error('caller token: the session folder must be an absolute path')
+  }
   const token = randomBytes(32).toString('base64url')
   withTokens((db) =>
-    db.prepare(`INSERT INTO caller_tokens (name, hash, created_ms) VALUES (?, ?, ?)
-      ON CONFLICT (name) DO UPDATE SET hash = excluded.hash, created_ms = excluded.created_ms`).run(name, hashOf(token), Date.now()),
+    db.prepare(`INSERT INTO caller_tokens (name, hash, created_ms, folder) VALUES (?, ?, ?, ?)
+      ON CONFLICT (name) DO UPDATE SET hash = excluded.hash, created_ms = excluded.created_ms, folder = excluded.folder`)
+      .run(name, hashOf(token), Date.now(), folder ?? null),
   )
   return token
+}
+
+/** The start folder kept with `name`'s row, or undefined (no row, or a row without one). Read at each call. */
+export function callerFolder(name: string): string | undefined {
+  checkName(name)
+  const row = withTokens((db) => db.prepare('SELECT folder FROM caller_tokens WHERE name = ?').get(name)) as { folder?: unknown } | undefined
+  return typeof row?.folder === 'string' && row.folder !== '' ? row.folder : undefined
 }
 
 /** The exact name a token was minted for, or undefined (not a well-formed token, unknown or revoked). */
