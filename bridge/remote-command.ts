@@ -19,7 +19,8 @@
  * sender's rights in the applied limits file (bridge/limits.ts rightsOf: `control_from` or the
  * right's own `control_from_<right>` list): open needs `open`, send with text `send`, send with
  * empty text (the router's poll: it returns the session's screen) `read`, close `close`, status any
- * one right; no right at all is the `control_from` 403, a missing one its own 403. Then route()
+ * one right; a send with text answers the turn's output (`report`, `cursor`) only to a sender that
+ * also holds `read`, else only that it was typed (status, name, engine, state, attachHint); no right at all is the `control_from` 403, a missing one its own 403. Then route()
  * with `from: 'agent'`, so every local gate holds as it does for an agent here (kill switch 423,
  * session_cap 429, the limits file 403, the input gate's agent rules); a remote read is refused
  * 423 here too while the kill switch is on (route() lets a local read through). A close and a
@@ -97,6 +98,8 @@ const REFUSED: Record<Exclude<Right, 'ask'>, string> = {
   close: 'may not close sessions here',
   read: 'may not read sessions here',
 }
+/** What a send with text answers a computer holding `send` but not `read`: that it was typed, never the session's output. */
+const SEND_ACK = ['status', 'name', 'engine', 'state', 'attachHint']
 /** C0 controls but tab and newline, DEL, C1 controls, bidi controls, tag characters, a lone surrogate. */
 const HIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u{e0000}-\u{e007f}]|\p{Cs}/u
 const HIDDEN_ALL = new RegExp(HIDDEN.source, 'gu')
@@ -165,6 +168,7 @@ export async function handleRemoteCommand(
   const trusted = opts.trusted ?? trustedKey
   let from: unknown
   let cmd: { op: Op; args: Args; caller: string } | undefined
+  let mayRead = false
   const done = (answer: Answer): Answer => {
     audit({
       event: 'remote.command',
@@ -233,6 +237,7 @@ export async function handleRemoteCommand(
     if (need !== undefined && !rights.includes(need)) {
       return done({ status: 403, body: { error: `control_from_${need}: ${sender} ${REFUSED[need]} (limits file)` } })
     }
+    mayRead = rights.includes('read')
     if (!record()) return replay()
     if (cmd.op !== 'status') {
       receipts((db) => {
@@ -268,6 +273,11 @@ export async function handleRemoteCommand(
   const result = await route({ method: 'POST', path: call.path, query: new URLSearchParams(), body: call.body, from: 'agent' })
   const kept = JSON.stringify(result.body)
   finish(result.status, op !== 'send' && kept !== undefined && kept.length <= MAX_RECEIPT_BODY ? kept : null)
+  // Typing is not reading: without the read right a send that was typed answers only that it was (no report, no cursor).
+  const b = result.body
+  if (op === 'send' && !mayRead && result.status < 300 && isPlain(b)) {
+    return done({ status: result.status, body: Object.fromEntries(SEND_ACK.filter((k) => Object.hasOwn(b, k)).map((k) => [k, b[k]])) })
+  }
   return done({ status: result.status, body: result.body })
 }
 

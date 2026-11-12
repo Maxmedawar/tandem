@@ -45,6 +45,13 @@ process.env.TANDEM_ENABLED_ENGINES = 'shell'
 process.env.TANDEM_WAIT_MS = '4000'
 process.env.SHELL = '/bin/sh'
 
+// route() as it is, unless a case sets `routed.fake` (the answer of a typed turn cannot be had from the shell harness).
+const routed = vi.hoisted(() => ({ fake: undefined as undefined | ((req: any) => Promise<{ status: number; body: unknown }>) })) // eslint-disable-line @typescript-eslint/no-explicit-any
+vi.mock('../bridge/router.ts', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../bridge/router.ts')>()
+  return { ...real, route: (req: Parameters<typeof real.route>[0]) => (routed.fake ? routed.fake(req) : real.route(req)) }
+})
+
 const limits = await import('../bridge/limits.ts')
 const { agentEntry, writeLimits } = await import('./fixtures/limits.ts')
 const { openDeviceKey } = await import('../bridge/device-keys.ts')
@@ -263,6 +270,45 @@ describe('(g1b) each op needs its own right', () => {
     setLimits({ control_from: ['root'] })
     for (const over of [{}, { op: 'send', args: { name: 'r1a36e-x', text: 'hi' } }, { op: 'send', args: { name: 'r1a36e-x', text: '' } }, { op: 'close', args: { name: 'r1a36e-x' } }]) {
       expect(await fromAlpha(over)).toEqual({ status: 403, body: { error: NOT('alpha') } })
+    }
+  })
+
+  it('(36E) (g1b) typing is not reading: send-only gets an acknowledgement without the output; send+read and control_from get the output', async () => {
+    // route()'s answer to a typed turn, as bridge/router.ts handleSend builds it (an agent's text into the shell harness is held, so it is given here).
+    const turn = { status: 'done', name: 'r1a36e-ack', engine: 'shell', report: 'R1A36E-OUT line', cursor: 7, attachHint: 'tmux attach' }
+    const typed = () => fromAlpha({ op: 'send', args: { name: 'r1a36e-ack', text: 'echo hi' } })
+    const calls: Json[] = []
+    routed.fake = async (req: Json) => {
+      calls.push([req.path, req.body, req.from])
+      return { status: 200, body: { ...turn } }
+    }
+    try {
+      for (const only of [{ control_from_send: ['alpha'] }, { control_from_send: ['alpha'], control_from_open: ['alpha'], control_from_close: ['alpha'], control_from_ask: ['alpha'] }]) {
+        setLimits(only)
+        const ack = await typed()
+        expect(ack).toEqual({ status: 200, body: { status: 'done', name: 'r1a36e-ack', engine: 'shell', attachHint: 'tmux attach' } })
+        expect(JSON.stringify(ack)).not.toContain('R1A36E-OUT')
+      }
+      setLimits({ control_from_send: ['alpha'], control_from_read: ['alpha'] })
+      expect(await typed()).toEqual({ status: 200, body: turn })
+      setLimits({ control_from: ['alpha'] })
+      expect(await typed()).toEqual({ status: 200, body: turn })
+      // typed each time, as the agent's text
+      expect(calls).toEqual(Array(4).fill(['/sessions/r1a36e-ack/send', { text: 'echo hi' }, 'agent']))
+      // a refusal still says why to a send-only sender
+      setLimits({ control_from_send: ['alpha'] })
+      routed.fake = async () => ({ status: 409, body: { error: 'session "r1a36e-ack" is not live; call open_session first' } })
+      expect(await typed()).toEqual({ status: 409, body: { error: 'session "r1a36e-ack" is not live; call open_session first' } })
+    } finally {
+      routed.fake = undefined
+    }
+    // the real route: a held send (nothing typed) keeps its state for a send-only sender
+    await ownerOpen('r1a36e-ack')
+    try {
+      const held: Json = await typed()
+      expect([held.status, Object.keys(held.body).every((k) => ['status', 'name', 'engine', 'state', 'attachHint'].includes(k)), held.body.name]).toEqual([200, true, 'r1a36e-ack'])
+    } finally {
+      await ownerClose('r1a36e-ack')
     }
   })
 
