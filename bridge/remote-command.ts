@@ -17,17 +17,35 @@
  * agent here (kill switch 423, session_cap 429, the limits file 403, the input gate's agent rules).
  * One audit line per command, never its text. `now` is the one clock (the replay store's too).
  *
+ * At most once, with a receipt: the nonce is only looked up while the envelope is checked, and is
+ * recorded (with a receipt `received` in state.db's `command_receipt`) only for a command that is
+ * about to run: one refused by its shape or by control_from uses up no nonce and stores nothing, so
+ * a computer not listed cannot fill state.db, and a mail envelope passed here stays new for the mail
+ * carrier. When route() answers, the receipt becomes `done` with the status and, for open and close,
+ * the body (never a send's: that is a session's text; one over 16,384 characters is left out too).
+ * The same envelope again is 401 `replay` with that receipt
+ * (`{ state: "received" }`: it is running or was cut off, and is never run again), kept for as
+ * long as the envelope could pass the time check. Send with empty text is the router's poll mode:
+ * a listed computer reads the transcript of any session here that is not the relay's.
+ *
  * Known gaps (stated): B's answer is not signed back, so the hub could alter the answer A sees
  * (it cannot make B act: B checks A's signature and its own control_from). A fabric call forwarded
- * through the hub still counts as the owner's at the memory home (U-R1A-34, U-R1A-36A). The nonce is
- * recorded before the command runs: a command cut off mid-run is never run again (at most once).
+ * through the hub still counts as the owner's at the memory home (U-R1A-34, U-R1A-36A). The A side
+ * does not ask again for a lost answer; what it does get is data from the hub: hidden characters
+ * are replaced and an answer over 1,048,576 characters is not passed on.
  */
+import { createRequire } from 'node:module'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { audit } from './audit.ts'
 import { openDeviceKey, type DeviceKey } from './device-keys.ts'
-import { EnvelopeError, openEnvelope, openReplayStore, signEnvelope } from './envelope.ts'
+import { CLOCK_SKEW_MS, DEFAULT_MAX_AGE_MS, EnvelopeError, openEnvelope, openReplayStore, signEnvelope } from './envelope.ts'
 import { hubProofHeader, type HubLinkConfig } from './hub-link.ts'
 import { limitsSnapshot, thisId, trustedKey } from './limits.ts'
 import { route } from './router.ts'
+
+// Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite (as envelope.ts).
+const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
 
 export type RemoteOp = 'open' | 'send' | 'close'
 type Args = Record<string, string>
@@ -47,7 +65,37 @@ const ARGS: Record<RemoteOp, { need: string[]; may: string[] }> = {
   close: { need: ['name'], may: [] },
 }
 /** C0 controls but tab and newline, DEL, C1 controls, bidi controls, tag characters, a lone surrogate. */
-const HIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f؜‎‏‪-‮⁦-⁩\u{e0000}-\u{e007f}]|\p{Cs}/u
+const HIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\u{e0000}-\u{e007f}]|\p{Cs}/u
+const HIDDEN_ALL = new RegExp(HIDDEN.source, 'gu')
+/** The longest receipt body kept, and the longest answer passed to an agent (characters). */
+const MAX_RECEIPT_BODY = 16_384
+const MAX_ANSWER = 1_048_576
+
+type Receipt = { state: 'received' } | { state: 'done'; status: number; body?: unknown }
+
+/** One use of state.db's `command_receipt` (the file exists: the replay store made it, mode 0600). */
+function receipts<T>(use: (db: InstanceType<typeof DatabaseSync>) => T): T {
+  const db = new DatabaseSync(join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db'))
+  try {
+    db.exec(`PRAGMA busy_timeout = 5000;
+      CREATE TABLE IF NOT EXISTS command_receipt (
+        from_id TEXT NOT NULL, nonce TEXT NOT NULL, status INTEGER, body TEXT, expires_ms INTEGER NOT NULL,
+        PRIMARY KEY (from_id, nonce))`)
+    return use(db)
+  } finally {
+    db.close()
+  }
+}
+
+/** The receipt of the command `from` signed with `nonce`, if one is kept. */
+function receiptOf(from: string, nonce: string): Receipt | undefined {
+  const row = receipts((db) => db.prepare('SELECT status, body FROM command_receipt WHERE from_id = ? AND nonce = ?').get(from, nonce)) as
+    | { status: number | null; body: string | null }
+    | undefined
+  if (!row) return undefined
+  if (row.status === null) return { state: 'received' }
+  return { state: 'done', status: Number(row.status), ...(row.body === null ? {} : { body: JSON.parse(row.body) as unknown }) }
+}
 
 const isPlain = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
@@ -112,20 +160,42 @@ export async function handleRemoteCommand(
     }
   }
   if (typeof from !== 'string' || publicKey === undefined) return done({ status: 401, body: { error: 'envelope', reason: 'unknown_sender' } })
-  let opened: { body: string }
+  const sender = from
+  let nonce = ''
+  const replay = (): Answer => {
+    const receipt = receiptOf(sender, nonce)
+    return done({ status: 401, body: { error: 'envelope', reason: 'replay', ...(receipt ? { receipt } : {}) } })
+  }
   const seen = openReplayStore({ now })
   try {
-    opened = openEnvelope(raw, { sender: { id: from, publicKey }, self: opts.self ?? thisId(), seen, now: now() })
-  } catch (e) {
-    if (!(e instanceof EnvelopeError)) throw e
-    return done({ status: 401, body: { error: 'envelope', reason: e.reason } })
+    let opened: { body: string; ts: number }
+    // The nonce is only looked up here (as the mail carrier does) and recorded below, for a command about to run.
+    let record = (): boolean => false
+    const peek = {
+      remember: (id: string, n: string, expiresAt: number) => {
+        nonce = n
+        record = () => seen.remember(id, n, expiresAt)
+        return !seen.has(id, n)
+      },
+    }
+    try {
+      opened = openEnvelope(raw, { sender: { id: sender, publicKey }, self: opts.self ?? thisId(), seen: peek, now: now() })
+    } catch (e) {
+      if (!(e instanceof EnvelopeError)) throw e
+      return e.reason === 'replay' ? replay() : done({ status: 401, body: { error: 'envelope', reason: e.reason } })
+    }
+    cmd = commandOf(opened.body)
+    if (!cmd) return done({ status: 400, body: { error: 'command_invalid' } })
+    if (!limitsSnapshot().control_from.includes(sender)) {
+      return done({ status: 403, body: { error: `control_from: ${sender} may not act on this computer (limits file)` } })
+    }
+    if (!record()) return replay()
+    receipts((db) => {
+      db.prepare('DELETE FROM command_receipt WHERE expires_ms < ?').run(now())
+      db.prepare('INSERT OR REPLACE INTO command_receipt (from_id, nonce, expires_ms) VALUES (?, ?, ?)').run(sender, nonce, opened.ts + DEFAULT_MAX_AGE_MS + CLOCK_SKEW_MS)
+    })
   } finally {
     seen.close()
-  }
-  cmd = commandOf(opened.body)
-  if (!cmd) return done({ status: 400, body: { error: 'command_invalid' } })
-  if (!limitsSnapshot().control_from.includes(from)) {
-    return done({ status: 403, body: { error: `control_from: ${from} may not act on this computer (limits file)` } })
   }
   const { op, args } = cmd
   const name = encodeURIComponent(args.name ?? '')
@@ -136,6 +206,10 @@ export async function handleRemoteCommand(
         ? { path: `/sessions/${name}/send`, body: { text: args.text } }
         : { path: `/sessions/${name}/close`, body: {} }
   const result = await route({ method: 'POST', path: call.path, query: new URLSearchParams(), body: call.body, from: 'agent' })
+  const kept = JSON.stringify(result.body)
+  receipts((db) =>
+    db.prepare('UPDATE command_receipt SET status = ?, body = ? WHERE from_id = ? AND nonce = ?').run(result.status, op !== 'send' && kept !== undefined && kept.length <= MAX_RECEIPT_BODY ? kept : null, sender, nonce),
+  )
   return done({ status: result.status, body: result.body })
 }
 
@@ -166,13 +240,16 @@ export async function sendRemoteCommand(
       signal: AbortSignal.timeout(TIMEOUT_MS),
     })
     const text = await answer.text()
+    if (text.length > MAX_ANSWER) return { status: answer.status, body: { error: 'answer too large' } }
+    // What comes back is data from the hub (not signed by the other computer): no hidden character reaches the agent.
+    const clean = (value: unknown): unknown => JSON.parse(JSON.stringify(value).replace(HIDDEN_ALL, '\ufffd'))
     let parsed: unknown
     try {
       parsed = JSON.parse(text)
     } catch {
       parsed = { error: text.slice(0, 200) }
     }
-    return { status: answer.status, body: parsed }
+    return { status: answer.status, body: clean(parsed) }
   } catch {
     return { status: 503, body: { error: 'hub unreachable' } }
   }

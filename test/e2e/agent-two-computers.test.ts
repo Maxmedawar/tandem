@@ -106,6 +106,7 @@ describe.skipIf(Boolean(missing))(title, () => {
   let gamma: DeviceKey
   /** An envelope alpha sent in (e2), replayed by gamma in (e3). */
   let recorded = ''
+  let recordedAnswer: Json
   const keys = mkdtempSync(`${PREFIX}keys-`)
   folders.push(keys)
 
@@ -222,13 +223,18 @@ describe.skipIf(Boolean(missing))(title, () => {
     recorded = JSON.stringify(signEnvelope(keyIn(alpha!.home), { from: 'alpha', to: 'beta', body: commandBody() }))
     const sent = await post('alpha', keyIn(alpha!.home), JSON.stringify({ to: 'beta', envelope: recorded }))
     expect(sent.status).toBe(200)
+    recordedAnswer = sent.data
   }, 180_000)
 
   it('(36B) (e3) the hub carries, the signature decides: forged, replayed, offline, not a member', async () => {
     const forged = JSON.stringify(signEnvelope(gamma, { from: 'alpha', to: 'beta', body: commandBody({ op: 'open', args: { engine: 'shell', name: 'r1a36b-e3', cwd: beta!.folder } }) }))
     expect(await post('gamma', gamma, JSON.stringify({ to: 'beta', envelope: forged }))).toEqual({ status: 401, data: { error: 'envelope', reason: 'signature' } })
     expect(betaSessions()).not.toContain('ccm-r1a36b-e3')
-    expect(await post('gamma', gamma, JSON.stringify({ to: 'beta', envelope: recorded }))).toEqual({ status: 401, data: { error: 'envelope', reason: 'replay' } })
+    // Still 401 replay, run once; since the audit it carries beta's stored receipt of that one run.
+    expect(await post('gamma', gamma, JSON.stringify({ to: 'beta', envelope: recorded }))).toEqual({
+      status: 401, data: { error: 'envelope', reason: 'replay', receipt: { state: 'done', status: 200, body: recordedAnswer } },
+    })
+    expect(betaAudit().filter((l) => l.event === 'remote.command' && l.name === 'r1a36b-none').map((l) => l.status)).toEqual([200])
     expect(await post('gamma', gamma, JSON.stringify({ to: 'root', envelope: forged }))).toEqual({ status: 503, data: { error: 'bridge_offline', requested: 'root' } })
     expect(await post('gamma', gamma, JSON.stringify({ to: 'delta', envelope: forged }))).toEqual({ status: 403, data: { error: 'not_in_roster' } })
     expect(await post('gamma', gamma, JSON.stringify({ to: 'gamma', envelope: forged }))).toEqual({ status: 403, data: { error: 'not_in_roster' } })

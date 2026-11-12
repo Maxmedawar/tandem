@@ -46,7 +46,7 @@ process.env.SHELL = '/bin/sh'
 const limits = await import('../bridge/limits.ts')
 const { agentEntry, writeLimits } = await import('./fixtures/limits.ts')
 const { openDeviceKey } = await import('../bridge/device-keys.ts')
-const { signEnvelope, openEnvelope } = await import('../bridge/envelope.ts')
+const { signEnvelope, openEnvelope, openReplayStore } = await import('../bridge/envelope.ts')
 const { initRoster, makeOffer, receiveOffer, trustOffer } = await import('../bridge/roster.ts')
 const { handleRemoteCommand, sendRemoteCommand } = await import('../bridge/remote-command.ts')
 const { route } = await import('../bridge/router.ts')
@@ -306,7 +306,9 @@ describe('(r3) refusals: the signature and the shape decide, never the carrier',
     expect((await run(e)).status).toBe(200)
     expect(ccm().filter((n) => n === 'ccm-r1a36b-once').length).toBe(1)
     const mark = auditLines().filter((l) => l.route === 'POST /sessions/open').length
-    expect(await run(e)).toEqual({ status: 401, body: { error: 'envelope', reason: 'replay' } })
+    // Still 401 replay; since the audit it also carries the stored receipt of the first run (rows (a2), (a3)).
+    const again: Json = await run(e)
+    expect([again.status, again.body.error, again.body.reason, again.body.receipt?.state, again.body.receipt?.status]).toEqual([401, 'envelope', 'replay', 'done', 200])
     expect(auditLines().filter((l) => l.route === 'POST /sessions/open').length).toBe(mark)
     expect((await fromAlpha({ op: 'close', args: { name: 'r1a36b-once' } })).status).toBe(200)
   })
@@ -317,7 +319,7 @@ describe('(r3) refusals: the signature and the shape decide, never the carrier',
       { args: { engine: 'shell', name: 'r1a36b-x', cwd: WORK, model: 'x' } },
       { caller: 'owner' },
       { op: 'send', args: { name: 'r1a36b-x' } },
-      { op: 'send', args: { name: 'r1a36b-x', text: 'a‮b' } },
+      { op: 'send', args: { name: 'r1a36b-x', text: 'a\u202eb' } },
       { op: 'close', args: { name: 'r1a36b-x', text: 'x' } },
       { v: 2 },
       { kind: 'mail' },
@@ -336,6 +338,82 @@ describe('(r3) refusals: the signature and the shape decide, never the carrier',
     expect(answerOf(await handleHubRequest(frame('POST', {})))).toEqual({ status: 400, body: { error: 'command_invalid' } })
     expect(answerOf(await handleHubRequest(frame('GET', {}))).status).toBe(404)
     expect(ccm()).not.toContain('ccm-r1a36b-x')
+  })
+})
+
+describe('(a) audit rows: nonces, receipts, the answer an agent sees', () => {
+  const used = (envelope: string) => {
+    const store = openReplayStore({ now })
+    try {
+      return store.has('alpha', JSON.parse(envelope).nonce)
+    } finally {
+      store.close()
+    }
+  }
+  const closeNone = () => seal(A, 'alpha', 'beta', cmd({ op: 'close', args: { name: 'r1a36b-none' } }))
+
+  it('(36B) (a1) a command refused by control_from uses up no nonce and stores nothing (a computer not listed cannot fill state.db)', async () => {
+    const e = closeNone()
+    expect((await run(e)).status).toBe(403)
+    expect(used(e)).toBe(false)
+    expect(await run(e)).toEqual({ status: 403, body: { error: NOT_ALPHA } })
+  })
+
+  it('(36B) (a1) a signed envelope that is not a command (mail passed here by the hub) uses up no nonce: the mail carrier still stores it', async () => {
+    setLimits({ control_from: ['alpha'] })
+    const mail = seal(A, 'alpha', 'beta', JSON.stringify({ v: 1, kind: 'mail', id: 'mail-r1a36b', from: 'owner', to: 'bob', level: 'fyi', text: 'hi', sentAt: clock }))
+    expect(await run(mail)).toEqual({ status: 400, body: { error: 'command_invalid' } })
+    expect(used(mail)).toBe(false)
+  })
+
+  it('(36B) (a2) the same command again: 401 replay with the stored receipt (done, the first status and body), nothing run', async () => {
+    setLimits({ control_from: ['alpha'] })
+    const e = closeNone()
+    const first = await run(e)
+    expect(used(e)).toBe(true)
+    const mark = auditLines().filter((l) => l.route === 'POST /sessions/:name/close').length
+    expect(await run(e)).toEqual({ status: 401, body: { error: 'envelope', reason: 'replay', receipt: { state: 'done', status: first.status, body: first.body } } })
+    expect(auditLines().filter((l) => l.route === 'POST /sessions/:name/close').length).toBe(mark)
+  })
+
+  it('(36B) (a3) the same command while the first still runs: 401 replay with the receipt "received"; the session is opened once', async () => {
+    setLimits({ control_from: ['alpha'] })
+    const e = seal(A, 'alpha', 'beta', cmd({ args: { engine: 'shell', name: 'r1a36b-a3', cwd: WORK } }))
+    const first = run(e)
+    expect(await run(e)).toEqual({ status: 401, body: { error: 'envelope', reason: 'replay', receipt: { state: 'received' } } })
+    expect((await first).status).toBe(200)
+    expect(ccm().filter((n) => n === 'ccm-r1a36b-a3').length).toBe(1)
+    expect(((await run(e)).body as Json).receipt).toEqual(expect.objectContaining({ state: 'done', status: 200 }))
+    // A send's receipt holds the status only, never the session's text.
+    const typed = seal(A, 'alpha', 'beta', cmd({ op: 'send', args: { name: 'r1a36b-a3', text: 'true' } }))
+    const sent = await run(typed)
+    expect(((await run(typed)).body as Json).receipt).toEqual({ state: 'done', status: sent.status })
+    expect((await fromAlpha({ op: 'close', args: { name: 'r1a36b-a3' } })).status).toBe(200)
+  })
+
+  it('(36B) (a5) a listed computer meets the local gates: no shell when the limits file says so, no engine that is off, no relay session', async () => {
+    setLimits({ control_from: ['alpha'], shell: false })
+    const noShell: Json = await fromAlpha({ args: { engine: 'shell', name: 'r1a36b-a5', cwd: WORK } })
+    expect([noShell.status, String(noShell.body.error).startsWith('limits:')]).toEqual([403, true])
+    setLimits({ control_from: ['alpha'] })
+    const off: Json = await fromAlpha({ args: { engine: 'claude', name: 'r1a36b-a5', cwd: WORK } })
+    expect(off.status).toBeGreaterThanOrEqual(400)
+    expect(off.status).toBeLessThan(500)
+    for (const over of [{ op: 'close', args: { name: 'relay-x-lead' } }, { op: 'send', args: { name: 'relay-x-lead', text: 'hi' } }, { args: { engine: 'shell', name: 'relay-x-lead', cwd: WORK } }]) {
+      expect([over.op ?? 'open', (await fromAlpha(over)).status]).toEqual([over.op ?? 'open', 409])
+    }
+    expect((await fromAlpha({ op: 'send', args: { name: '../x', text: 'hi' } })).status).toBeGreaterThanOrEqual(400)
+    expect(ccm().filter((n) => n.includes('a5') || n.includes('relay'))).toEqual([])
+  })
+
+  it('(36B) (a4) A side: hidden characters in the answer the agent sees are replaced; an answer over 1,048,576 characters is not passed on', async () => {
+    const cfg = { url: `ws://127.0.0.1:${port}`, token: TOKEN, bridgeId: 'alpha' }
+    const input = { to: 'beta', op: 'close' as const, args: { name: 'r1a36b-none' }, caller: CALLER }
+    answer = { status: 200, body: { name: 'a\u202eb', ['k\u2066']: 'x\u0085y\u{e0041}z', ok: 'line\n\ttab' } }
+    expect(await sendRemoteCommand(cfg, input, { key: A, now })).toEqual({ status: 200, body: { name: 'a\ufffdb', ['k\ufffd']: 'x\ufffdy\ufffdz', ok: 'line\n\ttab' } })
+    answer = { status: 200, body: { big: 'x'.repeat(1_100_000) } }
+    expect(await sendRemoteCommand(cfg, input, { key: A, now })).toEqual({ status: 200, body: { error: 'answer too large' } })
+    answer = { status: 200, body: { ok: true, name: 'r1a36b-remote' } }
   })
 })
 
