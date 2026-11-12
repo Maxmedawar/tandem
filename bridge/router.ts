@@ -284,7 +284,7 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
 async function handleOpen(req: RpcRequest): Promise<RpcResult> {
   const rawName = req.body['name'] !== undefined ? String(req.body['name']) : generateName()
   const name = rawName.trim()
-  if (!NAME_RE.test(name)) {
+  if (!NAME_RE.test(name) || name === '.' || name === '..' || name === '.lock') {
     return err(400, `invalid session name (allowed: A-Z a-z 0-9 . _ -): ${name}`)
   }
   // The relay- namespace is reserved for relay.ts's internal sessions.

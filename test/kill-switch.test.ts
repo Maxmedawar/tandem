@@ -12,7 +12,7 @@
  * (the shell harness file) and test/fixtures/fake-cli.sh; the made-up `claude` on PATH is the fake
  * CLI and no row starts it.
  */
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
@@ -65,6 +65,8 @@ const SWITCH = join(TH, 'kill-switch')
 const OPENING = join(TH, 'opening')
 const AUDIT = join(HOME, '.tandem', 'bridge.log')
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
+// Rows that open real sessions pass 5 s when the affected files run together (audit: k2 timed out at 5000 ms).
+vi.setConfig({ testTimeout: 30_000 })
 
 let BASE: Record<string, unknown> = {}
 function setLimits(extra: Record<string, unknown> = {}) {
@@ -622,4 +624,96 @@ describe('(c) the session cap', () => {
     expect((await open('r35-c5-new')).status).toBe(200)
     expect(ccm()).toHaveLength(12)
   }, 180_000)
+})
+
+describe('(a) audit rows', () => {
+  const sh = () => harnessDescriptor(loadedHarnesses().get('shell')!)
+
+  it('(35) a1 the switch turned on while a spawn is under way (after its first check, before tmux starts the session): KillSwitchError, no session left', async () => {
+    const e = await TerminalSession.spawn({
+      name: 'r35-a1', cwd: WORK, allowlist: [WORK], descriptor: sh(),
+      ownerIdProvider: async () => { switchFile(); return 'r35-owner' },
+    }).catch((x: unknown) => x)
+    expect(e).toBeInstanceOf(ks.KillSwitchError)
+    expect(ccm()).toEqual([])
+  }, 30_000)
+
+  it('(35) a2 a notice refused by the switch is not recorded as sent: after release() the next pass types the line', async () => {
+    const s = await HarnessSession.spawn(fakeHarness('r35-a2h', 'notice'), { name: 'r35-a2', cwd: WORK, allowlist: [WORK] })
+    registerLive(s)
+    const box = openMailbox()
+    try {
+      const end = Date.now() + 30_000
+      while ((await s.inputState()).state !== 'idle' && Date.now() < end) await sleep(150)
+      box.send({ from: 'owner', to: 'r35-a2', level: 'fyi', text: 'r35 a2 note' })
+      switchFile()
+      expect(await noticePass(box)).toEqual({ typed: [], held: [] })
+      await sleep(500)
+      expect(screen('r35-a2')).not.toContain('Tandem:')
+      ks.release()
+      expect((await noticePass(box)).typed).toEqual(['r35-a2'])
+      expect(await until(() => screen('r35-a2').includes('Tandem: 1 messages waiting'), 10_000)).toBe(true)
+    } finally {
+      box.close()
+    }
+  }, 60_000)
+
+  it('(35) a3 engage() clears a stopped session\'s turn file, so the input gate does not read it working after the switch is off', async () => {
+    expect((await open('r35-a3')).status).toBe(200)
+    const dir = dh.deliveryDir()
+    writeFileSync(join(dir, 'r35-a3.turn'), JSON.stringify({ state: 'working', at: new Date().toISOString() }), { mode: 0o600 })
+    expect(dh.turnState('r35-a3')).toBe('working')
+    expect((await ks.engage()).stopped).toEqual(['r35-a3'])
+    expect(dh.turnState('r35-a3')).toBeUndefined()
+  }, 30_000)
+
+  it('(35) a4 the names `.`, `..` and `.lock` are refused 400 before anything is reserved or spawned', async () => {
+    for (const name of ['.', '..', '.lock']) {
+      const r = await open(name)
+      expect([name, r.status]).toEqual([name, 400])
+    }
+    expect(ccm()).toEqual([])
+    expect(existsSync(join(OPENING, '.lock'))).toBe(false)
+  })
+
+  it('(35) a5 reserveSessions with a cap that is not a whole number of 1 or more throws: a lost cap never means no cap', async () => {
+    for (const cap of [undefined, NaN, 0, 1.5, '3'] as unknown as number[]) {
+      const e = await ks.reserveSessions(['r35-a5'], cap).catch((x: unknown) => x)
+      expect(e, String(cap)).toBeInstanceOf(Error)
+      expect((e as Error).message, String(cap)).toMatch(/^tandem: /)
+    }
+    expect(existsSync(join(OPENING, 'r35-a5'))).toBe(false)
+  })
+
+  it('(35) a6 status says why the switch reads on when its file is not a plain file or cannot be read (stderr; stdout stays the one line)', () => {
+    const run = (env: Record<string, string>) =>
+      spawnSync(process.execPath, ['--experimental-strip-types', KS, 'status'], { encoding: 'utf8', env: { ...process.env, ...env }, timeout: 30_000 })
+    mkdirSync(SWITCH)
+    const folder = run({})
+    expect([folder.status, folder.stdout]).toEqual([0, 'tandem: kill switch on\n'])
+    expect(folder.stderr).toContain(`tandem: ${SWITCH} is not a regular file`)
+    const notDir = join(BOX, 'a6-file')
+    writeFileSync(notDir, 'x')
+    const unreadable = run({ TANDEM_HOME: notDir })
+    expect([unreadable.status, unreadable.stdout]).toEqual([0, 'tandem: kill switch on\n'])
+    expect(unreadable.stderr).toContain('ENOTDIR')
+    rmSync(SWITCH, { recursive: true })
+    switchFile()
+    expect(run({}).stderr).toBe('')
+  })
+
+  it('(35) a7 engage() that cannot list the sessions still leaves the switch on and says so', async () => {
+    const tmuxDir = join(TH, 'tmux')
+    spawnSync('tmux', ['-S', SOCK, 'kill-server'])
+    rmSync(tmuxDir, { recursive: true, force: true })
+    writeFileSync(tmuxDir, 'not a folder')
+    try {
+      const e = await ks.engage().catch((x: unknown) => x)
+      expect(e).toBeInstanceOf(Error)
+      expect((e as Error).message).toMatch(/^tandem: the kill switch is on, but /)
+      expect(ks.killSwitchOn()).toBe(true)
+    } finally {
+      rmSync(tmuxDir, { force: true })
+    }
+  })
 })

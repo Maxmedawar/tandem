@@ -62,6 +62,16 @@ export function killSwitchOn(): boolean {
   }
 }
 
+/** Why the switch reads on though no `tandem kill-switch on` file is there; undefined for a plain file or none. */
+function oddSwitch(): string | undefined {
+  const path = killSwitchPath()
+  try {
+    return lstatSync(path).isFile() ? undefined : `tandem: ${path} is not a regular file; the switch stays on until you remove it yourself`
+  } catch (e) {
+    return codeOf(e) === 'ENOENT' ? undefined : `tandem: cannot read the kill switch at ${path} (${codeOf(e) ?? reasonOf(e)}); it reads on`
+  }
+}
+
 /** Creates `path` 0600 with `text` (never through a link); false when something is already there. */
 function createFile(path: string, text: string): boolean {
   let fd: number
@@ -115,11 +125,18 @@ export async function engage(opts: { close?: boolean } = {}): Promise<{ stopped:
   if (!killSwitchOn()) throw new Error(`tandem: the kill switch did not turn on at ${killSwitchPath()}`)
 
   const { tmux } = await import('./terminal-session.ts')
+  const { clearTurn } = await import('./delivery-hooks.ts')
   const stopped: string[] = []
   const closed: string[] = []
   const failed: string[] = []
+  let sessions: string[]
+  try {
+    sessions = await tandemSessions()
+  } catch (e) {
+    throw new Error(`tandem: the kill switch is on, but the sessions could not be listed, so none was stopped (${reasonOf(e)})`)
+  }
   await Promise.all(
-    (await tandemSessions()).map(async (full) => {
+    sessions.map(async (full) => {
       const name = full.slice(PREFIX.length)
       try {
         if (opts.close) {
@@ -134,6 +151,9 @@ export async function engage(opts: { close?: boolean } = {}): Promise<{ stopped:
         stopped.push(name)
       } catch {
         failed.push(name)
+      } finally {
+        // As HarnessSession.interrupt does: a hook agent's turn file would read working for 15 minutes more.
+        clearTurn(name)
       }
     }),
   )
@@ -182,6 +202,8 @@ async function takeLock(lock: string): Promise<boolean> {
  * count on the socket instead).
  */
 export async function reserveSessions(names: string[], cap: number): Promise<{ release(): void } | { refused: string }> {
+  // A cap lost on the way here (not a whole number of 1 or more) must never read as no cap.
+  if (!Number.isInteger(cap) || cap < 1) throw new Error('tandem: session_cap is not a whole number of 1 or more')
   for (const n of names) {
     if (!RESERVABLE.test(n) || n === '.' || n === '..' || n === '.lock') throw new Error(`tandem: cannot reserve the session name ${JSON.stringify(n)}`)
   }
@@ -254,6 +276,8 @@ export async function main(args: string[]): Promise<number> {
     }
     if (command === 'status' && rest.length === 0) {
       say(`tandem: kill switch ${killSwitchOn() ? 'on' : 'off'}`)
+      const odd = oddSwitch()
+      if (odd) process.stderr.write(`${odd}\n`)
       return 0
     }
     process.stderr.write(USAGE)

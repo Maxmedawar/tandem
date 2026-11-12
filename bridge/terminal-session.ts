@@ -804,6 +804,12 @@ export class TerminalSession {
       cwd,
       ...engineArgv,
     ])
+    // The switch turned on since the check above: engage() may have listed the sessions before this
+    // one existed, so it is ended here (the file is written before the list, so one of the two sees it).
+    if (killSwitchOn()) {
+      await tmux(['kill-session', '-t', sessionTarget(name)]).catch(() => {})
+      throw new KillSwitchError()
+    }
     noteSessionStart({ name, agent: descriptor.id, cwd, startedAtMs })
 
     // Provenance tags (binding — Phase 2 correction A): required before a later
@@ -823,7 +829,7 @@ export class TerminalSession {
     try {
       await session.warmup()
     } catch (e) {
-      if (e instanceof NeedsOwnerError) await session.close()
+      if (e instanceof NeedsOwnerError || e instanceof KillSwitchError) await session.close()
       throw e
     }
     return session
@@ -992,6 +998,8 @@ export class TerminalSession {
     } else {
       watch.answered.add(d.name)
     }
+    // No dialog is answered while the kill switch is on: the start fails and spawn ends the session.
+    if (killSwitchOn()) throw new KillSwitchError()
     await tmux(['send-keys', '-t', this.tmuxTarget, key])
     watch.movedOn = pane
     return true
