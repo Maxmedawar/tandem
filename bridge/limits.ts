@@ -10,18 +10,32 @@
  * "project"). The bridge is the only place limits are enforced, and nothing remote can widen them.
  *
  * The file is `$TANDEM_HOME/limits.toml` when TANDEM_HOME is set, else `~/.tandem/limits.toml`,
- * worked out at each read. It is read once when this module is first imported (the bridge imports
- * the router at start) and kept as a snapshot plus the sha256 digest of the bytes read (`missing`
- * when there is no file). applyLimits() reads it again the same way; nothing else changes the
- * snapshot, and no route, MCP tool, hub frame or fleet op calls it (U-R1A-48 wires `tandem limits
- * apply` to it). A missing or refused file allows nothing and writes one stderr line.
+ * worked out at each read. What is used is the APPLIED COPY beside it, `limits.applied.toml` (0600,
+ * the exact bytes of the limits.toml that was applied), written only by commitLimits(), which only
+ * `tandem limits init` and `tandem limits apply` call (bridge/limits-cli.ts: a terminal of this
+ * user, not inside a Tandem session, and a typed `yes` for every change). No route, MCP tool, hub
+ * frame, control op or fleet op writes it. A folder with no copy (a file from before U-R1A-48) is
+ * read from limits.toml as before.
  *
- * At each open and relay start the router takes limitsGate(), which reads the bytes on disk: when
- * their digest differs from the snapshot's, every refusal ends with a notice and stderr gets one
- * line the first time each new digest is seen. The snapshot is not touched.
+ * Every process that imports this module (the runtime, each agent's stdio MCP server, hooks) reads
+ * the copy once at import into a snapshot plus the sha256 digest of the bytes read (`missing` when
+ * there is no file), and at each limitsSnapshot() and limitsGate() call looks at the copy again
+ * (one lstat in the folder of its last read): a new copy is read at that call, so one apply
+ * reaches every running process and every one started later, with no signal, socket or restart. A
+ * copy that disappears keeps the snapshot (no fall back while running). A missing or refused file
+ * or copy allows nothing and writes one stderr line. applyLimits() reads again exactly as at start.
+ *
+ * Same user (T23, as bridge/kill-switch.ts states for its file): a process of this user can write
+ * limits.applied.toml itself, or delete it so that a process started later reads limits.toml. The
+ * copy keeps an agent's edit to limits.toml from being used; it is not a wall between one user's
+ * processes.
+ *
+ * At each open and relay start the router takes limitsGate(), which reads the bytes of limits.toml
+ * on disk: when their digest differs from the snapshot's, every refusal ends with a notice and
+ * stderr gets one line the first time each new digest is seen. The snapshot is not touched.
  */
 import { createHash } from 'node:crypto'
-import { readFileSync, realpathSync, statSync } from 'node:fs'
+import { closeSync, constants, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { parse } from 'smol-toml'
@@ -59,7 +73,7 @@ export interface LimitsSnapshot {
   problem?: string
 }
 
-const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap', 'control_from', 'memory_scope', 'transcript_scope']
+export const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap', 'control_from', 'memory_scope', 'transcript_scope']
 /** A computer id (bridge/envelope.ts ID). */
 const COMPUTER_ID = /^[a-z0-9._-]{1,64}$/
 const DEFAULT_SESSION_CAP = 12
@@ -68,6 +82,12 @@ const AGENT_FIELDS = ['program', 'sha256']
 const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
 const SHA256 = /^[0-9a-f]{64}$/
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
+/** What `tandem limits init` writes for every field but `folders` and `agents` (U-R1A-17B adds its two fields here and to FIELDS). */
+export const INIT_DEFAULTS = {
+  shell: false, permission_skip: [], session_cap: 12, interrupt_from: [], control_from: [], memory_scope: 'project', transcript_scope: 'project',
+} as const
+export type LimitsFields = Omit<LimitsSnapshot, 'digest' | 'problem'>
+const APPLIED = 'limits.applied.toml'
 const NOTICE = ' (notice: the limits file changed on disk and is not applied; apply it at this computer)'
 
 type Table = Record<string, unknown>
@@ -95,6 +115,21 @@ export function isInterruptSender(v: unknown): v is string {
 
 export function limitsFile(): string {
   return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'limits.toml')
+}
+
+/** The applied copy beside the limits file. */
+export function appliedFile(): string {
+  return join(dirname(limitsFile()), APPLIED)
+}
+
+/** Which copy is on disk: device, inode, size and times; `none` for no copy; `error: <code>` when lstat fails otherwise. */
+function copyKey(copy: string): string {
+  try {
+    const st = lstatSync(copy, { throwIfNoEntry: false })
+    return st ? `${st.dev}:${st.ino}:${st.size}:${st.mtimeMs}:${st.ctimeMs}` : 'none'
+  } catch (e) {
+    return `error: ${(e as NodeJS.ErrnoException).code ?? reasonOf(e)}`
+  }
 }
 
 /**
@@ -213,14 +248,28 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
   return { ...base, interrupt_from: from as string[] }
 }
 
-/** Reads and checks the file; a missing or refused one allows nothing and says so on stderr. */
-function readLimits(): LimitsSnapshot {
-  const file = limitsFile()
-  const disk = readOnDisk(file)
+/** The folder of the last read and the copy's key then: fresh() looks there, never at a TANDEM_HOME changed since. */
+let readDir = ''
+let readKey = 'none'
+
+/**
+ * Reads and checks the applied copy in `dir`, or limits.toml there when no copy exists; a missing or
+ * refused one allows nothing and says so on stderr. A refused copy never falls back to limits.toml.
+ */
+function readLimits(dir = dirname(limitsFile())): LimitsSnapshot {
+  const copy = join(dir, APPLIED)
+  // The key before the bytes: a copy replaced in between is read again at the next call.
+  const key = copyKey(copy)
+  readDir = dir
+  readKey = key
+  const file = key === 'none' ? join(dir, 'limits.toml') : copy
+  const disk: { bytes?: Buffer; digest: string; problem?: string } = key.startsWith('error: ')
+    ? { digest: `refused: ${key.slice(7)}`, problem: `${copy}: ${key.slice(7)}` }
+    : readOnDisk(file)
   let problem = disk.problem
   if (disk.bytes) {
     try {
-      return { ...parseLimits(disk.bytes, real(dirname(file))), digest: disk.digest }
+      return { ...parseLimits(disk.bytes, real(dir)), digest: disk.digest }
     } catch (e) {
       problem = `${file}: ${reasonOf(e)}`
     }
@@ -235,14 +284,76 @@ function readLimits(): LimitsSnapshot {
 let snapshot = readLimits()
 const noticed = new Set<string>()
 
-/** Reads the file again exactly as at start and replaces the snapshot. Called only at this computer (U-R1A-48). */
+/** Reads again exactly as at start (the applied copy, else limits.toml) and replaces the snapshot. */
 export function applyLimits(): void {
   snapshot = readLimits()
+}
+
+/** A new applied copy since the last read is read now. A copy that disappears keeps the snapshot. */
+function fresh(): void {
+  // ponytail: one lstat per call; cache by tick if calls get hot.
+  const key = copyKey(join(readDir, APPLIED))
+  if (key !== 'none' && key !== readKey) snapshot = readLimits(readDir)
+}
+
+/**
+ * limits.toml read and checked as readLimits() would, with nothing written to stderr and the
+ * snapshot untouched; `copy` says whether the applied copy exists.
+ */
+export function limitsOnDisk(): { digest: string; fields?: LimitsFields; problem?: string; copy: boolean } {
+  const file = limitsFile()
+  const copy = copyKey(appliedFile()) !== 'none'
+  const disk = readOnDisk(file)
+  if (!disk.bytes) return { digest: disk.digest, problem: disk.problem, copy }
+  try {
+    return { digest: disk.digest, fields: parseLimits(disk.bytes, real(dirname(file))), copy }
+  } catch (e) {
+    return { digest: disk.digest, problem: `${file}: ${reasonOf(e)}`, copy }
+  }
+}
+
+/**
+ * Applies limits.toml when its bytes are still the ones shown (`expected`, their sha256): writes
+ * them as the applied copy (a 0600 temporary file, fsync, rename) and reads the copy into this
+ * process's snapshot. Returns undefined, or why nothing was written: `missing`, `changed`, or the
+ * reason the file is refused. Called only by bridge/limits-cli.ts at this computer.
+ */
+export function commitLimits(expected: string): string | undefined {
+  const file = limitsFile()
+  const dir = dirname(file)
+  const disk = readOnDisk(file)
+  if (disk.digest === 'missing') return 'missing'
+  if (!disk.bytes) return disk.problem
+  if (disk.digest !== expected) return 'changed'
+  try {
+    parseLimits(disk.bytes, real(dir))
+  } catch (e) {
+    return `${file}: ${reasonOf(e)}`
+  }
+  const tmp = join(dir, `${APPLIED}.${process.pid}.tmp`)
+  let made = false
+  try {
+    const fd = openSync(tmp, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600)
+    made = true
+    try {
+      for (let at = 0; at < disk.bytes.length; ) at += writeSync(fd, disk.bytes, at)
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    renameSync(tmp, join(dir, APPLIED))
+  } catch (e) {
+    if (made) rmSync(tmp, { force: true })
+    return reasonOf(e)
+  }
+  snapshot = readLimits(dir)
+  return undefined
 }
 
 /** A copy of the applied snapshot. `session_cap`, `control_from`, `memory_scope` and `transcript_scope` are on it
  *  but not enumerable, so the snapshot's listed fields (and every reader comparing or printing them) stay as they were before them. */
 export function limitsSnapshot(): LimitsSnapshot {
+  fresh()
   const copy = structuredClone(snapshot)
   Object.defineProperty(copy, 'session_cap', { value: snapshot.session_cap, enumerable: false, writable: true, configurable: true })
   Object.defineProperty(copy, 'control_from', { value: [...snapshot.control_from], enumerable: false, writable: true, configurable: true })
@@ -261,6 +372,7 @@ function sha256Of(file: string): string | undefined {
  * once, for the notice. Each check returns the refusal text (starting `limits: `) or undefined.
  */
 export function limitsGate() {
+  fresh()
   const applied = snapshot
   const { digest } = readOnDisk(limitsFile())
   const stale = digest !== applied.digest
