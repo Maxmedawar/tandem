@@ -29,10 +29,11 @@
  */
 import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
+import { ensureDbFile } from './sqlite-file.ts'
 
 // Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
@@ -49,7 +50,7 @@ function withTokens<T>(fn: (db: InstanceType<typeof DatabaseSync>) => T): T {
   chmodSync(dir, 0o700)
   // Never let SQLite create the file under the process umask. Only when it is missing: closing a
   // descriptor of the file drops every lock this process's open connections (the mailbox) hold on it.
-  if (!existsSync(path)) closeSync(openSync(path, 'a', 0o600))
+  ensureDbFile(path)
   chmodSync(path, 0o600)
   const db = new DatabaseSync(path)
   try {

@@ -34,11 +34,11 @@
  * socket plus the live reservations: files `<TANDEM_HOME>/opening/<name>` younger than 120 s,
  * written under the lock `<TANDEM_HOME>/opening/.lock`.
  */
-import { execFileSync } from 'node:child_process'
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { insideTandemSession, parentPidOf } from './caller-tokens.ts'
 import type { ControlCommand, ControlResult } from './control-socket.ts'
 
 export const KILL_SWITCH_ON =
@@ -263,65 +263,6 @@ export function startKillSwitchGuard(opts: { everyMs?: number } = {}): {
   }
 }
 
-/** The parent of `pid`: /proc/<pid>/stat on Linux, else `ps -o ppid= -p <pid>`; undefined when there is no such process. */
-export function parentPidOf(pid: number): number | undefined {
-  let text: string
-  if (process.platform === 'linux') {
-    try {
-      text = readFileSync(`/proc/${pid}/stat`, 'utf8')
-    } catch (e) {
-      if (codeOf(e) === 'ENOENT' || codeOf(e) === 'ESRCH') return undefined
-      throw e
-    }
-    // `pid (comm) state ppid ...`: comm may hold spaces and parentheses, so read after the last `)`.
-    const ppid = Number(text.slice(text.lastIndexOf(')') + 1).trim().split(/\s+/)[1])
-    if (!Number.isInteger(ppid)) throw new Error(`cannot read the parent of ${pid}`)
-    return ppid
-  }
-  try {
-    text = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 })
-  } catch (e) {
-    // ps exits 1 with nothing printed when there is no such process.
-    if ((e as { status?: unknown }).status === 1 && !String((e as { stdout?: unknown }).stdout ?? '').trim()) return undefined
-    throw e
-  }
-  const ppid = Number(text.trim())
-  if (!Number.isInteger(ppid)) throw new Error(`cannot read the parent of ${pid}`)
-  return ppid
-}
-
-/**
- * The Tandem session `pid` runs inside (its name without `ccm-`), or undefined: the pane pids of
- * the `ccm-` sessions on Tandem's socket (no server or no tmux program: none), then `pid` and its
- * parents (at most 64 steps, stopping at 1 or a repeat); the first pane pid names the session. Any
- * other failure throws.
- */
-export async function insideTandemSession(pid: number): Promise<string | undefined> {
-  const { tmux } = await import('./terminal-session.ts')
-  let out: string
-  try {
-    out = await tmux(['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'])
-  } catch (e) {
-    if (codeOf(e) === 'ENOENT' || /no server running|error connecting to/.test(String(e))) return undefined
-    throw e
-  }
-  const panes = new Map<number, string>()
-  for (const line of out.split('\n')) {
-    const [session, panePid] = line.split(' ')
-    if (session?.startsWith(PREFIX) && /^\d+$/.test(panePid ?? '')) panes.set(Number(panePid), session.slice(PREFIX.length))
-  }
-  if (panes.size === 0) return undefined
-  const seen = new Set<number>()
-  let cur: number | undefined = pid
-  for (let step = 0; step < 64 && cur !== undefined && cur > 1 && !seen.has(cur); step++) {
-    const name = panes.get(cur)
-    if (name !== undefined) return name
-    seen.add(cur)
-    cur = parentPidOf(cur)
-  }
-  return undefined
-}
-
 /** The facts an `off` carries about who asks. */
 type OffFacts = { pid: number; caller_token?: string; tmux?: string }
 
@@ -387,7 +328,7 @@ export async function runKillSwitchCommand(command: ControlCommand): Promise<Con
   }
   let ppid: number | null = null
   try {
-    ppid = parentPidOf(command.pid) ?? null
+    ppid = await parentPidOf(command.pid)
   } catch {
     /* recorded as unknown */
   }
