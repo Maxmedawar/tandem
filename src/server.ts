@@ -178,7 +178,9 @@ const killSwitchGuard = startKillSwitchGuard();
 let controlServer: { close(): Promise<void> } | undefined;
 try {
   const { startControlServer } = await import("../bridge/control-socket.ts");
-  controlServer = await startControlServer({ run: runKillSwitchCommand });
+  // `status` (U-R1A-40-R1): this runtime's own sessions' states and the guard, for `tandem status`.
+  const { runtimeStatus } = await import("../bridge/status.ts");
+  controlServer = await startControlServer({ run: runKillSwitchCommand, status: runtimeStatus() });
 } catch {
   console.error("tandem: control socket unavailable; while this runtime runs the kill switch can only be turned off by stopping the runtime");
 }

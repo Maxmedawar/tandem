@@ -354,3 +354,178 @@ describe('(s8) a reader that throws', () => {
     await expect(status.statusDocument({ presence })).rejects.toThrow()
   })
 })
+
+/*
+ * U-R1A-40-R1 (audit F1, F2, F3, F5): the runtime owns session state, so `tandem status` asks it
+ * with one read-only `status` command on its control socket. The test process plays the runtime
+ * (its route() opened the session, so its registry holds it, as in src/server.ts) and serves the
+ * same handler src/server.ts wires; the launcher runs as a separate process.
+ */
+const { spawn } = await import('node:child_process')
+const { createServer: netServer } = await import('node:net')
+const { chmodSync } = await import('node:fs')
+const { runKillSwitchCommand, startKillSwitchGuard } = await import('../bridge/kill-switch.ts')
+const { sendControlCommand } = await import('../bridge/control-socket.ts')
+
+/** The installed launcher, run without blocking this process (it serves the runtime's socket). */
+function launcher(...args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  const inst = join(BOX, 'inst-r1')
+  if (!existsSync(join(inst, 'runtime'))) {
+    mkdirSync(join(inst, 'bin'), { recursive: true })
+    copyFileSync(join(repo, 'packaging', 'tandem'), join(inst, 'bin', 'tandem'))
+    symlinkSync(repo, join(inst, 'runtime'))
+  }
+  return new Promise((done) => {
+    const p = spawn('sh', [join(inst, 'bin', 'tandem'), ...args], { env: { ...process.env, TANDEM_NODE: process.execPath }, stdio: ['ignore', 'pipe', 'pipe'] })
+    let stdout = ''
+    let stderr = ''
+    p.stdout.on('data', (c) => { stdout += c })
+    p.stderr.on('data', (c) => { stderr += c })
+    p.on('close', (status) => done({ status, stdout, stderr }))
+  })
+}
+
+/** A socket at the control path that answers each connection with `reply` (or never, with null). */
+async function fakeSocket(reply: string | null): Promise<{ lines: string[]; close(): Promise<void> }> {
+  const lines: string[] = []
+  const open = new Set<import('node:net').Socket>()
+  const server = netServer((c) => {
+    open.add(c)
+    c.on('close', () => open.delete(c))
+    c.setEncoding('utf8')
+    let body = ''
+    c.on('data', (chunk) => {
+      body += chunk
+      if (!body.includes('\n')) return
+      lines.push(body.slice(0, body.indexOf('\n')))
+      if (reply !== null) c.end(reply)
+    })
+  })
+  mkdirSync(join(TH, 'run'), { recursive: true, mode: 0o700 })
+  await new Promise<void>((r) => server.listen(controlSocketPath(), r))
+  return { lines, close: () => new Promise<void>((r) => { server.close(() => r()); for (const c of open) c.destroy() }) }
+}
+
+describe('(R1) the runtime answers status', () => {
+  const name = 'r40-rules'
+  let server: { close(): Promise<void> } | undefined
+  beforeAll(async () => {
+    const owner = join(TH, 'harnesses')
+    mkdirSync(owner, { recursive: true })
+    chmodSync(owner, 0o700)
+    writeFileSync(join(owner, 'fake-rules.toml'), `name = "fake-rules"\nprogram = "${join(repo, 'test', 'fixtures', 'fake-cli.sh')}"\nhas_prompts = true\n[states]\nworking = ['^fake is thinking\\z']\nidle = ['^fake>\\z']\nwaiting_for_approval = ['\\(y/n\\)\\z']\ndebounce_ms = 300\n`, { mode: 0o600 })
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((() => true) as never)
+    resetHarnessCache()
+    const loaded = loadedHarnesses()
+    spy.mockRestore()
+    writeLimits(TH, { folders: [WORK], shell: true, agents: { shell: agentEntry(loaded.get('shell')!), 'fake-rules': agentEntry(loaded.get('fake-rules')!) } })
+    limits.applyLimits()
+    process.env.TANDEM_ENABLED_ENGINES = 'shell,fake-rules'
+    server = await startControlServer({ run: runKillSwitchCommand, status: (status as Json).runtimeStatus?.() } as Json)
+  })
+  afterAll(async () => {
+    await rq('POST', `/sessions/${name}/close`)
+    await server?.close()
+    process.env.TANDEM_ENABLED_ENGINES = 'shell'
+  })
+
+  it('(40-R1) r1 a fake-rules session opened through the runtime reads idle (not unknown) in `tandem status --json` from a separate process', async () => {
+    const open = await rq('POST', '/sessions/open', { engine: 'fake-rules', name, cwd: ONE })
+    expect(open.status, JSON.stringify(open.body)).toBe(200)
+    // The runtime's own reading first (the screen settles), then the separate process.
+    const deadline = Date.now() + 15_000
+    let reply: Json
+    while (Date.now() < deadline) {
+      reply = await sendControlCommand(controlSocketPath(), { op: 'status' } as Json, 1500)
+      if (reply?.detail?.sessions?.find((s: Json) => s.name === name)?.state === 'idle') break
+      await new Promise((r) => setTimeout(r, 250))
+    }
+    expect(reply.ok, JSON.stringify(reply)).toBe(true)
+    expect(Object.keys(reply.detail)).toEqual(['sessions', 'killSwitch'])
+    expect(Object.keys(reply.detail.killSwitch)).toEqual(['on', 'latched', 'tampered'])
+    for (const s of reply.detail.sessions) expect(Object.keys(s)).toEqual(['name', 'engine', 'state', 'ageMs'])
+    const raw = JSON.stringify(reply)
+    for (const p of [ONE, realpathSync(ONE), WORK, TH, 'fake>']) expect(raw.includes(p), p).toBe(false)
+
+    const r = await launcher('status', '--json')
+    expect(r.status, r.stderr).toBe(0)
+    const doc: Json = JSON.parse(r.stdout)
+    expect(doc.runtime).toBe('running')
+    const row = doc.computers[0].sessions.find((s: Json) => s.name === name)
+    expect(row).toMatchObject({ name, engine: 'fake-rules', project: 'one', state: 'idle' })
+    expect(Object.keys(row)).toEqual(SESSION_KEYS)
+    expect(doc.computers[0].counts).toEqual(tally(doc.computers[0].sessions))
+    expect(doc.computers[0].counts.idle).toBeGreaterThanOrEqual(1)
+    expect(allKeys(doc)).not.toContain('cwd')
+    const text = await launcher('status')
+    expect(text.status, text.stderr).toBe(0)
+    expect(text.stdout.split('\n')[0]).toBe(`Tandem ${VERSION} · runtime running · kill switch off`)
+    expect(text.stdout).toContain(`  ${name}  fake-rules  idle\n`)
+  }, 60_000)
+
+  it('(40-R1) r2 a latched switch whose file was deleted reads on (from a separate process)', async () => {
+    writeFileSync(killSwitchPath(), `on ${new Date().toISOString()}\n`, { mode: 0o600 })
+    const guard = startKillSwitchGuard({ everyMs: 3_600_000 })
+    try {
+      rmSync(killSwitchPath())
+      expect(existsSync(killSwitchPath())).toBe(false)
+      const r = await launcher('status', '--json')
+      expect(r.status, r.stderr).toBe(0)
+      expect(JSON.parse(r.stdout)).toMatchObject({ runtime: 'running', killSwitch: 'on' })
+    } finally {
+      guard.stop()
+      rmSync(killSwitchPath(), { force: true })
+    }
+    const r = await launcher('status', '--json')
+    expect(JSON.parse(r.stdout)).toMatchObject({ runtime: 'running', killSwitch: 'off' })
+  }, 60_000)
+})
+
+describe('(R1) older runtimes, a hung socket, extra arguments', () => {
+  it('(40-R1) r3 a socket that answers unknown_command reads old_runtime; it was sent one status line and nothing else', async () => {
+    const old = await fakeSocket(`${JSON.stringify({ ok: false, error: 'unknown_command' })}\n`)
+    try {
+      const doc: Json = await status.statusDocument()
+      expect(doc.runtime).toBe('old_runtime')
+      expect(doc.computers[0].self).toBe(true)
+      expect(doc.killSwitch).toBe('off')
+      expect(old.lines).toEqual(['{"op":"status"}'])
+      expect(status.renderStatus(doc).split('\n')[0]).toBe(`Tandem ${VERSION} · runtime old runtime · kill switch off`)
+    } finally {
+      await old.close()
+    }
+    expect(existsSync(controlSocketPath())).toBe(false)
+  })
+
+  it('(40-R1) r4 a socket that never answers: not_running within about 1.5 s; a runtime whose reading hangs still answers in time', async () => {
+    const hung = await fakeSocket(null)
+    try {
+      const t0 = Date.now()
+      expect((await status.statusDocument()).runtime).toBe('not_running')
+      const took = Date.now() - t0
+      expect(took).toBeGreaterThanOrEqual(1400)
+      expect(took).toBeLessThan(3000)
+    } finally {
+      await hung.close()
+    }
+    const stuck = { whoIsUp: () => new Promise<never>(() => {}), names: async () => [] }
+    const server = await startControlServer({ run: runKillSwitchCommand, status: (status as Json).runtimeStatus?.({ presence: stuck }) } as Json)
+    try {
+      const t0 = Date.now()
+      const doc: Json = await status.statusDocument()
+      expect(Date.now() - t0).toBeLessThan(1500)
+      expect(doc.runtime).toBe('running')
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('(40-R1) r5 extra or unknown arguments exit 2 with the usage line, stdout empty', async () => {
+    for (const args of [['--json', 'x'], ['-h'], ['--json', '--json'], ['x']]) {
+      const r = await captured(() => status.main(args))
+      expect(r, args.join(' ')).toEqual({ value: 2, out: '', err: 'usage: tandem status [--json]\n' })
+    }
+    const r = await launcher('status', '--json', 'x')
+    expect([r.status, r.stdout, r.stderr]).toEqual([2, '', 'usage: tandem status [--json]\n'])
+  })
+})

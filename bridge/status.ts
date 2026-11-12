@@ -6,20 +6,27 @@
  *
  * It is built in this command's own process from the readers who_is_up uses (bridge/presence.ts,
  * which reads bridge/hub-presence.ts's state.db for the other computers); no runtime has to run.
- * The runtime is only probed: one `kill_switch_status` over its control socket
- * (bridge/control-socket.ts). Nothing under `run/` is ever made, removed or replaced here.
+ * Only the runtime can read its sessions' states (it holds them), so this computer's sessions and
+ * the kill switch come from one read-only `status` over its control socket
+ * (bridge/control-socket.ts; runtimeStatus below is the runtime's answer, src/server.ts wires it).
+ * A runtime that is down (`not_running`) or answers `unknown_command` (an older one:
+ * `old_runtime`) leaves the local readers' rows, states `unknown`, and the switch file. Nothing
+ * under `run/` is ever made, removed or replaced here.
  *
  * No folder path, screen text, transcript, attach command, token or key is in any field: each
  * session row is picked field by field.
  */
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { controlSocketPath, sendControlCommand } from './control-socket.ts'
+import { controlSocketPath, sendControlCommand, type ControlResult } from './control-socket.ts'
 import type { Presence } from './presence.ts'
 
 export const STATUS_VERSION = 2
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
 const PROBE_MS = 1500
+/** The runtime answers within this, so the caller's PROBE_MS never takes a slow screen read for a dead runtime. */
+const ANSWER_MS = 1000
+const STATES: ReadonlySet<string> = new Set(['working', 'idle', 'waiting_for_approval', 'unknown'])
 
 export type StatusCounts = { working: number; idle: number; waiting_for_approval: number; unknown: number }
 export type StatusSession = { name: string; engine: string; project: string; state: string; stateAt: number; ageMs: number }
@@ -38,19 +45,69 @@ export type TandemStatus = {
   statusVersion: typeof STATUS_VERSION
   version: string
   at: number
-  runtime: 'running' | 'not_running'
+  runtime: 'running' | 'not_running' | 'old_runtime'
   killSwitch: 'on' | 'off'
   computers: StatusComputer[]
 }
-export type StatusOptions = { presence?: Presence; probe?: () => Promise<boolean>; now?: () => number }
+/** The runtime's `status` answer: its own session rows and its kill switch guard. */
+export type RuntimeReply = {
+  sessions: { name: string; engine: string; state: string; ageMs: number }[]
+  killSwitch: { on: boolean; latched: boolean; tampered: number }
+}
+export type RuntimeProbe = { runtime: TandemStatus['runtime']; reply?: RuntimeReply }
+export type StatusOptions = { presence?: Presence; probe?: () => Promise<RuntimeProbe>; now?: () => number }
 
-/** True when the runtime's control socket answers `kill_switch_status` with anything parsed. */
-async function runtimeAnswers(): Promise<boolean> {
+/** The reply picked field by field; anything off shape is no reply (the local readers are used). */
+function replyOf(detail: unknown): RuntimeReply | undefined {
+  const d = detail as { sessions?: unknown; killSwitch?: { on?: unknown; latched?: unknown; tampered?: unknown } } | null
+  if (!d || !Array.isArray(d.sessions) || !d.killSwitch) return undefined
+  const { on, latched, tampered } = d.killSwitch
+  if (typeof on !== 'boolean' || typeof latched !== 'boolean' || typeof tampered !== 'number') return undefined
+  const sessions: RuntimeReply['sessions'] = []
+  for (const s of d.sessions as { name?: unknown; engine?: unknown; state?: unknown; ageMs?: unknown }[]) {
+    if (typeof s?.name !== 'string' || typeof s.engine !== 'string' || typeof s.state !== 'string' || typeof s.ageMs !== 'number' || !Number.isFinite(s.ageMs)) return undefined
+    sessions.push({ name: s.name, engine: s.engine, state: STATES.has(s.state) ? s.state : 'unknown', ageMs: s.ageMs })
+  }
+  return { sessions, killSwitch: { on, latched, tampered } }
+}
+
+/** One `status` to the runtime: no answer `not_running`, `unknown_command` `old_runtime`, else `running`. */
+async function askRuntime(): Promise<RuntimeProbe> {
+  let answer: ControlResult
   try {
-    await sendControlCommand(controlSocketPath(), { op: 'kill_switch_status' }, PROBE_MS)
-    return true
+    answer = await sendControlCommand(controlSocketPath(), { op: 'status' }, PROBE_MS)
   } catch {
-    return false
+    return { runtime: 'not_running' }
+  }
+  if (answer?.ok === false && answer.error === 'unknown_command') return { runtime: 'old_runtime' }
+  const reply = answer?.ok === true ? replyOf(answer.detail) : undefined
+  return reply ? { runtime: 'running', reply } : { runtime: 'running' }
+}
+
+/**
+ * The runtime's answer to `status` (src/server.ts passes it to startControlServer): who_is_up's
+ * rows for this computer from this process's own sessions (name, engine, state, age; no folder,
+ * screen or text) and the kill switch guard's on/latched/tampered. Read-only. A reading that takes
+ * over ANSWER_MS answers `timed_out`, so the caller still sees a running runtime.
+ */
+export function runtimeStatus(opts: { presence?: Presence } = {}): () => Promise<ControlResult> {
+  let presence = opts.presence
+  return async () => {
+    const [{ createPresence }, { runKillSwitchCommand }] = await Promise.all([import('./presence.ts'), import('./kill-switch.ts')])
+    // Only this computer: the other computers are read by the caller from state.db.
+    presence ??= createPresence({ remote: { read: () => [] } })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const late = new Promise<undefined>((done) => { timer = setTimeout(() => done(undefined), ANSWER_MS) })
+    const up = await Promise.race([presence.whoIsUp({ refresh: true }), late]).finally(() => clearTimeout(timer))
+    if (!up) return { ok: false, error: 'timed_out' }
+    const guard = (await runKillSwitchCommand({ op: 'kill_switch_status' })).detail as RuntimeReply['killSwitch']
+    return {
+      ok: true,
+      detail: {
+        sessions: up.sessions.map(({ name, engine, state, ageMs }) => ({ name, engine, state, ageMs })),
+        killSwitch: { on: guard.on, latched: guard.latched, tampered: guard.tampered },
+      },
+    }
   }
 }
 
@@ -75,15 +132,21 @@ export async function statusDocument(opts: StatusOptions = {}): Promise<TandemSt
   const [{ createPresence }, { killSwitchOn }] = await Promise.all([import('./presence.ts'), import('./kill-switch.ts')])
   const now = opts.now ?? Date.now
   const presence = opts.presence ?? createPresence({ now })
-  const [up, running] = await Promise.all([presence.whoIsUp({ refresh: true }), (opts.probe ?? runtimeAnswers)()])
+  const [up, { runtime, reply }] = await Promise.all([presence.whoIsUp({ refresh: true }), (opts.probe ?? askRuntime)()])
+  const at = now()
+  // The runtime's rows when it answered (it holds the states); the project from the local listing.
+  const project = new Map(up.sessions.map((s) => [s.name, s.project]))
+  const mine = reply
+    ? reply.sessions.map((s) => ({ ...s, project: project.get(s.name) ?? '', stateAt: at - s.ageMs }))
+    : up.sessions
   return {
     statusVersion: STATUS_VERSION,
     version: VERSION,
-    at: now(),
-    runtime: running ? 'running' : 'not_running',
-    killSwitch: killSwitchOn() ? 'on' : 'off',
+    at,
+    runtime,
+    killSwitch: (reply ? reply.killSwitch.on || reply.killSwitch.latched : killSwitchOn()) ? 'on' : 'off',
     computers: [
-      computer({ computer: up.computer, self: true, at: up.at, ageMs: up.ageMs, stale: false, more: 0 }, up.sessions),
+      computer({ computer: up.computer, self: true, at: up.at, ageMs: up.ageMs, stale: false, more: 0 }, mine),
       ...(up.others ?? []).map((o) => computer({ ...o, self: false }, o.sessions)),
     ],
   }
@@ -100,7 +163,7 @@ function age(ms: number | null): string {
 }
 
 export function renderStatus(doc: TandemStatus): string {
-  const lines = [`Tandem ${doc.version} · runtime ${doc.runtime === 'running' ? 'running' : 'not running'} · kill switch ${doc.killSwitch}`]
+  const lines = [`Tandem ${doc.version} · runtime ${doc.runtime.replace('_', ' ')} · kill switch ${doc.killSwitch}`]
   for (const c of doc.computers) {
     const n = c.sessions.length
     const { working, idle, waiting_for_approval, unknown } = c.counts
