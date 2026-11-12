@@ -16,7 +16,8 @@
  * Exit codes: 0 done, 1 refused or failed (one stderr line, the error only), 2 usage, 3 the
  * runtime is not running or is too old for mail. The reply is read up to MAX_MAIL_REPLY bytes.
  * Names in the text form print only when they match NAME, else `?`; message text has every
- * control, bidi and tag character but newline and tab replaced; --json escapes them.
+ * control, bidi and tag character but newline and tab replaced, and each of its lines printed
+ * under `  | `: only a message's two header lines start at column 0. --json escapes them.
  *
  * Stated limits: the control socket takes requests up to 8 KiB, so a message over about 8 KiB is
  * refused `too_large` here (mail_send takes 16 KiB). --peek reads the mail table read-only beside
@@ -167,6 +168,8 @@ const safe = (v: unknown): string => (typeof v === 'string' && NAME.test(v) ? v 
 /** A sender or address (`owner`, `session:s1`, `machine:beta/session:s1`, `beta:s1`): each part checked. */
 const address = (v: unknown): string => (typeof v === 'string' ? v.split(/([:/])/).map((p) => (p === ':' || p === '/' ? p : safe(p))).join('') : '?')
 const clean = (text: unknown): string => String(text).replace(HIDDEN, '?')
+/** A message body for the text form: every line (the first and empty ones too) under `  | `, so no text draws a header line at column 0. */
+const body = (text: unknown): string => clean(text).split('\n').map((line) => `  | ${line}`).join('\n')
 /** JSON with every control, bidi, separator and tag character escaped (JSON.stringify leaves C1, bidi and tags raw). */
 const json = (v: unknown): string =>
   `${JSON.stringify(v).replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, (c) => Array.from({ length: c.length }, (_, i) => `\\u${c.charCodeAt(i).toString(16).padStart(4, '0')}`).join(''))}\n`
@@ -273,7 +276,7 @@ export async function main(args: string[], opts: { maxReply?: number } = {}): Pr
     if (messages.length === 0) process.stdout.write('(empty)\n')
     for (const m of messages as Json[]) {
       const level = typeof m?.level === 'string' && LEVELS.has(m.level) ? m.level : '?'
-      process.stdout.write(`${UNTRUSTED}\nfrom ${address(m?.from)} · ${level} · ${time(m?.sentAt)}\n${clean(m?.text)}\n`)
+      process.stdout.write(`${UNTRUSTED}\nfrom ${address(m?.from)} · ${level} · ${time(m?.sentAt)}\n${body(m?.text)}\n`)
     }
     return 0
   }
