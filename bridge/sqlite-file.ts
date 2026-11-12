@@ -14,6 +14,32 @@
  * Folders are not this helper's job: each caller keeps its own folder rule.
  */
 import { chmodSync, closeSync, constants, fchmodSync, lstatSync, openSync } from 'node:fs'
+import { createRequire } from 'node:module'
+
+/*
+ * U-R1A-NODEWARN: this is the only runtime module that loads node:sqlite. Node 22 prints
+ * `ExperimentalWarning: SQLite is an experimental feature ...` on stderr when it loads. Before the
+ * load, the process's current 'warning' listeners (Node's own printer among them) are replaced by
+ * one filter that drops only that warning and hands every other warning to them, in order. Marked,
+ * so a second evaluation of this module in the same process installs nothing more. With no
+ * listeners (--no-warnings) the filter passes to nobody, as before. Later listeners are left alone.
+ */
+const MARK = Symbol.for('tandem.sqlite-warning-filter')
+if (!process.listeners('warning').some((l) => (l as unknown as Record<symbol, unknown>)[MARK])) {
+  const replaced = process.listeners('warning')
+  process.removeAllListeners('warning')
+  const filter = function (this: unknown, w: Error): void {
+    if (w.name === 'ExperimentalWarning' && String(w.message).startsWith('SQLite is an experimental feature')) return
+    for (const f of replaced) f.call(process, w)
+  }
+  ;(filter as unknown as Record<symbol, unknown>)[MARK] = true
+  process.on('warning', filter)
+}
+
+// Vitest does not know about this Node 22 builtin, and a static import would load it before the filter.
+const sqlite = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
+export const DatabaseSync = sqlite.DatabaseSync
+export type DatabaseSync = import('node:sqlite').DatabaseSync
 
 function refuse(code: 'ELOOP' | 'EFTYPE'): never {
   const e = new Error(code === 'ELOOP' ? 'database file refused: it is a symlink' : 'database file refused: not a regular file') as NodeJS.ErrnoException

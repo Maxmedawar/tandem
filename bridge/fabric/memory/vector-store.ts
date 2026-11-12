@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { createRequire } from 'node:module'
-import type { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, DatabaseSync as Database } from '../../sqlite-file.ts'
 
 export type VectorBackend = 'sqlite-vec' | 'sqlite-blob-fallback'
 
@@ -119,7 +119,6 @@ export function sqliteVecAvailable(): boolean {
   if (cachedAvailability !== undefined) return cachedAvailability
   let probe: DatabaseSync | undefined
   try {
-    const { DatabaseSync: Database } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
     probe = new Database(':memory:', { allowExtension: true })
     loadSqliteVec(probe)
     probe.exec('CREATE VIRTUAL TABLE probe USING vec0(embedding float[4] distance_metric=cosine)')

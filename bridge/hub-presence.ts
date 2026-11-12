@@ -22,20 +22,15 @@
  * proof or reading is ever logged. `now` is the only clock.
  */
 import { chmodSync, mkdirSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { audit } from './audit.ts'
 import { openDeviceKey, type DeviceKey } from './device-keys.ts'
 import { EnvelopeError, openEnvelope, signEnvelope } from './envelope.ts'
 import { hubProofHeader, type HubLinkConfig } from './hub-link.ts'
 import type { Presence } from './presence.ts'
 import { readRoster, thisId, trustedKey } from './roster.ts'
-import { ensureDbFile } from './sqlite-file.ts'
-
-// Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
+import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from './sqlite-file.ts'
 
 export const PRESENCE_EVERY_MS = 2000
 export const PUSH_HEARTBEAT_MS = 10_000

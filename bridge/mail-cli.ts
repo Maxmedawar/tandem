@@ -28,13 +28,13 @@
  * taken for the owner; the sender `owner` is a label, not a wall between one user's agents.
  */
 import { realpathSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { controlSocketPath, sendControlCommand, type ControlResult, type MailCommand } from './control-socket.ts'
 import type { Mailbox, Message } from './mailbox.ts'
 import type { Presence } from './presence.ts'
+import { DatabaseSync } from './sqlite-file.ts'
 
 export const MAX_MAIL_REPLY = 1024 * 1024
 /** bridge/mailbox.ts UNTRUSTED_MAIL, copied (importing it would load node:sqlite in this command); a test pins them equal. */
@@ -67,7 +67,6 @@ type Json = Record<string, unknown>
 
 /** The mail table's rows queued for `to`, oldest first, within `limit` and READ_TEXT_BYTES; nothing changes. */
 function peekRows(to: string, limit: number): Message[] {
-  const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
   const db = new DatabaseSync(join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db'), { readOnly: true })
   try {
     const rows = db.prepare(`SELECT * FROM mail WHERE to_name = ? AND state = 'queued' ORDER BY seq LIMIT ?`).all(to, limit) as Json[]

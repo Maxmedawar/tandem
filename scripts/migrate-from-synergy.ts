@@ -16,16 +16,14 @@
 // inside the live Tandem home (the account's real home, not $HOME) is refused before any fs call on it.
 import { createHash } from 'node:crypto'
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { tmpdir, userInfo } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { SQLiteFabricClient } from '../bridge/fabric/sqlite-fabric-client.ts'
+import { DatabaseSync } from '../bridge/sqlite-file.ts'
 import { fabricCallerFor } from '../src/fabric/mcp-tools.ts'
 
-// Vitest does not know the node:sqlite builtin; a native require keeps the real one.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
 type Database = InstanceType<typeof DatabaseSync>
 type Row = Record<string, unknown>
 

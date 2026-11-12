@@ -34,7 +34,6 @@
  * does not ask again for a lost answer; what it does get is data from the hub: hidden characters
  * are replaced and an answer over 1,048,576 characters is not passed on.
  */
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { audit } from './audit.ts'
@@ -43,9 +42,7 @@ import { CLOCK_SKEW_MS, DEFAULT_MAX_AGE_MS, EnvelopeError, openEnvelope, openRep
 import { hubProofHeader, type HubLinkConfig } from './hub-link.ts'
 import { limitsSnapshot, thisId, trustedKey } from './limits.ts'
 import { route } from './router.ts'
-
-// Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite (as envelope.ts).
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
+import { DatabaseSync } from './sqlite-file.ts'
 
 export type RemoteOp = 'open' | 'send' | 'close'
 type Args = Record<string, string>

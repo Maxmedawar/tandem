@@ -13,16 +13,11 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, lstatSync, mkdirSync, statSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
-import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import { verifySignature } from './device-keys.ts'
 import type { DeviceKey } from './device-keys.ts'
-import { ensureDbFile } from './sqlite-file.ts'
-
-// Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
+import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from './sqlite-file.ts'
 
 export type Envelope = {
   v: 1

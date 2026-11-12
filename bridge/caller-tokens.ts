@@ -34,13 +34,9 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
-import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
-import { ensureDbFile } from './sqlite-file.ts'
-
-// Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
+import { DatabaseSync, ensureDbFile } from './sqlite-file.ts'
 
 /** 32 bytes as base64url, no padding. */
 const TOKEN = /^[A-Za-z0-9_-]{43}$/
