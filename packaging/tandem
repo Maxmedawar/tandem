@@ -50,6 +50,7 @@ tandem - one agent fabric across your computers
   tandem roster init         start the roster on your first computer
   tandem roster clear        forget waiting offers and a pending join (the roster stays)
   tandem trust <fingerprint> trust a waiting computer, or join the roster it signed
+  tandem status [--json]      computers, sessions, their states and how old each reading is
   tandem kill-switch on [--close]
                              stop every agent here: interrupt each session, or end them
                              with --close; nothing starts or is typed until tandem kill-switch off
@@ -115,6 +116,11 @@ case "${1:-}" in
     fi
     need_node
     exec "$node" --experimental-strip-types "$runtime/bridge/roster-hub.ts" trust "$2"
+    ;;
+  status)
+    need_node
+    shift
+    exec "$node" --experimental-strip-types "$runtime/bridge/status.ts" "$@"
     ;;
   kill-switch)
     need_node

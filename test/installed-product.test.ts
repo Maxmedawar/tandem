@@ -144,4 +144,14 @@ describe('the installed product', () => {
     expect(loaded.names).toEqual([...repo.harnesses.keys()].sort())
     expectService(tandem)
   }, 300_000)
+
+  it('(40) the installed launcher\'s `status --json`: exit 0, this computer alone with no sessions, runtime not running', () => {
+    const tandem = install()
+    // run() throws on any exit but 0.
+    const doc = JSON.parse(tandem.run(['status', '--json'])) as { statusVersion: number; runtime: string; computers: { self: boolean; sessions: unknown[] }[] }
+    expect(doc.statusVersion).toBe(2)
+    expect(doc.runtime).toBe('not_running')
+    expect(doc.computers).toHaveLength(1)
+    expect(doc.computers[0]).toMatchObject({ self: true, sessions: [] })
+  }, 300_000)
 })
