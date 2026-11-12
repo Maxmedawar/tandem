@@ -610,6 +610,30 @@ describe('(audit) U-R1A-36A audit rows', () => {
   })
 })
 
+describe('(36F G1) a live Tandem tmux server with zero sessions', () => {
+  it('(36F) (G1) insideTandemSession is undefined (no session), and the owner\'s kill switch off is not refused', async () => {
+    const saved = process.env.TANDEM_HOME
+    const home = mkdtempSync(join(BOX, 'g1-'))
+    const sock = join(home, 'tmux', 'tandem')
+    mkdirSync(join(home, 'tmux'), { mode: 0o700 })
+    const env = { ...process.env }
+    delete env.TMUX
+    delete env.TMUX_PANE
+    try {
+      expect(spawnSync('tmux', ['-S', sock, 'start-server', ';', 'set-option', '-s', 'exit-empty', 'off'], { env }).status).toBe(0)
+      const ls = spawnSync('tmux', ['-S', sock, 'list-sessions'], { encoding: 'utf8', env })
+      expect([ls.status, ls.stdout]).toEqual([0, ''])
+      process.env.TANDEM_HOME = home
+      expect(await tokens.insideTandemSession(process.pid)).toBeUndefined()
+      const { offRefusal } = await import('../bridge/kill-switch.ts')
+      expect(await offRefusal({ pid: process.pid })).toBeUndefined()
+    } finally {
+      process.env.TANDEM_HOME = saved
+      spawnSync('tmux', ['-S', sock, 'kill-server'], { env })
+    }
+  })
+})
+
 describe('(c6) the token is never printed', () => {
   it('(36A) (c6) no token appears in any stderr line, audit line, tool answer or file of these rows', () => {
     expect(SECRETS.length).toBeGreaterThanOrEqual(10)

@@ -4,7 +4,9 @@
  * A tmux server started by `new-session` keeps that client's argv for its whole life, so the first
  * session on a fresh socket used to leave `-e TANDEM_CALLER_TOKEN=<token>` in `ps` for every local
  * user (36C G1). The tmux runner now starts the server first, in its own call with no token
- * (`start-server ; set-option -s exit-empty off`), before every `new-session` that carries `-e`.
+ * (`start-server ; set-option -s exit-empty off`), before every `new-session` that carries `-e`,
+ * runs that one with `-N` (never start a server), and right after it sets `exit-empty on` again, so
+ * the server still exits with its last session (no idle server, no orphan).
  *
  * Every case runs on its own fresh private socket (its own TANDEM_HOME) under one mkdtemp folder
  * named r1a36f- in TMPDIR; HOME is in it too, TMUX is deleted before the dynamic imports. afterAll
@@ -37,7 +39,11 @@ type EngineDescriptor = import('../bridge/drivable.ts').EngineDescriptor
 const { mintCallerToken, resolveCallerToken, revokeCallerToken } = await import('../bridge/caller-tokens.ts')
 
 const START = ['start-server', ';', 'set-option', '-s', 'exit-empty', 'off']
+const RESET = ['set-option', '-s', 'exit-empty', 'on']
 const sockets: string[] = []
+/** Every server pid a case saw, and every session it opened: (h) closes them and proves the servers gone. */
+const seenPids = new Set<number>()
+const opened: { home: string; session: { close(): Promise<void> } }[] = []
 
 /** A fresh private Tandem socket for one case: a new TANDEM_HOME under BOX. */
 function freshSocket(): string {
@@ -55,7 +61,20 @@ const raw = (sock: string, args: string[]) => {
 const serverPid = (sock: string): number => {
   const r = raw(sock, ['display', '-p', '#{pid}'])
   if (r.status !== 0) return 0
-  return Number(r.stdout.trim())
+  const pid = Number(r.stdout.trim())
+  if (pid > 0) seenPids.add(pid)
+  return pid
+}
+/** Is `pid` still a process: /proc on Linux, `ps -p` on darwin. */
+const running = (pid: number): boolean =>
+  process.platform === 'linux' ? existsSync(`/proc/${pid}`) : spawnSync('ps', ['-p', String(pid)]).status === 0
+async function goneWithin(pid: number, ms: number): Promise<boolean> {
+  const deadline = Date.now() + ms
+  while (Date.now() < deadline) {
+    if (!running(pid)) return true
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  return !running(pid)
 }
 /** The server's argv as elements: /proc/<pid>/cmdline on Linux, `ps -o args=` (split on spaces) on darwin. */
 function serverArgv(pid: number): string[] {
@@ -75,8 +94,11 @@ const tokenWriter = (name: string): EngineDescriptor => ({
   warmupPrompt: 'ready',
   minStableMs: 0,
 })
-const open = (name: string) =>
-  TerminalSession.spawn({ name, cwd: WORK, allowlist: [WORK], descriptor: tokenWriter(name), ownerIdProvider: async () => 'r1a36f-owner' })
+async function open(name: string) {
+  const s = await TerminalSession.spawn({ name, cwd: WORK, allowlist: [WORK], descriptor: tokenWriter(name), ownerIdProvider: async () => 'r1a36f-owner' })
+  opened.push({ home: process.env.TANDEM_HOME!, session: s })
+  return s
+}
 /** The token the session's pane received (read from its file; compared, never printed). */
 async function paneToken(name: string): Promise<string> {
   const file = join(WORK, `${name}.tok`)
@@ -88,11 +110,11 @@ async function paneToken(name: string): Promise<string> {
   return ''
 }
 
-/** An exec spy: records every argv; runs it with the real tmux unless `skipNewSession` and it is new-session. */
-function spy(log: string[][], skipNewSession = false): TmuxExec {
+/** An exec spy: records every argv, runs `before` on a new-session call, then runs it with the real tmux. */
+function spy(log: string[][], before: () => void = () => {}): TmuxExec {
   return (argv, opts, cb) => {
     log.push([...argv])
-    if (skipNewSession && argv.includes('new-session')) return cb(Object.assign(new Error('skipped by spy'), { code: 1 }), '', 'skipped by spy')
+    if (argv.includes('new-session')) before()
     execFile('tmux', argv, opts, (error, stdout, stderr) => cb(error, String(stdout), String(stderr)))
   }
 }
@@ -103,16 +125,29 @@ afterAll(() => {
 })
 
 describe('U-R1A-36F the Tandem tmux server starts without a caller token', () => {
-  it('(a) the runner\'s start-server call alone keeps a server with no sessions alive 3 s', async () => {
+  it('(a) during the start sequence a server with no sessions stays up (3 s) and its argv holds no token; after the last session closes it exits', async () => {
     const sock = freshSocket()
-    const log: string[][] = []
-    await expect(tmux(['new-session', '-d', '-s', 'ccm-a36f', '-e', 'R1A36F_PROBE=1', 'cat'], spy(log, true))).rejects.toThrow(/skipped by spy/)
-    expect(log.some((argv) => argv.join(' ') === ['-S', sock, ...START].join(' '))).toBe(true)
-    await new Promise((r) => setTimeout(r, 3_000))
-    expect(serverPid(sock)).toBeGreaterThan(0)
-    const ls = raw(sock, ['list-sessions', '-F', '#{session_name}'])
-    expect(/no server running|error connecting/.test(ls.stderr)).toBe(false)
-    expect(ls.stdout.trim()).toBe('')
+    const token = mintCallerToken('a36f', WORK)
+    try {
+      const log: string[][] = []
+      let during = { pid: 0, sessions: 'unread', clean: false }
+      const atNewSession = () => {
+        spawnSync('sleep', ['3'])
+        const pid = serverPid(sock)
+        during = { pid, sessions: raw(sock, ['list-sessions', '-F', '#{session_name}']).stdout.trim(), clean: pid > 0 && clean(serverArgv(pid), [token]) }
+      }
+      await tmux(['new-session', '-d', '-s', 'ccm-a36f', '-e', `TANDEM_CALLER_TOKEN=${token}`, '-c', WORK, 'cat'], spy(log, atNewSession))
+      expect(during.pid).toBeGreaterThan(0)
+      expect(during.sessions).toBe('')
+      expect(during.clean).toBe(true)
+      expect(serverPid(sock)).toBe(during.pid)
+      expect(clean(serverArgv(during.pid), [token])).toBe(true)
+      await tmux(['kill-session', '-t', '=ccm-a36f'])
+      expect(await goneWithin(during.pid, 5_000)).toBe(true)
+      expect(serverPid(sock)).toBe(0)
+    } finally {
+      revokeCallerToken('a36f')
+    }
   }, 20_000)
 
   it('(b) first open with a token: the server argv holds neither the token, -e, nor TANDEM_CALLER_TOKEN', async () => {
@@ -169,11 +204,14 @@ describe('U-R1A-36F the Tandem tmux server starts without a caller token', () =>
     try {
       const log: string[][] = []
       await tmux(['new-session', '-d', '-s', 'ccm-f36f', '-e', `TANDEM_CALLER_TOKEN=${token}`, '-c', WORK, 'cat'], spy(log))
-      expect(log.length).toBe(2)
+      expect(log.length).toBe(3)
       expect(log[0].join(' ') === ['-S', sock, ...START].join(' ')).toBe(true)
       expect(clean(log[0], [token])).toBe(true)
-      expect(log[1].includes('new-session')).toBe(true)
+      expect(log[1].slice(0, 4).join(' ') === ['-S', sock, '-N', 'new-session'].join(' ')).toBe(true)
+      expect(log[2].join(' ') === ['-S', sock, ...RESET].join(' ')).toBe(true)
+      expect(clean(log[2], [token])).toBe(true)
       expect(clean(serverArgv(serverPid(sock)), [token])).toBe(true)
+      await tmux(['kill-session', '-t', '=ccm-f36f'])
     } finally {
       revokeCallerToken('f36f')
     }
@@ -184,19 +222,43 @@ describe('U-R1A-36F the Tandem tmux server starts without a caller token', () =>
     const token = mintCallerToken('g36f', WORK)
     try {
       const log: string[][] = []
-      const racing: TmuxExec = (argv, opts, cb) => {
-        if (argv.includes('new-session')) {
-          raw(sock, ['kill-server'])
-          const gone = Date.now() + 5_000
-          while (serverPid(sock) > 0 && Date.now() < gone) spawnSync('sleep', ['0.05'])
-        }
-        spy(log)(argv, opts, cb)
+      let kills = 0
+      const killServer = () => {
+        kills++
+        raw(sock, ['kill-server'])
+        const gone = Date.now() + 5_000
+        while (serverPid(sock) > 0 && Date.now() < gone) spawnSync('sleep', ['0.05'])
       }
-      await expect(tmux(['new-session', '-d', '-s', 'ccm-g36f', '-e', `TANDEM_CALLER_TOKEN=${token}`, '-c', WORK, 'cat'], racing)).rejects.toThrow(/no server running|error connecting to/)
-      expect(log.length).toBe(2)
+      // Killed before every new-session: steps 1-2 are retried once, then the open fails; no server is left.
+      await expect(tmux(['new-session', '-d', '-s', 'ccm-g36f', '-e', `TANDEM_CALLER_TOKEN=${token}`, '-c', WORK, 'cat'], spy(log, killServer))).rejects.toThrow(/no server running|error connecting to/)
+      expect(kills).toBe(2)
+      expect(log.map((a) => `${a[2]} ${a[3]}`)).toEqual(['start-server ;', '-N new-session', 'start-server ;', '-N new-session', 'set-option -s'])
+      expect(log[4].join(' ') === ['-S', sock, ...RESET].join(' ')).toBe(true)
       expect(serverPid(sock)).toBe(0)
+      // Killed before the first new-session only: the one retry opens the session.
+      const once: string[][] = []
+      await tmux(['new-session', '-d', '-s', 'ccm-g36f', '-e', `TANDEM_CALLER_TOKEN=${token}`, '-c', WORK, 'cat'], spy(once, () => { if (kills < 3) killServer() }))
+      expect(once.length).toBe(5)
+      const pid = serverPid(sock)
+      expect(pid).toBeGreaterThan(0)
+      expect(clean(serverArgv(pid), [token])).toBe(true)
+      await tmux(['kill-session', '-t', '=ccm-g36f'])
+      expect(await goneWithin(pid, 5_000)).toBe(true)
     } finally {
       revokeCallerToken('g36f')
     }
-  }, 20_000)
+  }, 30_000)
+
+  it('(h) after the run no tmux server on a socket under this run\'s TMUX_TMPDIR survives: every server pid the cases saw exits once its sessions close', async () => {
+    // close() reaches the socket of the TANDEM_HOME it runs under: each session's own.
+    for (const { home, session } of opened) {
+      process.env.TANDEM_HOME = home
+      await session.close()
+    }
+    expect(seenPids.size).toBeGreaterThanOrEqual(5)
+    const left: number[] = []
+    for (const pid of seenPids) if (!(await goneWithin(pid, 5_000))) left.push(pid)
+    expect(left).toEqual([])
+    expect(sockets.filter((sock) => serverPid(sock) > 0)).toEqual([])
+  }, 60_000)
 })

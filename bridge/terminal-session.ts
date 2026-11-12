@@ -325,21 +325,48 @@ const TMUX_RETRY_WAITS_MS = [50, 100, 150]
 /** The one tmux runner (bridge/sessions.ts uses it too): argv only, never a shell string;
  *  `-S <Tandem's socket>` first; the environment minus the bridge's secret settings. Resolves stdout. */
 export async function tmux(args: string[], exec: TmuxExec = execTmux): Promise<string> {
-  // U-R1A-36F: a server keeps its starting client's argv for life, so a `-e` (a caller token) must never
-  // start it: start it first with no token, every time (on a running server this only re-sets the option).
-  // Stated cost: one idle Tandem tmux server stays up after the last session closes.
-  // `-N` (never start a server) on the call that carries it: a server gone since the call above fails
-  // the open with "no server running" rather than being started by the token's own argv.
-  const carriesToken = args[0] === 'new-session' && args.includes('-e')
-  if (carriesToken) await tmux(['start-server', ';', 'set-option', '-s', 'exit-empty', 'off'], exec)
-  const argv = ['-S', prepareTmuxSocket(), ...(carriesToken ? ['-N'] : []), ...args]
+  if (args[0] === 'new-session' && args.includes('-e')) return startCarryingToken(args, exec)
+  return runTmux(args, exec)
+}
+
+/** U-R1A-36F: a server keeps its starting client's argv for life, so a `-e` (a caller token) never
+ *  starts it. (1) `start-server ; set-option -s exit-empty off` with no token; (2) the new-session with
+ *  `-N` (never start a server): a server gone since (1) fails it with "no server running", then (1)-(2)
+ *  run once more, then the open fails; (3) success or failure, `exit-empty on` again, so the server
+ *  still exits with its last session (no idle server is left). */
+async function startCarryingToken(args: string[], exec: TmuxExec): Promise<string> {
+  const noServer = /no server running|error connecting to/
+  let failed = false
+  try {
+    for (let attempt = 0; ; attempt++) {
+      await runTmux(['start-server', ';', 'set-option', '-s', 'exit-empty', 'off'], exec)
+      try {
+        return await runTmux(['-N', ...args], exec)
+      } catch (e) {
+        if (attempt >= 1 || !noServer.test(String(e))) throw e
+      }
+    }
+  } catch (e) {
+    failed = true
+    throw e
+  } finally {
+    try {
+      await runTmux(['set-option', '-s', 'exit-empty', 'on'], exec)
+    } catch (e) {
+      if (!failed && !noServer.test(String(e))) throw e
+    }
+  }
+}
+
+async function runTmux(args: string[], exec: TmuxExec): Promise<string> {
+  const argv = ['-S', prepareTmuxSocket(), ...args]
   const env = { ...process.env }
   for (const name of BRIDGE_SECRET_SETTINGS) delete env[name]
   for (let attempt = 0; ; attempt++) {
     try {
       return await new Promise<string>((resolve, reject) => {
         exec(argv, { maxBuffer: 16 * 1024 * 1024, env }, (error, stdout, stderr) => {
-          if (error) reject(Object.assign(new Error(`tmux ${args[0]} failed: ${stderr || error.message}`), { code: error.code }))
+          if (error) reject(Object.assign(new Error(`tmux ${args[0] === '-N' ? args[1] : args[0]} failed: ${stderr || error.message}`), { code: error.code }))
           else resolve(stdout)
         })
       })
