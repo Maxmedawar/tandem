@@ -170,14 +170,17 @@ the agent starts its MCP servers, which `mcp_env` records:
   `mcp_servers.tandem.command` (this Node), `mcp_servers.tandem.args` (`--experimental-strip-types`
   and Tandem's `src/stdio-server.ts`) and `mcp_servers.tandem.env_vars` (the names of the variables
   to pass, TANDEM_CALLER_TOKEN among them). Names only: no value of any variable is ever on a
-  command line. An owner entry named `tandem` in the agent's own config is replaced for that
-  session by Tandem's (the same program); an owner entry under another name still starts without
-  a token and is refused (below).
+  command line. An owner entry named `tandem` in the agent's own config has its command, args and
+  env_vars replaced for that session by Tandem's (the same program); its other keys stay (an `env`
+  table there still sets what it names, and an entry of `url` type under that name stops the agent
+  from starting: seen with codex-cli 0.167.1, `url is not supported for stdio`). An owner entry
+  under another name still starts without a token and is refused (below).
 - `unknown`: not verified.
 
 A stdio server with no token refuses to start when its process or one of its parents is the pane
-process of a session on Tandem's socket, and when it cannot tell; the owner's own clients run
-outside Tandem sessions and stay the owner. There is no override variable. A server serving an
+process of a session on Tandem's socket, and when it cannot tell (a parent id it cannot read, more
+than 64 parents, or no tmux program on its PATH while one of its parents is a tmux server); the
+owner's own clients run outside Tandem sessions and stay the owner. There is no override variable. A server serving an
 agent checks at every tool call that its token still names that agent and its session is still
 there; when not, that call gets a JSON-RPC error and the server stops.
 
@@ -201,7 +204,10 @@ Built-in files:
 Limits: the same OS user can still (1) start a stdio server detached from the session (setsid, a
 double fork, nohup to parent pid 1, launchd or systemd-run, `at`, another tmux server) and be the
 owner; (2) read the token from the pane process's environment (`ps eww`, /proc) or write a hash
-row into state.db; (3) win the race between the parent-id reads and the start. The ancestry rule
+row into state.db; (3) win the race between the parent-id reads and the start; (4) start a
+stdio server with another `TANDEM_HOME` (or, when the session's own home is not the default one,
+with the variable dropped): it looks at that other home's socket, finds no session of its own
+there and is the owner of that other home, never of the one its session lives in. The ancestry rule
 and the per-call recheck stop an honest, confused or prompt-injected agent; isolation from a
 hostile process of the same user needs separate OS users. Codex's own shell tool drops variables
 whose names hold TOKEN by default, so a stdio server a Codex agent starts from its shell has no

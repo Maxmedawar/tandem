@@ -32,7 +32,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 // Vitest does not know about this Node 22 builtin; native require keeps the real node:sqlite.
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite') as typeof import('node:sqlite')
@@ -126,31 +126,46 @@ export async function parentPidOf(pid: number): Promise<number> {
   return ppid
 }
 
+/** The program name of `pid`: /proc/<pid>/comm on Linux, `ps -o comm= -p <pid>` elsewhere. */
+async function programNameOf(pid: number): Promise<string> {
+  if (process.platform === 'linux') return readFileSync(`/proc/${pid}/comm`, 'utf8').trim()
+  return await new Promise<string>((done, fail) =>
+    execFile('ps', ['-o', 'comm=', '-p', String(pid)], (error, stdout) => (error ? fail(error) : done(String(stdout).trim()))),
+  )
+}
+
 /**
  * The Tandem session (its name without `ccm-`) whose pane process is `pid` or one of its parents
- * (at most 64 steps, stopping at pid 1 or a repeat), else undefined. The panes are read once from
- * Tandem's socket (bridge/terminal-session.ts tmux()); no server running or no tmux program is no
- * session. Any other failure (a parent id that cannot be read, a refused socket folder) throws.
+ * (stopping at pid 1 or a repeat), else undefined. The panes are read once from Tandem's socket
+ * (bridge/terminal-session.ts tmux()); no server running is no session. Fails closed (throws) when
+ * it cannot tell: a parent id that cannot be read, a refused socket folder, more than 64 parents,
+ * or no tmux program to ask while one of the parents is a tmux server (an agent that starts this
+ * with a bare PATH is not the owner). The socket is the one TANDEM_HOME names for THIS process: a
+ * start with another TANDEM_HOME looks at that home's sessions (stated limit, harnesses/SCHEMA.md).
  */
 export async function insideTandemSession(pid: number): Promise<string | undefined> {
   const { tmux } = await import('./terminal-session.ts')
-  let listed: string
+  let listed: string | undefined
   try {
     listed = await tmux(['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'])
   } catch (e) {
-    if ((e as { code?: unknown }).code === 'ENOENT' || /no server running|error connecting to/.test(String(e))) return undefined
-    throw e
+    if (/no server running|error connecting to/.test(String(e))) return undefined
+    if ((e as { code?: unknown }).code !== 'ENOENT') throw e
   }
   const panes = new Map<number, string>()
-  for (const line of listed.split('\n')) {
+  for (const line of (listed ?? '').split('\n')) {
     const m = /^ccm-([A-Za-z0-9._-]{1,256}) (\d+)$/.exec(line)
     if (m) panes.set(Number(m[2]), m[1]!)
   }
-  if (panes.size === 0) return undefined
+  if (listed !== undefined && panes.size === 0) return undefined
   const seen = new Set<number>()
-  for (let p = pid, step = 0; step < 64 && p > 1 && !seen.has(p); step++) {
+  for (let p = pid, step = 0; p > 1 && !seen.has(p); step++) {
+    if (step >= 64) throw new Error('inside a session: too many parents to tell')
     const name = panes.get(p)
     if (name !== undefined) return name
+    if (listed === undefined && /^tmux/.test(basename(await programNameOf(p)))) {
+      throw new Error('inside a session: under a tmux server with no tmux program to ask')
+    }
     seen.add(p)
     p = await parentPidOf(p)
   }

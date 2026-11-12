@@ -190,6 +190,8 @@ try {
 }
 const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence, transcripts, hubLink);
 const transport = new StdioServerTransport();
+// Loaded before connect, so the wrap below is in place before the first message can be read.
+const { callerStillLive } = await import("../bridge/caller-tokens.ts");
 await server.connect(transport);
 
 // An agent's server: every tools/call first checks that its token still names this agent and its
@@ -197,7 +199,6 @@ await server.connect(transport);
 // arrival order (one promise chain); initialize, tools/list and ping pass unchecked. The session
 // gone: that call gets a JSON-RPC error and this process stops. The owner (no token) is not checked.
 if (callerToken !== undefined && callerName !== undefined) {
-  const { callerStillLive } = await import("../bridge/caller-tokens.ts");
   const token = callerToken;
   const name = callerName;
   const handle = transport.onmessage;

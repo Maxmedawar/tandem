@@ -593,6 +593,46 @@ describe('(h6) insideTandemSession', () => {
   })
 })
 
+describe('(audit) the ancestry rule fails closed', () => {
+  it('(36C) (audit) typed in a Tandem shell session with the token removed and a PATH with no tmux: the "cannot tell" line, exit 1, never the owner', async () => {
+    // An agent that starts its MCP servers with a bare environment (no token, no PATH to tmux) must not be the owner.
+    const none = join(BOX, 'no-tmux-bin')
+    mkdirSync(none)
+    // macOS reads parent ids with ps: its folder, checked to hold no tmux. Linux reads /proc: an empty folder.
+    const path = process.platform === 'linux' ? none : dirname(execFileSync('sh', ['-c', 'command -v ps'], { encoding: 'utf8' }).trim())
+    expect(existsSync(join(path, 'tmux'))).toBe(false)
+    const err = join(OUT, 'audit-notmux.err')
+    const rc = join(OUT, 'audit-notmux.rc')
+    await typeIn(SH, `env -u TANDEM_CALLER_TOKEN PATH=${path} NODE_NO_WARNINGS=1 ${process.execPath} --experimental-strip-types ${STDIO} </dev/null 2>${err}; echo $? >${rc}`)
+    expect(await until(() => read(rc).trim() !== '', 30_000)).toBe(true)
+    expect(read(rc).trim()).toBe('1')
+    expect(read(err)).toBe(`${CANNOT_TELL}\n`)
+  })
+
+  it('(36C) (audit) a process more than 64 parents below its pane cannot be told: throws, never undefined', async () => {
+    const deep = join(BIN, 'deep.sh')
+    writeFileSync(deep, `#!/bin/sh\nif [ "$1" -gt 0 ]; then "$0" $(($1 - 1)) "$2"; else echo $$ >"$2"; exec sleep 120; fi\n`, { mode: 0o755 })
+    const file = join(OUT, 'audit-deep.pid')
+    await typeIn(SH, `${deep} 70 ${file} &`)
+    expect(await until(() => read(file).trim() !== '', 20_000)).toBe(true)
+    await expect(tokens.insideTandemSession(Number(read(file).trim()))).rejects.toThrow()
+  })
+})
+
+describe('(audit) the stated limit of another TANDEM_HOME', () => {
+  it('(36C) (audit) typed in a session with the token removed and another TANDEM_HOME: the owner of that other home only (asserted, so the limit is visible)', async () => {
+    const other = join(BOX, 'other-home')
+    const err = join(OUT, 'audit-other.err')
+    const rc = join(OUT, 'audit-other.rc')
+    await typeIn(SH, `env -u TANDEM_CALLER_TOKEN TANDEM_HOME=${other} TANDEM_ENABLED_ENGINES=shell NODE_NO_WARNINGS=1 ${process.execPath} --experimental-strip-types ${STDIO} </dev/null 2>${err}; echo $? >${rc}`)
+    expect(await until(() => read(rc).trim() !== '', 30_000)).toBe(true)
+    expect(read(err)).toContain(READY)
+    expect(read(err).includes('refusing to start')).toBe(false)
+    // Its store is the other home's, never this one's.
+    expect(existsSync(join(other, 'state.db'))).toBe(true)
+  })
+})
+
 describe('(h7) the per-call recheck', () => {
   async function agentChild(name: string): Promise<Raw> {
     const opened = await rq('POST', '/sessions/open', { engine: 'shell', name, cwd: WORK })
