@@ -10,6 +10,10 @@ skip_prompts_args = ["--dangerously-bypass-approvals-and-sandbox"]
 resume = ["resume", "{id}"]
 fork = ["fork", "{id}"]
 account_env = "CODEX_HOME"
+# U-R1A-50: the default account folder; its limits come from the tail of its newest
+# sessions/**/rollout-*.jsonl (bridge/usage/codex.ts), never from auth.json.
+account_dir = "~/.codex"
+usage = "rollout"
 history = "~/.codex/sessions"
 # U-R1A-26: Codex 0.167.1 has hooks; Tandem passes its own, and their trust record, as --config values.
 delivery = "hook"

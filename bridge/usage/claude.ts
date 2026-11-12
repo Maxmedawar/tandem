@@ -39,7 +39,7 @@ export function nameFromFolder(folder: string): string {
 type Listed = { name: string; agent: string; folder: string }
 
 /** usage.toml's accounts; missing = none; refused = none and one stderr line. */
-function listedAccounts(): Listed[] {
+export function listedAccounts(): Listed[] {
   let bytes: Buffer
   try {
     bytes = readProtectedRegularFileSync(join(tandemHome(), 'usage.toml'))

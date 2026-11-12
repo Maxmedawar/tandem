@@ -161,8 +161,9 @@ describe("(49) usage: Claude Code accounts report their limits", () => {
       const rows = db.prepare("SELECT * FROM usage_readings").all() as Record<string, unknown>[];
       expect(rows.length).toBeGreaterThanOrEqual(2);
       for (const r of rows) {
-        expect(Object.keys(r).sort()).toEqual(["account", "agent", "at_ms", "five_resets_ms", "five_used", "read_ms", "seven_resets_ms", "seven_used"]);
-        for (const [k, v] of Object.entries(r)) if (k !== "account" && k !== "agent") expect(v === null || typeof v === "number").toBe(true);
+        expect(Object.keys(r).sort()).toEqual(["account", "agent", "at_ms", "five_resets_ms", "five_used", "plan", "read_ms", "seven_resets_ms", "seven_used"]);
+        for (const [k, v] of Object.entries(r)) if (k === "plan") expect(v === null || typeof v === "string").toBe(true);
+        else if (k !== "account" && k !== "agent") expect(v === null || typeof v === "number").toBe(true);
         expect(r.account).toMatch(/^[a-z0-9][a-z0-9-]{0,63}$/);
       }
     } finally { db.close(); }
@@ -392,7 +393,8 @@ describe("(49) usage: Claude Code accounts report their limits", () => {
     expect(res.harnesses.get("u12-none")).not.toHaveProperty("account_dir");
     expect(res.harnesses.get("claude")).toMatchObject({ usage: "statusline", account_dir: "~/.claude", account_env: "CLAUDE_CONFIG_DIR" });
     expect(res.errors.filter((e: any) => e.file.startsWith(BUILTIN))).toEqual([]);
-    for (const n of ["codex", "gemini", "shell"]) expect(res.harnesses.get(n)).not.toHaveProperty("usage");
+    expect(res.harnesses.get("codex")).toMatchObject({ usage: "rollout" });
+    for (const n of ["gemini", "shell"]) expect(res.harnesses.get(n)).not.toHaveProperty("usage");
   });
 
   it("(49) u13 login files: never opened; the bridge-side calls open only settings.json, usage.toml and paths under TANDEM_HOME", () => {
