@@ -1,0 +1,14 @@
+● Loading.
+
+╭──────────────────────────────────────────────────────────────────────╮
+│ Extension "acme" wants elevated permissions                          │
+│ ──────────────────────────────────────────────────────────────────── │
+│ This extension wants to: observe permission requests.                │
+│ Denying will prevent this extension from loading.                    │
+│                                                                      │
+│ ❯ 1. Yes                                                             │
+│   2. No (Esc)                                                        │
+│                                                                      │
+│ ↑/↓ to navigate · enter to select · esc to cancel                    │
+╰──────────────────────────────────────────────────────────────────────╯
+ main ✓
