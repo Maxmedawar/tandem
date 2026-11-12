@@ -6,13 +6,15 @@
  * anything else is skipped, and so is a file whose time is not a whole number of ms or is over a
  * minute ahead of this computer's clock (it would never turn stale and no later reading would
  * replace it). An account that turns stale (no reading for over 30 minutes) gets one
- * stderr line, and again only after it was fresh in between.
+ * stderr line, and again only after it was fresh in between. A `usage = "rollout"` agent (Codex) is
+ * read in the same pass from the tail of its session logs (bridge/usage/codex.ts).
  */
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { readProtectedRegularFileSync } from '../../src/runtime-config.ts'
 import { loadHarnesses, type Harness } from '../harness-registry.ts'
 import { ACCOUNT, dropDirOf } from './claude.ts'
+import { codexReadings } from './codex.ts'
 import { readUsage, recordReadings, type Reading } from './store.ts'
 
 const EVERY_MS = 60_000
@@ -64,10 +66,13 @@ function readDrops(agent: string, now: number): Reading[] {
   return out
 }
 
-/** One pass: every drop file of `harnesses` (default: the loaded harness files) into state.db, then the stale notices. */
+/** One pass: every drop file and rollout tail of `harnesses` (default: the loaded harness files) into state.db, then the stale notices. */
 export function collectUsage(now = Date.now(), harnesses?: Iterable<Harness>): void {
-  const agents = [...(harnesses ?? loadHarnesses().harnesses.values())].filter((h) => h.usage === 'statusline').map((h) => h.name)
-  recordReadings(agents.flatMap((a) => readDrops(a, now)), now)
+  const all = [...(harnesses ?? loadHarnesses().harnesses.values())]
+  recordReadings([
+    ...all.filter((h) => h.usage === 'statusline').flatMap((h) => readDrops(h.name, now)),
+    ...all.filter((h) => h.usage === 'rollout').flatMap((h) => codexReadings(h, now)),
+  ], now)
   for (const u of readUsage(now)) {
     const key = `${u.agent}/${u.account}`
     if (!u.stale) noticed.delete(key)

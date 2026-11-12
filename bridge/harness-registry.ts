@@ -52,7 +52,7 @@ export interface Harness {
   /** How the agent hands environment to a stdio MCP server it starts (U-R1A-36C); absent = unknown. */
   mcp_env?: 'inherit' | 'config-overrides' | 'unknown'
   /** How the agent reports its account's limits (U-R1A-49): `statusline` = a statusLine command in its settings file. */
-  usage?: 'statusline'
+  usage?: 'statusline' | 'rollout'
   /** The agent's default account folder when its `account_env` variable is unset (`/` or `~/`). */
   account_dir?: string
   permission_hook: boolean
@@ -260,11 +260,13 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
   // Tandem's own MCP server rides on the hook's --config values (bridge/delivery-hooks.ts mcpOverrides).
   if (mcp_env === 'config-overrides' && hook_format !== 'config-overrides') fail('mcp_env "config-overrides" needs hook_format "config-overrides"')
   const usage = raw.usage
-  if (usage !== undefined && usage !== 'statusline') fail('bad usage: "statusline"')
+  if (usage !== undefined && usage !== 'statusline' && usage !== 'rollout') fail('bad usage: "statusline"')
   // The statusLine rides in the per-session settings file (bridge/delivery-hooks.ts installHook).
   if (usage === 'statusline' && (delivery !== 'hook' || hook_format === 'config-overrides')) fail('usage "statusline" needs a settings-file hook')
   const account_dir = str(raw, 'account_dir')
   if (account_dir !== undefined && !account_dir.startsWith('/') && !account_dir.startsWith('~/')) fail('bad account_dir: must start with / or ~/')
+  // The rollout reader reads the default account folder and usage.toml's (bridge/usage/codex.ts).
+  if (usage === 'rollout' && account_dir === undefined) fail('usage "rollout" needs account_dir')
   const logo = str(raw, 'logo')
   if (logo !== undefined && !LOGO.test(logo)) fail('bad logo')
 
