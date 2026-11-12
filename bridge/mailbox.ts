@@ -20,7 +20,8 @@
  * take those states). Its signed envelope is kept in `mail_remote`, so a retry resends the same
  * bytes. Mail from another computer enters only through receive(), which the carrier calls with a
  * sender `machine:<computer>/<owner or session:name>` it built from a checked signature; send()
- * never stores such a sender.
+ * never stores such a sender. Such an Ask is stored only when the applied limits file's
+ * `control_from` lists that computer (U-R1A-36B); Interrupt keeps its interrupt_from rule.
  *
  * A room post that names a session (U-R1A-34) leaves it one fyi through wake(): from `room:<label>`,
  * a fixed line holding only the room label and the event id, never the post's text. No caller of
@@ -213,8 +214,11 @@ function checkReceive({ id, from, to, level, text, sentAt, replyBy }: ReceiveInp
   if (!Number.isSafeInteger(sentAt) || sentAt < 0 || sentAt > MAX_DATE_MS) throw new MailError(400, 'sentAt: ms since the epoch; nothing was saved')
   if (replyBy !== undefined && level !== 'ask') throw new MailError(400, 'replyByMinutes is for ask only; nothing was saved')
   if (room && level !== 'fyi') throw new MailError(403, 'level: room mail is fyi only; nothing was saved')
-  // Remote Ask arrives with control_from (U-R1A-36B), which may then list the computer; nothing does yet.
-  if (level === 'ask') throw new MailError(403, `control_from: ${from.slice('machine:'.length, from.indexOf('/'))} may not send Ask here (limits file); nothing was saved`)
+  // Remote Ask only from a computer the applied limits file's control_from lists (U-R1A-36B); the id is the signed one the carrier built.
+  const computer = from.slice('machine:'.length, from.indexOf('/'))
+  if (level === 'ask' && !limitsSnapshot().control_from.includes(computer)) {
+    throw new MailError(403, `control_from: ${computer} may not send Ask here (limits file); nothing was saved`)
+  }
   if (level === 'interrupt' && !(limitsSnapshot().interrupt_from ?? []).includes(from)) {
     throw new MailError(403, `interrupt_from: ${from} may not send Interrupt (limits file); nothing was saved`)
   }

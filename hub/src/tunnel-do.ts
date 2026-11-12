@@ -19,7 +19,9 @@
  *                          Callers: TandemMcp's fabric tools and the hub link route for fabric
  *                          calls (index.ts).
  * Mail and presence between the computers of the roster the hub holds (mailPut, mailTake,
- * presenceExchange) are Durable Object RPC methods the link routes in index.ts call.
+ * presenceExchange) are Durable Object RPC methods the link routes in index.ts call. So is
+ * remoteCommand (U-R1A-36B): one request frame, POST /remote/command, to the receiving computer's
+ * own socket through forward (its timeout and its own-socket rule); the envelope is never read here.
  */
 
 import { DurableObject } from 'cloudflare:workers'
@@ -188,6 +190,27 @@ export class TunnelDO extends DurableObject<Env> {
     if (!(await this.inRoster(id, key, items.map((item) => item.to)))) return { status: 403, body: { error: 'not_in_roster' } }
     this.presenceStore().put(id, items)
     return { status: 200, body: { presence: this.presenceStore().for(id), connected: this.listConnectedBridgeIds() } }
+  }
+
+  /**
+   * A signed command from the proof's computer to computer `to`, both entries of the stored roster
+   * and not the same computer (else 403 not_in_roster); `to` with no open socket 503 bridge_offline.
+   * Else one frame `POST /remote/command` with `{ envelope }` and `tandem-command-from: <id>` (a
+   * label: the receiver decides by the envelope's signature) on `to`'s socket; the bridge's answer
+   * (status and body text) as it comes.
+   */
+  async remoteCommand(id: string, key: string, to: string, envelope: string): Promise<{ status: number; body: string }> {
+    if (to === id || !(await this.inRoster(id, key, [to]))) return { status: 403, body: JSON.stringify({ error: 'not_in_roster' }) }
+    const socket = this.getSocketFor(to)
+    if (!socket) return { status: 503, body: JSON.stringify({ error: 'bridge_offline', requested: to }) }
+    const url = new URL('https://do/__rpc/remote/command')
+    const request = new Request(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'tandem-command-from': id },
+      body: JSON.stringify({ envelope }),
+    })
+    const answer = await this.forward(request, url, '/__rpc', socket)
+    return { status: answer.status, body: await answer.text() }
   }
 
   /* ---- Per-computer hub credentials (./devices) ---- */
