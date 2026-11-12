@@ -61,6 +61,7 @@ import { CLAUDE_DESCRIPTOR, type EngineDescriptor } from './drivable.ts'
 import { HIGHLIGHTS, NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { KillSwitchError, killSwitchOn } from './kill-switch.ts'
+import { mintCallerToken, revokeCallerToken } from './caller-tokens.ts'
 import { noteSessionClose, noteSessionStart, TRANSCRIPTS_DIR } from './transcripts/index.ts'
 
 const HOME = homedir()
@@ -268,8 +269,9 @@ function paneTarget(name: string): string {
 }
 
 /** The bridge's secret settings. A tmux client that starts the server hands it its environment,
- *  and every session inherits that, so no tmux call gets them; process.env keeps them. */
-const BRIDGE_SECRET_SETTINGS = ['TANDEM_OWNER_PASSWORD', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_FLEET_TOKEN']
+ *  and every session inherits that, so no tmux call gets them; process.env keeps them. A session's
+ *  caller token (bridge/caller-tokens.ts) is one too: each session gets only its own, by `-e`. */
+const BRIDGE_SECRET_SETTINGS = ['TANDEM_OWNER_PASSWORD', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_FLEET_TOKEN', 'TANDEM_CALLER_TOKEN']
 
 /** Field separator for tmux formats. tmux rewrites control characters in its output (3.4 prints
  *  a tab as `_`), and a session name can never hold `:`, so `|:|` survives and ends a name. */
@@ -791,48 +793,70 @@ export class TerminalSession {
     // binary (or login shell) runs INSIDE the pane; the cwd is set via -c.
     const startedAtMs = Date.now()
     await scrubServerSecrets()
-    await tmux([
-      'new-session',
-      '-d',
-      '-s',
-      target,
-      '-x',
-      String(PANE_WIDTH),
-      '-y',
-      String(PANE_HEIGHT),
-      '-c',
-      cwd,
-      ...engineArgv,
-    ])
-    // The switch turned on since the check above: engage() may have listed the sessions before this
-    // one existed, so it is ended here (the file is written before the list, so one of the two sees it).
-    if (killSwitchOn()) {
-      await tmux(['kill-session', '-t', sessionTarget(name)]).catch(() => {})
-      throw new KillSwitchError()
-    }
-    noteSessionStart({ name, agent: descriptor.id, cwd, startedAtMs })
-
-    // Provenance tags (binding — Phase 2 correction A): required before a later
-    // restart may ever consider this session adoptable. Set right after create,
-    // before the transcript pipe, so a crash in between leaves, at worst, a
-    // correctly-tagged session with a short transcript gap — never a mistagged
-    // one that could be adopted without real provenance.
-    await tmux(['set-option', '-t', paneTarget(name), '@tandem_engine', descriptor.id])
-    await tmux(['set-option', '-t', paneTarget(name), '@tandem_owner', ownerId])
-
-    // Attach the append-only transcript pipe. Single-quote the redirect target;
-    // the path is bridge-controlled (transcripts dir + validated name).
-    const safeLog = logPath.replace(/'/g, `'\\''`)
-    await tmux(['pipe-pane', '-o', '-t', paneTarget(name), `cat >> '${safeLog}'`])
-
-    const session = new TerminalSession(name, cwd, logPath, descriptor, opts.dialogAnswers ?? 'none')
+    // This session's own caller token, for its pane's process only (never the server's global
+    // environment, never this process's env); a spawn that fails from here on revokes it.
+    const callerToken = mintCallerToken(name)
     try {
-      await session.warmup()
+      await tmux([
+        'new-session',
+        '-d',
+        '-s',
+        target,
+        '-e',
+        `TANDEM_CALLER_TOKEN=${callerToken}`,
+        '-x',
+        String(PANE_WIDTH),
+        '-y',
+        String(PANE_HEIGHT),
+        '-c',
+        cwd,
+        ...engineArgv,
+        // In the same tmux call: the pane's process has the token by now, so it leaves the session
+        // environment, where `tmux show-environment -t` would hand it to any process of this user.
+        ';',
+        'set-environment',
+        '-t',
+        sessionTarget(name),
+        '-u',
+        'TANDEM_CALLER_TOKEN',
+      ])
+      // The switch turned on since the check above: engage() may have listed the sessions before this
+      // one existed, so it is ended here (the file is written before the list, so one of the two sees it).
+      if (killSwitchOn()) {
+        await tmux(['kill-session', '-t', sessionTarget(name)]).catch(() => {})
+        throw new KillSwitchError()
+      }
+      noteSessionStart({ name, agent: descriptor.id, cwd, startedAtMs })
+
+      // Provenance tags (binding — Phase 2 correction A): required before a later
+      // restart may ever consider this session adoptable. Set right after create,
+      // before the transcript pipe, so a crash in between leaves, at worst, a
+      // correctly-tagged session with a short transcript gap — never a mistagged
+      // one that could be adopted without real provenance.
+      await tmux(['set-option', '-t', paneTarget(name), '@tandem_engine', descriptor.id])
+      await tmux(['set-option', '-t', paneTarget(name), '@tandem_owner', ownerId])
+
+      // Attach the append-only transcript pipe. Single-quote the redirect target;
+      // the path is bridge-controlled (transcripts dir + validated name).
+      const safeLog = logPath.replace(/'/g, `'\\''`)
+      await tmux(['pipe-pane', '-o', '-t', paneTarget(name), `cat >> '${safeLog}'`])
+
+      const session = new TerminalSession(name, cwd, logPath, descriptor, opts.dialogAnswers ?? 'none')
+      try {
+        await session.warmup()
+      } catch (e) {
+        if (e instanceof NeedsOwnerError || e instanceof KillSwitchError) await session.close()
+        throw e
+      }
+      return session
     } catch (e) {
-      if (e instanceof NeedsOwnerError || e instanceof KillSwitchError) await session.close()
+      try {
+        revokeCallerToken(name)
+      } catch {
+        /* the spawn's own error is the one to report */
+      }
       throw e
     }
-    return session
   }
 
   /**
@@ -1302,12 +1326,18 @@ export class TerminalSession {
     }
   }
 
-  /** Kill the tmux session, then record its transcript pointer one last time. Idempotent. */
+  /** Kill the tmux session, revoke its caller token, then record its transcript pointer one last
+   *  time. Idempotent. */
   async close(): Promise<void> {
     try {
       await tmux(['kill-session', '-t', sessionTarget(this._name)])
     } catch {
       /* already gone */
+    }
+    try {
+      revokeCallerToken(this._name)
+    } catch {
+      /* state.db unreadable: the row stays until this name is spawned again (caller-tokens.ts) */
     }
     await noteSessionClose(this._name)
   }

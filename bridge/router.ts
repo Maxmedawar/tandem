@@ -39,12 +39,12 @@
  *   - INPUT GATE (input-gate.ts): typed input (send text with its per-send model/effort, and
  *     interrupt keys) enters a session only as the input gate allows, by who is typing:
  *     RpcRequest.from, set on the request by the in-process caller and read once in route(),
- *     never from the body; no value is the owner (every caller today is the owner's client or
- *     cannot be told apart from one; a per-session caller token arrives with U-R1A-36). The
- *     owner types at any time except while the session waits for approval (409); an agent types
- *     only at a settled idle prompt, else it is held (200, status held, nothing typed or queued),
- *     and never interrupts (403). Poll mode, read, open, close and the relay routes type nothing
- *     and are not gated. What the gate does not stop is listed where it runs, in handleSend.
+ *     never from the body; no value is the owner, unless this process serves an agent (an agent's
+ *     own stdio server, started with its session's caller token: caller-tokens.ts), which is
+ *     always an agent. The owner types at any time except while the session waits for approval
+ *     (409); an agent types only at a settled idle prompt, else it is held (200, status held,
+ *     nothing typed or queued), and never interrupts (403). Poll mode, read, open, close and the
+ *     relay routes type nothing and are not gated. What the gate does not stop is listed where it runs, in handleSend.
  *   - KILL SWITCH (kill-switch.ts): while `<TANDEM_HOME>/kill-switch` exists, every route that
  *     starts or types (open, send with text, relay start, inject, enqueue) answers 423 before its
  *     handler; list, read, poll, interrupt, close and relay read/stop still answer. Nothing here
@@ -53,7 +53,11 @@
  *   - Audit log: every spawn / send / read / interrupt / close / relay control appends
  *     metadata only to a private ~/.tandem/bridge.log. Prompt, command, task,
  *     goal, context, report, output, and request-body values are replaced with
- *     byte counts. A failed audit write surfaces to stderr.
+ *     byte counts. A failed audit write surfaces to stderr. While this process serves an agent,
+ *     every line here carries `caller: "session:<name>"`.
+ *   - AGENT CALLERS (caller-tokens.ts): an agent opens, sends to, reads and closes sessions under
+ *     the same allowlist, limits file and session cap as any caller, with the input gate's agent
+ *     rules; it never starts, steers, feeds or stops the relay (403); relay read stays open.
  *
  * Config (env): TANDEM_CWD_ALLOWLIST / TANDEM_DEFAULT_CWD are mapped to the
  * engine's CCM_* names by the entrypoint before this module loads.
@@ -85,7 +89,8 @@ import {
 } from './sessions.ts'
 import * as relay from './relay.ts'
 import { emitCompletion, summarize } from './events.ts'
-import { audit } from './audit.ts'
+import { audit as writeAudit } from './audit.ts'
+import { processCaller } from './caller-tokens.ts'
 import { limitsGate, limitsSnapshot } from './limits.ts'
 import { KILL_SWITCH_ON, KillSwitchError, killSwitchOn, reserveSessions } from './kill-switch.ts'
 import { admitInput, type InputAction, type InputFrom, type InputVerdict } from './input-gate.ts'
@@ -94,6 +99,14 @@ import type { ReadState } from './harness-detect.ts'
 // ---- config ---------------------------------------------------------------
 
 const HOME = homedir()
+/** One audit line; while this process serves an agent it names that agent. */
+function audit(fields: Record<string, unknown>): void {
+  const caller = processCaller()
+  writeAudit(caller === undefined ? fields : { ...fields, caller: `session:${caller}` })
+}
+
+const AGENT_RELAY = 'relay: an agent may not drive the relay'
+
 /** The explicit allowlist is built once from env at startup. */
 const ALLOWLIST = buildAllowlist()
 /** If no default is configured, use the first explicitly allowlisted root. */
@@ -132,7 +145,7 @@ export interface RpcRequest {
   query: URLSearchParams
   body: Record<string, unknown>
   /** Who is typing, for the input gate (input-gate.ts): set by the in-process caller, never taken
-   *  from the body. No value is the owner. */
+   *  from the body. No value is the owner, or the agent this process serves (caller-tokens.ts). */
   from?: InputFrom
 }
 
@@ -195,7 +208,14 @@ export async function route(req: RpcRequest): Promise<RpcResult> {
   const parts = pathParts(req.path)
   const m = req.method.toUpperCase()
   // Who is typing, read once here for the input gate; nothing in the body can say it.
-  const from: InputFrom = req.from ?? 'owner'
+  const from: InputFrom = req.from ?? (processCaller() !== undefined ? 'agent' : 'owner')
+
+  // An agent never drives the relay (start, inject, enqueue, stop); it may read it.
+  if (processCaller() !== undefined && m === 'POST' && parts[0] === 'relay' &&
+    ((parts.length === 2 && parts[1] === 'start') || (parts.length === 3 && ['inject', 'enqueue', 'stop'].includes(parts[2])))) {
+    audit({ route: parts.length === 2 ? 'POST /relay/start' : `POST /relay/:loopId/${parts[2]}`, denied: 'agent-relay' })
+    return err(403, AGENT_RELAY)
+  }
 
   // THE KILL SWITCH, before any handler: read at this moment, for every caller (MCP, hub, relay routes).
   const starting = startsOrTypes(m, parts, req.body)
