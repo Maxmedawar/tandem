@@ -10,13 +10,14 @@
  * A run is killed with its whole process group after KILL_MS, or once its stdout passes 8 MiB; its
  * stderr is drained and dropped, never stored or logged (it may hold paths). Only numbers leave
  * parseDaily: tokens and cost of today (the row of `now`'s local date) and in total. A failed run
- * keeps one reason from a closed list and no numbers. This file opens nothing in an account folder:
+ * keeps one reason from a closed list and no numbers. A Claude Code folder with no `projects/` yet
+ * reads zero and is not run (ccusage exits 1 there). This file opens nothing in an account folder:
  * ccusage reads the usage files the agent writes, and no login file is named, opened or listed here.
  */
 import { spawn, type ChildProcess } from 'node:child_process'
 import { accessSync, constants, lstatSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { isAbsolute, join, resolve } from 'node:path'
+import { basename, isAbsolute, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadHarnesses, type Harness } from '../harness-registry.ts'
 import { accountFolders } from './codex.ts'
@@ -40,6 +41,8 @@ type AgentRow = {
   limit: boolean
   /** Unlisted folders are named after their realpath's base name (as claude.ts accountOf names them). */
   nameByRealpath?: boolean
+  /** The folder ccusage reads inside the account folder. Not there yet: no usage, so zero totals and no run (ccusage exits 1 on it). */
+  usageDir?: string
   /** The agent's default account folder (run only when it exists). */
   defaultFolder?: (h: Harness, agent: string) => string
   /** No single default folder: when one of these exists under HOME, one run with the variable unset (ccusage's own roots), named after the agent. */
@@ -49,7 +52,7 @@ const accountDir = (h: Harness) => (h.account_dir ? expand(h.account_dir) : unde
 const xdgData = () => { const x = process.env.XDG_DATA_HOME; return x && isAbsolute(x) ? x : join(homedir(), '.local', 'share') }
 /** The ccusage sources Tandem runs, by harness name (the same word is ccusage's command): only these five. */
 export const CCUSAGE_AGENTS: Readonly<Record<string, AgentRow>> = {
-  claude: { env: 'CLAUDE_CONFIG_DIR', limit: true, nameByRealpath: true, defaultFolder: (h) => accountDir(h) ?? join(homedir(), '.claude') },
+  claude: { env: 'CLAUDE_CONFIG_DIR', limit: true, nameByRealpath: true, usageDir: 'projects', defaultFolder: (h) => accountDir(h) ?? join(homedir(), '.claude') },
   codex: { env: 'CODEX_HOME', limit: true, defaultFolder: (h) => accountDir(h) ?? join(homedir(), '.codex') },
   grok: { env: 'GROK_HOME', limit: false, defaultFolder: () => join(homedir(), '.grok') },
   // $XDG_DATA_HOME/opencode, else ~/.local/share/opencode.
@@ -184,6 +187,10 @@ function runJob(job: Job, bin: string, helper: boolean, timeoutMs: number, now: 
   if (job.folder?.includes(',')) return { reason: 'folder name has a comma' }
   if (job.folder !== undefined && job.listed && !exists(job.folder)) return { reason: 'folder missing' }
   if (!helper) return { reason: 'helper missing' }
+  // ccusage also takes the usage folder itself as the account folder, so a folder of that name is left to it.
+  if (job.folder !== undefined && job.row.usageDir && basename(job.folder) !== job.row.usageDir && !exists(join(job.folder, job.row.usageDir))) {
+    return { today: { tokens: 0, cost: 0 }, total: { tokens: 0, cost: 0 } }
+  }
   return runOnce(bin, job, timeoutMs, now)
 }
 
@@ -193,7 +200,8 @@ let flight: Promise<boolean> | undefined
 let lastStart: number | undefined
 
 async function pass(now: number, opts: TokenOptions, gen: number): Promise<void> {
-  const bin = opts.bin ?? DEFAULT_BIN
+  // Always a path: a bare name would be looked up on PATH by spawn.
+  const bin = resolve(opts.bin ?? DEFAULT_BIN)
   const helper = isHelper(bin)
   for (const job of jobs([...(opts.harnesses ?? loadHarnesses().harnesses.values())])) {
     if (gen !== generation) return

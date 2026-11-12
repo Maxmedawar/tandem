@@ -90,8 +90,9 @@ seconds.
 - A failed run shows `tokens: not available (<reason>)`, one of: `helper missing` (a source checkout
   has no `libexec/ccusage`), `folder missing`, `folder name has a comma` (ccusage splits these
   variables on `,`, so such a folder is never run), `timed out`, `exit <n>`, `signal <name>`,
-  `output not readable`, `spawn <code>`. A Claude Code folder with no `projects/` yet makes ccusage
-  exit 1.
+  `output not readable`, `spawn <code>`.
+- A Claude Code folder with no `projects/` yet has no usage: it reads zero tokens and cost, and
+  ccusage is not run for it.
 
 ## Stale and unknown
 

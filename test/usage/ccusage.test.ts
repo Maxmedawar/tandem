@@ -123,6 +123,8 @@ function world(): { home: string; th: string } {
   return { home, th };
 }
 const dir = (p: string) => { mkdirSync(p, { recursive: true }); return p; };
+/** A Claude account folder that has usage: it holds `projects/` (without it the helper is not run, case p). */
+const claudeDir = (p: string) => { dir(join(p, "projects")); return p; };
 const usageToml = (th: string, rows: { name: string; agent: string; folder: string }[]) =>
   writeFileSync(join(th, "usage.toml"), rows.map((r) => `[[accounts]]\nname = "${r.name}"\nagent = "${r.agent}"\nfolder = ${JSON.stringify(r.folder)}\n`).join(""), { mode: 0o600 });
 const tok = (now: number) => cc.readTokens(now) as any[];
@@ -149,9 +151,9 @@ async function waitFor(cond: () => boolean, ms = 5000): Promise<void> {
 /** Seven accounts: two Claude, two Codex, one each of Grok, OpenCode, Antigravity (default roots). */
 function sevenAccounts(): { home: string; th: string; folders: Record<string, { agent: Agent; folder: string | undefined }> } {
   const { home, th } = world();
-  const claudeB = dir(join(home, "..", "claude-b-folder"));
+  const claudeB = claudeDir(join(home, "..", "claude-b-folder"));
   const codexB = dir(join(home, "..", "codex-b-folder"));
-  dir(join(home, ".claude"));
+  claudeDir(join(home, ".claude"));
   dir(join(home, ".codex"));
   dir(join(home, ".grok"));
   dir(join(home, ".local", "share", "opencode"));
@@ -225,7 +227,7 @@ describe("(51) usage: tokens and cost per account from the ccusage helper", () =
   it("(51) d a hung run is killed by its process group at the deadline: `tokens: not available (timed out)`", async () => {
     expect(cc.KILL_MS).toBe(60_000);
     const { home } = world();
-    dir(join(home, ".claude"));
+    claudeDir(join(home, ".claude"));
     setMode("hang");
     const t = Date.now();
     await cc.collectTokens(T0, { bin: FAKE, timeoutMs: 300, harnesses: H() });
@@ -238,8 +240,8 @@ describe("(51) usage: tokens and cost per account from the ccusage helper", () =
 
   it("(51) e reasons: helper missing, exit 3, output not readable (text, 9 MiB), folder name has a comma; a good row turns NULL; stderr is never kept", async () => {
     const { home, th } = world();
-    dir(join(home, ".claude"));
-    const f = (n: string) => dir(join(home, "..", n));
+    claudeDir(join(home, ".claude"));
+    const f = (n: string) => claudeDir(join(home, "..", n));
     usageToml(th, ["e-exit", "e-text", "e-big", "e-err", "a,b"].map((n) => ({ name: n === "a,b" ? "e-comma" : n, agent: "claude", folder: f(n) })));
     await cc.collectTokens(T0, { bin: join(BOX, "no-such-helper"), harnesses: H() });
     expect(logLines()).toEqual([]);
@@ -281,7 +283,7 @@ describe("(51) usage: tokens and cost per account from the ccusage helper", () =
     expect(cc.TOKENS_EVERY_MS).toBe(600_000);
     expect(cc.REFRESH_MIN_MS).toBe(60_000);
     const { home } = world();
-    dir(join(home, ".claude"));
+    claudeDir(join(home, ".claude"));
     const T = T0 + 30 * 86_400_000;
     const o = { bin: FAKE, harnesses: H() };
     expect(await cc.refreshTokens(T, o)).toBe(true);
@@ -300,7 +302,7 @@ describe("(51) usage: tokens and cost per account from the ccusage helper", () =
 
   it("(51) h startUsageCollector runs token passes on its timer; its stop ends the timer and kills an in-flight run", async () => {
     const { home } = world();
-    dir(join(home, ".claude"));
+    claudeDir(join(home, ".claude"));
     const stop = startUsageCollector({ everyMs: 60_000, tokensEveryMs: 100, ccusage: { bin: FAKE } });
     let stopped = false;
     try {
@@ -321,7 +323,7 @@ describe("(51) usage: tokens and cost per account from the ccusage helper", () =
 
   it("(51) i numbers only: no string from the helper's output reaches state.db; usage_tokens has the eight columns", async () => {
     const { home, th } = world();
-    dir(join(home, ".claude"));
+    claudeDir(join(home, ".claude"));
     writeFileSync(join(FAKE_DIR, `out.claude.${basename(join(home, ".claude"))}.json`), fixture("claude").replace(/""/g, '"R1A51-TEXT-MARKER"'));
     await cc.collectTokens(T0, { bin: FAKE, harnesses: H() });
     await cc.collectTokens(T0 + 1, { bin: FAKE, harnesses: H() });
@@ -353,9 +355,9 @@ describe("(51) usage: tokens and cost per account from the ccusage helper", () =
   it("(51) k A11.1 recorded half: two Claude and two Codex accounts give window shares, reset times, tokens and cost under one name each, each with its age", async () => {
     const { home, th } = world();
     const now = Date.now();
-    const claudeB = dir(join(home, "..", "k-claude-b"));
+    const claudeB = claudeDir(join(home, "..", "k-claude-b"));
     const codexB = dir(join(home, "..", "k-codex-b"));
-    dir(join(home, ".claude"));
+    claudeDir(join(home, ".claude"));
     dir(join(home, ".codex"));
     usageToml(th, [{ name: "claude-b", agent: "claude", folder: claudeB }, { name: "codex-b", agent: "codex", folder: codexB }]);
     // Drop files as the statusLine command writes them (test/usage/claude.test.ts).
@@ -454,6 +456,56 @@ describe("(51) usage: tokens and cost per account from the ccusage helper", () =
     for (const [name, { agent }] of Object.entries(folders)) {
       if (name === "codex-b") expect(tokRow(agent, name)).toMatchObject({ tokens: null, tokens_note: "tokens: not available (exit 1)" });
       else expect(tokRow(agent, name), name).toMatchObject({ tokens: { total: RECORDED[agent].tokens }, tokens_note: null });
+    }
+  });
+
+  it("(51) p a Claude folder with no projects/ yet reads zero tokens and cost and is not run; with projects/ it is run; without the helper it reads helper missing", async () => {
+    const { home, th } = world();
+    dir(join(home, ".claude"));
+    const empty = dir(join(home, "..", "p-empty"));
+    const has = claudeDir(join(home, "..", "p-has"));
+    const itself = dir(join(home, "..", "p-itself", "projects"));
+    dir(join(home, ".codex"));
+    usageToml(th, [{ name: "p-empty", agent: "claude", folder: empty }, { name: "p-has", agent: "claude", folder: has }, { name: "p-itself", agent: "claude", folder: itself }]);
+    await cc.collectTokens(T0, { bin: FAKE, harnesses: H() });
+    const zero = { tokens: { today: 0, total: 0 }, cost_usd: { today: 0, total: 0 }, tokens_note: null, limit_note: null };
+    expect(tokRow("claude", "claude")).toMatchObject(zero);
+    expect(tokRow("claude", "p-empty")).toMatchObject(zero);
+    expect(tokRow("claude", "p-has")).toMatchObject({ tokens: { total: 101 }, tokens_note: null });
+    expect(tokRow("claude", "p-itself")).toMatchObject({ tokens: { total: 101 }, tokens_note: null });
+    // Only Claude: a Codex folder with nothing in it is still run (ccusage answers zeros itself).
+    expect(logLines().map((l) => l.replace(/ cwd=.*$/, "")).sort()).toEqual([
+      `claude daily --json --offline CLAUDE_CONFIG_DIR=${has}`, `claude daily --json --offline CLAUDE_CONFIG_DIR=${itself}`, `codex daily --json --offline CODEX_HOME=${join(home, ".codex")}`,
+    ].sort());
+    await cc.collectTokens(T0 + 1, { bin: join(BOX, "no-such-helper"), harnesses: H() });
+    for (const n of ["claude", "p-empty", "p-has"]) expect(tokRow("claude", n, T0 + 1), n).toMatchObject({ tokens: null, tokens_note: "tokens: not available (helper missing)" });
+  });
+
+  it("(51) q the helper is always run by path: a bare name is never looked up on PATH", async () => {
+    const { home } = world();
+    dir(join(home, ".codex"));
+    const here = dir(join(home, "..", "q-here"));
+    const onPath = dir(join(home, "..", "q-on-path"));
+    const ran = join(home, "..", "q-ran");
+    for (const [d, word] of [[here, "here"], [onPath, "path"]] as const) {
+      writeFileSync(join(d, "r1a51-q-helper"), `#!/bin/sh\necho ${word} >> '${ran}'\ncat '${join(FIXDIR, "codex.json")}'\n`);
+      chmodSync(join(d, "r1a51-q-helper"), 0o755);
+    }
+    const [path, cwd] = [process.env.PATH, process.cwd()];
+    process.env.PATH = `${onPath}:${path}`;
+    try {
+      // Not in the working folder: helper missing, PATH's is not run.
+      await cc.collectTokens(T0, { bin: "r1a51-q-helper", harnesses: H() });
+      expect(tokRow("codex", "codex")).toMatchObject({ tokens: null, tokens_note: "tokens: not available (helper missing)" });
+      expect(existsSync(ran)).toBe(false);
+      // In the working folder: that file runs, PATH's still does not.
+      process.chdir(here);
+      await cc.collectTokens(T0 + 1, { bin: "r1a51-q-helper", harnesses: H() });
+      expect(tokRow("codex", "codex", T0 + 1)).toMatchObject({ tokens: { total: 275 }, tokens_note: null });
+      expect(readFileSync(ran, "utf8")).toBe("here\n");
+    } finally {
+      process.chdir(cwd);
+      process.env.PATH = path;
     }
   });
 
