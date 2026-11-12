@@ -25,7 +25,7 @@
  * switch is on (bridge/kill-switch.ts) a hook run hands nothing over and prints nothing.
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -163,6 +163,41 @@ function configOverrides(option: string, command: (event: string) => string): st
     trust.push(`${JSON.stringify(`/<session-flags>/config.toml:${label}:0:0`)}={trusted_hash=${JSON.stringify(hash)}}`)
   }
   return [...out, option, `hooks.state={${trust.join(',')}}`]
+}
+
+/**
+ * The variables a stdio start of src/stdio-server.ts reads (U-R1A-36C: `git grep` of its start
+ * files), sorted. Names only: Codex copies these from its own environment into the server's, so
+ * TANDEM_CALLER_TOKEN reaches it while no value ever sits on a command line.
+ */
+export const MCP_ENV_NAMES: readonly string[] = [
+  'CCM_CWD_ALLOWLIST', 'CCM_DEFAULT_CWD', 'CCM_FABRIC_DB_PATH', 'CCM_FABRIC_ENABLED', 'TANDEM_CALLER_TOKEN', 'TANDEM_CONFIG_FILE',
+  'TANDEM_CWD_ALLOWLIST', 'TANDEM_DEFAULT_CWD', 'TANDEM_HOME', 'TANDEM_HUB_LINK_ID', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_HUB_LINK_URL',
+]
+
+/**
+ * For a harness file with `mcp_env = "config-overrides"` (an agent that starts its MCP servers with
+ * a filtered environment, harnesses/SCHEMA.md): Tandem's own stdio server `tandem` for this one
+ * session, as three `hook` values (command, args, env_vars). An owner's own `tandem` entry is
+ * replaced for that session by this one (the same program). Any other harness: nothing. A command
+ * part holding `'` or a control character, or a missing src/stdio-server.ts, throws (nothing starts).
+ */
+export function mcpOverrides(harness: Harness): string[] {
+  if (harness.mcp_env !== 'config-overrides') return []
+  const option = harness.hook
+  if (harness.hook_format !== 'config-overrides' || typeof option !== 'string' || !HOOK_OPTION.test(option)) {
+    throw new Error(`harness "${harness.name}": mcp_env "config-overrides" needs a config-overrides hook`)
+  }
+  const stdio = fileURLToPath(new URL('../src/stdio-server.ts', import.meta.url))
+  if ([process.execPath, stdio].some((p) => UNSAFE.test(p))) throw new Error('an MCP server command part holds a quote or a control character; refused')
+  let found = false
+  try { found = statSync(stdio).isFile() } catch { /* missing */ }
+  if (!found) throw new Error('src/stdio-server.ts is missing; refused')
+  return [
+    option, `mcp_servers.tandem.command=${JSON.stringify(process.execPath)}`,
+    option, `mcp_servers.tandem.args=${JSON.stringify(['--experimental-strip-types', stdio])}`,
+    option, `mcp_servers.tandem.env_vars=${JSON.stringify(MCP_ENV_NAMES)}`,
+  ]
 }
 
 /** Removes the session's settings and turn files. */

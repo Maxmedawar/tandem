@@ -151,7 +151,7 @@ describe("codex: spawn (injected spawn function)", () => {
   }
 
   // U-R1A-26: the session's own delivery hooks follow the program as 5 --config values.
-  const HOOK = Array.from({ length: 10 }, (_, i) => (i % 2 === 0 ? "--config" : expect.stringMatching(/^hooks\./)));
+  const HOOK = Array.from({ length: 16 }, (_, i) => (i % 2 === 0 ? "--config" : expect.stringMatching(i < 10 ? /^hooks\./ : /^mcp_servers\.tandem\./)));
 
   it("argv is /usr/bin/env -- <programPath> alone, also with TANDEM_ALLOW_BYPASS=1", async () => {
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "");

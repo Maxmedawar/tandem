@@ -52,6 +52,7 @@ TOML. Every field not listed here is refused, at the top level and inside `state
 | `delivery` | `"hook"` or `"notice"` | `"notice"` | `"hook"` needs `hook` |
 | `hook` | string | unset | the option that loads a per-session settings file Tandem writes, `^--[a-z][a-z0-9-]{0,31}$` |
 | `hook_format` | `"settings-file"` or `"config-overrides"` | `"settings-file"` | needs `hook`; how `hook` carries Tandem's hooks (see below) |
+| `mcp_env` | `"inherit"`, `"config-overrides"` or `"unknown"` | unset (unknown) | how the agent hands environment to a stdio MCP server it starts: `inherit` (its whole environment; verified for that agent and cited in its file), `config-overrides` (it filters the environment; Tandem registers its own server for the session through `hook`, which needs `hook_format = "config-overrides"`), `unknown` (not verified); see "How an agent's caller token reaches Tandem's MCP server" |
 | `permission_hook` | boolean | `false` | |
 | `reports_context` | boolean | `false` | |
 | `adapter` | string | unset | a built-in adapter's name (`hermes`), built-in files only; such an agent has no program and the terminal fields go unused |
@@ -155,6 +156,56 @@ Every string outside `states` and `dialogs` is command text, and so is a dialog'
 control character, a format character (bidi or zero-width), a line or paragraph
 separator, nor `` ` ``, `$`, `;`, `|`, `&`, `<`, `>`, nor a `{` or `}` other than in
 the exact text `{id}`.
+
+## How an agent's caller token reaches Tandem's MCP server
+
+Each session's agent gets its own caller token in its environment (`TANDEM_CALLER_TOKEN`, see
+bridge/caller-tokens.ts). Tandem's stdio MCP server (`tandem stdio`) started by that agent reads
+it and serves that agent, never the owner. Whether the variable reaches the server depends on how
+the agent starts its MCP servers, which `mcp_env` records:
+
+- `inherit`: the agent passes its whole environment; nothing more is needed.
+- `config-overrides`: the agent filters the environment. At each start Tandem adds, after the hook
+  values, its own stdio server `tandem` for that one session as three `hook` values:
+  `mcp_servers.tandem.command` (this Node), `mcp_servers.tandem.args` (`--experimental-strip-types`
+  and Tandem's `src/stdio-server.ts`) and `mcp_servers.tandem.env_vars` (the names of the variables
+  to pass, TANDEM_CALLER_TOKEN among them). Names only: no value of any variable is ever on a
+  command line. An owner entry named `tandem` in the agent's own config is replaced for that
+  session by Tandem's (the same program); an owner entry under another name still starts without
+  a token and is refused (below).
+- `unknown`: not verified.
+
+A stdio server with no token refuses to start when its process or one of its parents is the pane
+process of a session on Tandem's socket, and when it cannot tell; the owner's own clients run
+outside Tandem sessions and stay the owner. There is no override variable. A server serving an
+agent checks at every tool call that its token still names that agent and its session is still
+there; when not, that call gets a JSON-RPC error and the server stops.
+
+Built-in files:
+
+- `antigravity.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `claude.toml`: `inherit`: U-R1A-36C V4: under an empty CLAUDE_CONFIG_DIR and HOME, `claude mcp list` started a probe stdio server that saw TANDEM_CALLER_TOKEN
+- `cline.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `codex.toml`: `config-overrides`: U-R1A-36C V2/V3: codex-cli 0.167.1 starts a stdio server with a short default environment plus its `env_vars`; `codex mcp get tandem --json` under an empty CODEX_HOME listed Tandem's command, args and env_vars
+- `copilot.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `cursor-agent.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `droid.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `gemini.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `goose.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `grok.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `hermes.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `opencode.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `pi.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+- `shell.toml`: `unknown`: unverified: inherited environment if the agent passes it; else its stdio server refuses to start, never the owner
+
+Limits: the same OS user can still (1) start a stdio server detached from the session (setsid, a
+double fork, nohup to parent pid 1, launchd or systemd-run, `at`, another tmux server) and be the
+owner; (2) read the token from the pane process's environment (`ps eww`, /proc) or write a hash
+row into state.db; (3) win the race between the parent-id reads and the start. The ancestry rule
+and the per-call recheck stop an honest, confused or prompt-injected agent; isolation from a
+hostile process of the same user needs separate OS users. Codex's own shell tool drops variables
+whose names hold TOKEN by default, so a stdio server a Codex agent starts from its shell has no
+token and is refused.
 
 ## Shell or agent
 

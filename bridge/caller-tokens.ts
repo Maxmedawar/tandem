@@ -15,18 +15,21 @@
  * outlives a bridge restart, so an adopted session keeps the token its agent already has.
  *
  * Stated limits (T23, same user): the token names an agent, it does not wall agents of one user
- * off from each other. An agent that strips the variable before starting its stdio server is the
- * owner. The token lives in the environment of the pane's processes (not in the tmux session
- * environment: spawn removes it there in the same tmux call), so a process of this user can still
+ * off from each other. An agent that strips the variable before starting its stdio server is
+ * refused when that server runs under one of Tandem's panes (insideTandemSession, U-R1A-36C), but
+ * one started detached from its session is the owner. The token lives in the environment of the
+ * pane's processes (not in the tmux session environment: spawn removes it there in the same tmux
+ * call), so a process of this user can still
  * read it with `ps eww` (macOS: any program that is not Apple's own; Linux: /proc/<pid>/environ),
  * and the tmux client holds `-e TANDEM_CALLER_TOKEN=...` in its argument list while new-session
  * runs. A process of this user can also write its own row into state.db. A session that ends
  * without close() keeps its row until the name is spawned again; the stdio server refuses such a
- * token at start (the session must be there), but a stdio server already running keeps its caller
- * until it exits.
+ * token at start (the session must be there), and one already running checks it again at every
+ * tool call (callerStillLive).
  */
+import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
-import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -100,4 +103,67 @@ export function setProcessCaller(name: string): void {
 /** The agent this process serves, or undefined for the owner's own client. */
 export function processCaller(): string | undefined {
   return caller
+}
+
+/**
+ * The parent process id of `pid`: /proc/<pid>/stat on Linux, `ps -o ppid= -p <pid>` (execFile, no
+ * shell) elsewhere. A process that is gone, or a missing ps, throws.
+ */
+export async function parentPidOf(pid: number): Promise<number> {
+  if (!Number.isSafeInteger(pid) || pid < 1) throw new Error('parent pid: bad pid')
+  let text: string
+  if (process.platform === 'linux') {
+    // `<pid> (<comm>) <state> <ppid> ...`; comm may hold spaces or `)`, so read after the last `)`.
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8')
+    text = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[1] ?? ''
+  } else {
+    text = await new Promise<string>((done, fail) =>
+      execFile('ps', ['-o', 'ppid=', '-p', String(pid)], (error, stdout) => (error ? fail(error) : done(String(stdout)))),
+    )
+  }
+  const ppid = Number(text.trim())
+  if (!Number.isSafeInteger(ppid) || ppid < 0 || text.trim() === '') throw new Error('parent pid: unreadable')
+  return ppid
+}
+
+/**
+ * The Tandem session (its name without `ccm-`) whose pane process is `pid` or one of its parents
+ * (at most 64 steps, stopping at pid 1 or a repeat), else undefined. The panes are read once from
+ * Tandem's socket (bridge/terminal-session.ts tmux()); no server running or no tmux program is no
+ * session. Any other failure (a parent id that cannot be read, a refused socket folder) throws.
+ */
+export async function insideTandemSession(pid: number): Promise<string | undefined> {
+  const { tmux } = await import('./terminal-session.ts')
+  let listed: string
+  try {
+    listed = await tmux(['list-panes', '-a', '-F', '#{session_name} #{pane_pid}'])
+  } catch (e) {
+    if ((e as { code?: unknown }).code === 'ENOENT' || /no server running|error connecting to/.test(String(e))) return undefined
+    throw e
+  }
+  const panes = new Map<number, string>()
+  for (const line of listed.split('\n')) {
+    const m = /^ccm-([A-Za-z0-9._-]{1,256}) (\d+)$/.exec(line)
+    if (m) panes.set(Number(m[2]), m[1]!)
+  }
+  if (panes.size === 0) return undefined
+  const seen = new Set<number>()
+  for (let p = pid, step = 0; step < 64 && p > 1 && !seen.has(p); step++) {
+    const name = panes.get(p)
+    if (name !== undefined) return name
+    seen.add(p)
+    p = await parentPidOf(p)
+  }
+  return undefined
+}
+
+/** The token still names `name` and that session is there on Tandem's socket; any failure is false. */
+export async function callerStillLive(token: string, name: string): Promise<boolean> {
+  try {
+    if (resolveCallerToken(token) !== name) return false
+    const { TerminalSession } = await import('./terminal-session.ts')
+    return await TerminalSession.exists(name)
+  } catch {
+    return false
+  }
 }

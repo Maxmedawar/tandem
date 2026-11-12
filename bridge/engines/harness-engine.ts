@@ -7,7 +7,7 @@
  * Gates (enabled, `shell` for a shell program, program found) live in engine-registry.ts;
  * model/effort/bypass stay Claude-only and are refused, never ignored.
  */
-import { clearTurn, installHook, removeHook, turnState } from '../delivery-hooks.ts'
+import { clearTurn, installHook, mcpOverrides, removeHook, turnState } from '../delivery-hooks.ts'
 import type { EngineDescriptor, ReadOptions, ReadResult } from '../drivable.ts'
 import { createStateReader, isPromptEmpty, readScreen, type ReadState } from '../harness-detect.ts'
 import type { Harness } from '../harness-registry.ts'
@@ -125,8 +125,12 @@ export class HarnessSession extends TerminalAdapterSession {
   ): Promise<HarnessSession> {
     let descriptor = harnessDescriptor(harness, opts)
     spawnArgv(descriptor, opts) // a refused or bad flag throws before anything starts
+    // Tandem's own MCP server for an agent that filters its MCP servers' environment (U-R1A-36C);
+    // worked out first, so a refusal throws before the hook files are touched.
+    const mcp = mcpOverrides(harness)
     // A hook agent gets its own settings file (spawn only: adoption writes nothing).
     if (harness.delivery === 'hook') descriptor = { ...descriptor, argv: [...(descriptor.argv ?? []), ...installHook(harness, opts.name)] }
+    if (mcp.length > 0) descriptor = { ...descriptor, argv: [...(descriptor.argv ?? []), ...mcp] }
     return new HarnessSession(harness, await spawnFn({ ...opts, descriptor }))
   }
 

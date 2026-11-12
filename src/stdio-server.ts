@@ -21,7 +21,8 @@
  * get their own). A token that names a session makes every call here that agent's
  * (`session:<name>`); one that names nothing, or a session that is no longer there, refuses to
  * start, never the owner. No variable: the
- * owner's own client.
+ * owner's own client, unless this process runs under a Tandem session's pane (then it refuses to
+ * start, U-R1A-36C).
  */
 
 // Desktop apps spawn this process from an arbitrary cwd, so locate .env next to
@@ -51,9 +52,38 @@ if (process.env.TANDEM_CWD_ALLOWLIST) process.env.CCM_CWD_ALLOWLIST = process.en
 if (process.env.TANDEM_DEFAULT_CWD) process.env.CCM_DEFAULT_CWD = process.env.TANDEM_DEFAULT_CWD;
 
 // The caller, before the server module reads it. Fail closed: an unresolved value is never the owner.
-if (callerToken !== undefined) {
+//
+// No token (U-R1A-36C): a server whose process or one of its parents is the pane process of a
+// session on Tandem's socket was started by that session's agent, which has a token, so it refuses
+// to start; one that cannot tell refuses too. There is no override variable: anything an owner can
+// set, an agent can set. The owner's own clients run outside Tandem sessions and stay the owner.
+// A token: the server serves that agent, and every tools/call checks first that the token still
+// names it and its session is still there (below, after connect).
+// Stated limits: the same OS user can still (1) start a server detached from the session (setsid,
+// a double fork, nohup to parent pid 1, launchd or systemd-run, `at`, another tmux server) and be
+// the owner; (2) read the token from the pane process's environment (`ps eww`, /proc) or write a
+// hash row into state.db; (3) win the race between the parent-id reads and the start. The ancestry
+// rule and the per-call recheck stop an honest, confused or prompt-injected agent; isolation from a
+// hostile process of the same user needs separate OS users (R3 sandboxes). Codex's own shell tool
+// drops variables whose names hold TOKEN by default, so a server a Codex agent starts from its shell
+// has no token and is refused here.
+let callerName: string | undefined;
+if (callerToken === undefined) {
+  const { insideTandemSession } = await import("../bridge/caller-tokens.ts");
+  let refusal: string | undefined;
+  try {
+    if ((await insideTandemSession(process.pid)) !== undefined) {
+      refusal = "tandem stdio: started inside a Tandem session with no caller token; refusing to start\n";
+    }
+  } catch {
+    refusal = "tandem stdio: cannot tell whether this runs inside a Tandem session; refusing to start\n";
+  }
+  if (refusal !== undefined) {
+    await new Promise((done) => process.stderr.write(refusal, done));
+    process.exit(1);
+  }
+} else {
   const { resolveCallerToken, setProcessCaller } = await import("../bridge/caller-tokens.ts");
-  let callerName: string | undefined;
   try {
     callerName = resolveCallerToken(callerToken);
   } catch {
@@ -159,7 +189,39 @@ try {
   console.error("transcripts: search unavailable; transcript tools are off");
 }
 const server = await buildMcpServer(fleet, fabric ?? hubForward, mail, presence, transcripts, hubLink);
-await server.connect(new StdioServerTransport());
+const transport = new StdioServerTransport();
+await server.connect(transport);
+
+// An agent's server: every tools/call first checks that its token still names this agent and its
+// session is still there (one SQLite read and one tmux call per tool call). Messages keep their
+// arrival order (one promise chain); initialize, tools/list and ping pass unchecked. The session
+// gone: that call gets a JSON-RPC error and this process stops. The owner (no token) is not checked.
+if (callerToken !== undefined && callerName !== undefined) {
+  const { callerStillLive } = await import("../bridge/caller-tokens.ts");
+  const token = callerToken;
+  const name = callerName;
+  const handle = transport.onmessage;
+  let chain = Promise.resolve();
+  let stopped = false;
+  transport.onmessage = (message) => {
+    chain = chain
+      .then(async () => {
+        if (stopped) return;
+        if ("method" in message && message.method === "tools/call" && "id" in message && !(await callerStillLive(token, name))) {
+          stopped = true;
+          try {
+            await transport.send({ jsonrpc: "2.0", id: message.id, error: { code: -32001, message: `caller: session ${name} has ended; this server stops` } });
+            await new Promise((done) => process.stdout.write("", done));
+            await new Promise((done) => process.stderr.write(`tandem stdio: caller session:${name} has ended; stopping\n`, done));
+          } finally {
+            process.exit(1);
+          }
+        }
+        handle?.(message);
+      })
+      .catch(() => {});
+  };
+}
 
 console.error("tandem MCP bridge ready on stdio (local, no token)");
 console.error(`cwd allowlist roots: ${allowlist.length}`);

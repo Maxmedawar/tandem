@@ -45,6 +45,8 @@ export interface Harness {
   hook?: string
   /** How `hook` is used: one settings file (absent = this) or Codex-style `--config` values (U-R1A-26). */
   hook_format?: 'settings-file' | 'config-overrides'
+  /** How the agent hands environment to a stdio MCP server it starts (U-R1A-36C); absent = unknown. */
+  mcp_env?: 'inherit' | 'config-overrides' | 'unknown'
   permission_hook: boolean
   reports_context: boolean
   adapter?: string
@@ -78,7 +80,7 @@ const NAMED_KEY = /^(Enter|Escape|Tab|BTab|Space|BSpace|Up|Down|Left|Right|Home|
 /** Command text: no control, format (bidi, zero-width) or line-separator character, no shell character, no brace once `{id}` is removed. */
 const BAD_TEXT = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}`$;|&<>{}]/u
 const FIELDS = ['name', 'program', 'args', 'skip_prompts_args', 'resume', 'fork', 'has_prompts', 'account_env', 'history',
-  'states', 'keys', 'dialogs', 'delivery', 'hook', 'hook_format', 'permission_hook', 'reports_context', 'adapter', 'logo']
+  'states', 'keys', 'dialogs', 'delivery', 'hook', 'hook_format', 'mcp_env', 'permission_hook', 'reports_context', 'adapter', 'logo']
 const STATE_NAMES: StateName[] = ['working', 'idle', 'waiting_for_approval']
 const KEY_NAMES = ['approve', 'deny', 'interrupt'] as const
 /** Text that is never typed as a dialog answer, and a screen showing it is never answered (sign-in, purchase). */
@@ -245,6 +247,10 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
   const hook_format = str(raw, 'hook_format')
   if (hook_format !== undefined && !hook) fail('hook_format needs hook')
   if (hook_format !== undefined && hook_format !== 'settings-file' && hook_format !== 'config-overrides') fail('bad hook_format: "settings-file" or "config-overrides"')
+  const mcp_env = raw.mcp_env
+  if (mcp_env !== undefined && mcp_env !== 'inherit' && mcp_env !== 'config-overrides' && mcp_env !== 'unknown') fail('bad mcp_env: "inherit", "config-overrides" or "unknown"')
+  // Tandem's own MCP server rides on the hook's --config values (bridge/delivery-hooks.ts mcpOverrides).
+  if (mcp_env === 'config-overrides' && hook_format !== 'config-overrides') fail('mcp_env "config-overrides" needs hook_format "config-overrides"')
   const logo = str(raw, 'logo')
   if (logo !== undefined && !LOGO.test(logo)) fail('bad logo')
 
@@ -256,6 +262,7 @@ function validate(raw: Table, stem: string, source: Harness['source']): Omit<Har
     fork: strs(raw, 'fork') ?? [],
     has_prompts, account_env, history, states, keys, dialogs,
     delivery: delivery as Harness['delivery'], hook, hook_format: hook_format as Harness['hook_format'],
+    mcp_env: mcp_env as Harness['mcp_env'],
     permission_hook: bool(raw, 'permission_hook') ?? false,
     reports_context: bool(raw, 'reports_context') ?? false,
     adapter, logo,
