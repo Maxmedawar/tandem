@@ -113,6 +113,16 @@ describe('a published release', () => {
     expect(manifest.requiresSystemNode).toBe(!bundledNode)
   })
 
+  it('(51) ships the ccusage helper, its licence and its notice line, all in the manifest', () => {
+    expect(statSync(join(tree, 'libexec', 'ccusage')).mode & 0o111, 'libexec/ccusage is not executable').not.toBe(0)
+    expect(readFileSync(join(tree, 'LICENSE.ccusage.txt'), 'utf8'))
+      .toBe(readFileSync(join(repoRoot, 'packaging', 'helpers', 'ccusage', 'LICENSE'), 'utf8'))
+    expect(readFileSync(join(tree, 'THIRD_PARTY_NOTICES.md'), 'utf8'))
+      .toContain('- ccusage 20.0.49 (libexec/ccusage, native helper): MIT, see LICENSE.ccusage.txt')
+    const listed = (JSON.parse(readFileSync(join(tree, 'manifest.json'), 'utf8')) as { files: Array<{ path: string }> }).files.map(entry => entry.path)
+    for (const path of ['libexec/ccusage', 'LICENSE.ccusage.txt', 'THIRD_PARTY_NOTICES.md']) expect(listed, `${path} is not in the manifest`).toContain(path)
+  })
+
   it('lists every file it contains with a digest that matches', () => {
     const manifest = JSON.parse(readFileSync(join(tree, 'manifest.json'), 'utf8')) as {
       files: Array<{ path: string; sha256: string }>

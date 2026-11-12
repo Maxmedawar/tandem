@@ -7,12 +7,15 @@
  * minute ahead of this computer's clock (it would never turn stale and no later reading would
  * replace it). An account that turns stale (no reading for over 30 minutes) gets one
  * stderr line, and again only after it was fresh in between. A `usage = "rollout"` agent (Codex) is
- * read in the same pass from the tail of its session logs (bridge/usage/codex.ts).
+ * read in the same pass from the tail of its session logs (bridge/usage/codex.ts). Tokens and cost per
+ * account come from the ccusage helper (bridge/usage/ccusage.ts): one pass at start and one every 10
+ * minutes, on a timer of their own.
  */
 import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { readProtectedRegularFileSync } from '../../src/runtime-config.ts'
 import { loadHarnesses, type Harness } from '../harness-registry.ts'
+import { collectTokens, stopTokens, TOKENS_EVERY_MS } from './ccusage.ts'
 import { ACCOUNT, dropDirOf } from './claude.ts'
 import { codexReadings } from './codex.ts'
 import { readUsage, recordReadings, type Reading } from './store.ts'
@@ -83,8 +86,13 @@ export function collectUsage(now = Date.now(), harnesses?: Iterable<Harness>): v
   }
 }
 
-/** Collects at start and every `everyMs` (60 s); returns the stop. A failed pass writes one stderr line and the next pass runs. */
-export function startUsageCollector(opts: { everyMs?: number; now?: () => number } = {}): () => void {
+/**
+ * Collects at start and every `everyMs` (60 s), and runs a token pass at start and every
+ * `tokensEveryMs` (10 min; a tick while a pass is in flight does nothing); returns the stop, which
+ * ends both timers and kills a helper run in flight by its process group. A failed pass writes one
+ * stderr line and the next pass runs.
+ */
+export function startUsageCollector(opts: { everyMs?: number; now?: () => number; tokensEveryMs?: number; ccusage?: { bin?: string; timeoutMs?: number } } = {}): () => void {
   const now = opts.now ?? Date.now
   const pass = () => {
     try {
@@ -94,8 +102,16 @@ export function startUsageCollector(opts: { everyMs?: number; now?: () => number
       process.stderr.write(`usage: collector pass failed (${typeof code === 'string' && /^[A-Z_0-9]{1,40}$/.test(code) ? code : 'error'})\n`)
     }
   }
+  const tokens = () => { void collectTokens(now(), opts.ccusage) }
   pass()
+  tokens()
   const timer = setInterval(pass, opts.everyMs ?? EVERY_MS)
   timer.unref()
-  return () => clearInterval(timer)
+  const tokenTimer = setInterval(tokens, opts.tokensEveryMs ?? TOKENS_EVERY_MS)
+  tokenTimer.unref()
+  return () => {
+    clearInterval(timer)
+    clearInterval(tokenTimer)
+    stopTokens()
+  }
 }
