@@ -180,7 +180,7 @@ try {
   const { startControlServer } = await import("../bridge/control-socket.ts");
   controlServer = await startControlServer({ run: runKillSwitchCommand });
 } catch {
-  console.error("tandem: control socket unavailable; kill switch off goes by file only");
+  console.error("tandem: control socket unavailable; while this runtime runs the kill switch can only be turned off by stopping the runtime");
 }
 
 let shuttingDown = false;
