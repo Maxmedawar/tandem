@@ -15,11 +15,17 @@
  *
  * No folder path, screen text, transcript, attach command, token or key is in any field: each
  * session row is picked field by field.
+ *
+ * `accounts` (U-R1A-53) is the account list of one read of the usage report
+ * (bridge/usage/report.ts), never refreshed: no helper runs and no drop is re-read here. Each
+ * account is picked field by field; a row whose names fail NAME is dropped. A report that cannot
+ * be read gives `accounts: null` and one stderr line naming only the error's code.
  */
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { controlSocketPath, sendControlCommand, type ControlResult } from './control-socket.ts'
 import type { Presence } from './presence.ts'
+import type { UsageAccount, UsageReport, UsageWindow } from './usage/report.ts'
 
 export const STATUS_VERSION = 2
 const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }).version
@@ -50,6 +56,8 @@ export type TandemStatus = {
   runtime: 'running' | 'not_running' | 'old_runtime'
   killSwitch: 'on' | 'off'
   computers: StatusComputer[]
+  /** The usage report's accounts; null when it could not be read; absent in a document from before U-R1A-53. */
+  accounts?: UsageAccount[] | null
 }
 /** The runtime's `status` answer: its own session rows and its kill switch guard. */
 export type RuntimeReply = {
@@ -57,7 +65,7 @@ export type RuntimeReply = {
   killSwitch: { on: boolean; latched: boolean; tampered: number }
 }
 export type RuntimeProbe = { runtime: TandemStatus['runtime']; reply?: RuntimeReply }
-export type StatusOptions = { presence?: Presence; probe?: () => Promise<RuntimeProbe>; now?: () => number }
+export type StatusOptions = { presence?: Presence; probe?: () => Promise<RuntimeProbe>; now?: () => number; usage?: UsageReport }
 
 /** The reply picked field by field; anything off shape is no reply (the local readers are used). */
 function replyOf(detail: unknown): RuntimeReply | undefined {
@@ -116,6 +124,23 @@ export function runtimeStatus(opts: { presence?: Presence } = {}): () => Promise
 
 const row = ({ name, engine, project, state, stateAt, ageMs }: StatusSession): StatusSession => ({ name, engine, project, state, stateAt, ageMs })
 
+const win = ({ used, resets_at }: UsageWindow): UsageWindow => ({ used, resets_at })
+const pair = (p: { today: number; total: number } | null) => (p === null ? null : { today: p.today, total: p.total })
+const account = (a: UsageAccount): UsageAccount => ({
+  agent: a.agent, account: a.account, computer: a.computer, at: a.at, ageMs: a.ageMs, stale: a.stale,
+  five_hour: win(a.five_hour), seven_day: win(a.seven_day), plan: a.plan, room: a.room, tokens: pair(a.tokens), cost_usd: pair(a.cost_usd),
+  tokens_at: a.tokens_at, tokens_age_ms: a.tokens_age_ms, tokens_computers: [...a.tokens_computers], tokens_note: a.tokens_note, limit_note: a.limit_note,
+})
+const named = (s: unknown) => typeof s === 'string' && NAME.test(s)
+/** Every name the text form prints matches NAME (as replyOf): agent, account, computer and each token computer. */
+const shown = (a: UsageAccount) =>
+  named(a.agent) && named(a.account) && (a.computer === null || named(a.computer)) && Array.isArray(a.tokens_computers) && a.tokens_computers.every(named)
+/** report.ts codeOf's rule: the error's code when it is one, else `error`; the message never crosses (it could name a path). */
+const codeOf = (e: unknown) => {
+  const code = (e as { code?: unknown } | undefined)?.code
+  return typeof code === 'string' && /^[A-Z_0-9]{1,40}$/.test(code) ? code : 'error'
+}
+
 function counted(sessions: StatusSession[]): StatusCounts {
   const counts: StatusCounts = { working: 0, idle: 0, waiting_for_approval: 0, unknown: 0 }
   for (const { state } of sessions) {
@@ -132,7 +157,12 @@ function computer(c: Omit<StatusComputer, 'counts' | 'sessions'>, rows: StatusSe
 export async function statusDocument(opts: StatusOptions = {}): Promise<TandemStatus> {
   // Loaded here, not at the top: the readers open node:sqlite, whose ExperimentalWarning (Node 22)
   // would otherwise reach stderr ahead of the usage line.
-  const [{ createPresence }, { killSwitchOn }] = await Promise.all([import('./presence.ts'), import('./kill-switch.ts')])
+  // report.ts failing to load is an unreadable report (accounts null), not a failed document.
+  const [{ createPresence }, { killSwitchOn }, createUsageReport] = await Promise.all([
+    import('./presence.ts'),
+    import('./kill-switch.ts'),
+    import('./usage/report.ts').then((m) => m.createUsageReport, (e: unknown) => (): UsageReport => { throw e }),
+  ])
   const now = opts.now ?? Date.now
   const presence = opts.presence ?? createPresence({ now })
   const [up, { runtime, reply }] = await Promise.all([presence.whoIsUp({ refresh: true }), (opts.probe ?? askRuntime)()])
@@ -142,6 +172,14 @@ export async function statusDocument(opts: StatusOptions = {}): Promise<TandemSt
   const mine = reply
     ? reply.sessions.map((s) => ({ ...s, project: project.get(s.name) ?? '', stateAt: at - s.ageMs }))
     : up.sessions
+  // One read, no refresh; `now` is the document's time, so a share is shown only before its reset.
+  let accounts: UsageAccount[] | null = null
+  try {
+    const report = opts.usage ?? createUsageReport({ now: () => at, computer: up.computer })
+    accounts = (await report.read()).accounts.filter(shown).map(account)
+  } catch (e) {
+    process.stderr.write(`tandem status: account usage could not be read (${codeOf(e)})\n`)
+  }
   return {
     statusVersion: STATUS_VERSION,
     version: VERSION,
@@ -152,6 +190,7 @@ export async function statusDocument(opts: StatusOptions = {}): Promise<TandemSt
       computer({ computer: up.computer, self: true, at: up.at, ageMs: up.ageMs, stale: false, more: 0 }, mine),
       ...(up.others ?? []).map((o) => computer({ ...o, self: false }, o.sessions)),
     ],
+    accounts,
   }
 }
 
@@ -174,6 +213,17 @@ export function renderStatus(doc: TandemStatus): string {
     lines.push(`${c.computer}${c.self ? ' (this computer)' : ''} · ${n} session${n === 1 ? '' : 's'}: ${working} working, ${idle} idle, ${waiting_for_approval} waiting, ${unknown} unknown · ${c.stale ? 'stale · ' : ''}${read}`)
     for (const s of c.sessions) lines.push(`  ${s.name}  ${s.engine}  ${s.state}`)
     if (c.more > 0) lines.push(`  ... and ${c.more} more`)
+  }
+  if (doc.accounts === null) lines.push('accounts: could not be read')
+  else if (doc.accounts?.length === 0) lines.push('accounts: none reporting')
+  else if (doc.accounts) {
+    lines.push('accounts:')
+    const share = (w: UsageWindow) => (w.used === null ? 'unknown' : `${Math.round(w.used)}% resets in ${age(w.resets_at === null ? null : w.resets_at - doc.at)}`)
+    for (const a of doc.accounts) {
+      const limits = a.limit_note !== null ? 'limit not available' : `5 h ${share(a.five_hour)}  7 d ${share(a.seven_day)}`
+      const fresh = a.ageMs !== null ? `read ${age(a.ageMs)} ago on ${a.computer}` : 'no share reading'
+      lines.push(`  ${a.agent}/${a.account}  ${limits}  · ${a.stale ? 'stale · ' : ''}${fresh}`)
+    }
   }
   return `${lines.join('\n')}\n`
 }
