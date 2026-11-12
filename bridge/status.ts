@@ -19,7 +19,16 @@
  * `accounts` (U-R1A-53) is the account list of one read of the usage report
  * (bridge/usage/report.ts), never refreshed: no helper runs and no drop is re-read here. Each
  * account is picked field by field; a row whose names fail NAME is dropped. A report that cannot
- * be read gives `accounts: null` and one stderr line naming only the error's code.
+ * be read gives `accounts: null` and one stderr line naming only the error's code. At most
+ * MAX_ACCOUNTS accounts are kept (the report's order); `accountsMore` counts the rest.
+ *
+ * Time limits (U-R1A-STATUSREADS), so a reader that hangs cannot hold the document: the runtime
+ * reads each screen for at most ROW_MS (600 ms; a slower row reads `unknown`) and answers within
+ * ANSWER_MS; the local listing gets LISTING_MS (1,500 ms; past it the command fails as for a
+ * listing that throws) and the usage read REPORT_MS (1,500 ms; past it `accounts: null` and the
+ * ETIMEDOUT line). Budget for the menu bar's 5 s reader, at most 3.9 s: start-up at most 0.9 s,
+ * then the listing and the probe (PROBE_MS) in parallel at most 1.5 s, then the report read at
+ * most 1.5 s.
  */
 import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -32,6 +41,14 @@ const VERSION = (JSON.parse(readFileSync(new URL('../package.json', import.meta.
 const PROBE_MS = 1500
 /** The runtime answers within this, so the caller's PROBE_MS never takes a slow screen read for a dead runtime. */
 const ANSWER_MS = 1000
+/** The runtime's limit on one session's screen read (bridge/presence.ts rowMs). */
+const ROW_MS = 600
+/** How long the document waits for this computer's local listing. */
+const LISTING_MS = 1500
+/** How long the document waits for the usage report's read. */
+const REPORT_MS = 1500
+/** The most accounts one document holds; a larger list keeps its first ones (U-R1A-53 audit gap 1: the menu bar reads at most 1 MiB). */
+const MAX_ACCOUNTS = 500
 const STATES: ReadonlySet<string> = new Set(['working', 'idle', 'waiting_for_approval', 'unknown'])
 /** A session name or engine as this product makes them (bridge/sessions.ts, bridge/hub-presence.ts): the text form prints them raw. */
 const NAME = /^[A-Za-z0-9._-]{1,300}$/
@@ -58,6 +75,8 @@ export type TandemStatus = {
   computers: StatusComputer[]
   /** The usage report's accounts; null when it could not be read; absent in a document from before U-R1A-53. */
   accounts?: UsageAccount[] | null
+  /** How many accounts past MAX_ACCOUNTS were left out (0 when none); absent in a document from before U-R1A-STATUSREADS. */
+  accountsMore?: number
 }
 /** The runtime's `status` answer: its own session rows and its kill switch guard. */
 export type RuntimeReply = {
@@ -80,6 +99,13 @@ function replyOf(detail: unknown): RuntimeReply | undefined {
     sessions.push({ name: s.name, engine: s.engine, state: STATES.has(s.state) ? s.state : 'unknown', ageMs: s.ageMs })
   }
   return { sessions, killSwitch: { on, latched, tampered } }
+}
+
+/** `p`, or an ETIMEDOUT rejection once `ms` have passed (the timer is cleared when `p` settles first). */
+function within<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<never>((_, fail) => { timer = setTimeout(() => fail(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })), ms) })
+  return Promise.race([p, late]).finally(() => clearTimeout(timer))
 }
 
 /** One `status` to the runtime: no answer `not_running`, `unknown_command` `old_runtime`, else `running`. */
@@ -106,7 +132,7 @@ export function runtimeStatus(opts: { presence?: Presence } = {}): () => Promise
   return async () => {
     const [{ createPresence }, { runKillSwitchCommand }] = await Promise.all([import('./presence.ts'), import('./kill-switch.ts')])
     // Only this computer: the other computers are read by the caller from state.db.
-    presence ??= createPresence({ remote: { read: () => [] } })
+    presence ??= createPresence({ remote: { read: () => [] }, rowMs: ROW_MS })
     let timer: ReturnType<typeof setTimeout> | undefined
     const late = new Promise<undefined>((done) => { timer = setTimeout(() => done(undefined), ANSWER_MS) })
     const up = await Promise.race([presence.whoIsUp({ refresh: true }), late]).finally(() => clearTimeout(timer))
@@ -165,7 +191,7 @@ export async function statusDocument(opts: StatusOptions = {}): Promise<TandemSt
   ])
   const now = opts.now ?? Date.now
   const presence = opts.presence ?? createPresence({ now })
-  const [up, { runtime, reply }] = await Promise.all([presence.whoIsUp({ refresh: true }), (opts.probe ?? askRuntime)()])
+  const [up, { runtime, reply }] = await Promise.all([within(presence.whoIsUp({ refresh: true }), LISTING_MS), (opts.probe ?? askRuntime)()])
   const at = now()
   // The runtime's rows when it answered (it holds the states); the project from the local listing.
   const project = new Map(up.sessions.map((s) => [s.name, s.project]))
@@ -174,9 +200,12 @@ export async function statusDocument(opts: StatusOptions = {}): Promise<TandemSt
     : up.sessions
   // One read, no refresh; `now` is the document's time, so a share is shown only before its reset.
   let accounts: UsageAccount[] | null = null
+  let accountsMore = 0
   try {
     const report = opts.usage ?? createUsageReport({ now: () => at, computer: up.computer })
-    accounts = (await report.read()).accounts.filter(shown).map(account)
+    const all = (await within(report.read(), REPORT_MS)).accounts.filter(shown)
+    accounts = all.slice(0, MAX_ACCOUNTS).map(account)
+    accountsMore = all.length - accounts.length
   } catch (e) {
     process.stderr.write(`tandem status: account usage could not be read (${codeOf(e)})\n`)
   }
@@ -191,6 +220,7 @@ export async function statusDocument(opts: StatusOptions = {}): Promise<TandemSt
       ...(up.others ?? []).map((o) => computer({ ...o, self: false }, o.sessions)),
     ],
     accounts,
+    accountsMore,
   }
 }
 
@@ -224,6 +254,7 @@ export function renderStatus(doc: TandemStatus): string {
       const fresh = a.ageMs !== null ? `read ${age(a.ageMs)} ago on ${a.computer}` : 'no share reading'
       lines.push(`  ${a.agent}/${a.account}  ${limits}  · ${a.stale ? 'stale · ' : ''}${fresh}`)
     }
+    if (doc.accountsMore) lines.push(`  ... and ${doc.accountsMore} more accounts`)
   }
   return `${lines.join('\n')}\n`
 }

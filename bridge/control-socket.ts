@@ -243,17 +243,23 @@ function handle(
   })
 }
 
+/** The most bytes any reply may hold before its terminating newline (U-R1A-STATUSREADS). */
+export const MAX_CONTROL_REPLY_BYTES = 1_048_576
+
 /**
  * Sends one command to a running runtime. A failure rejects with the socket's error code
  * (ENOENT: no socket file, ECONNREFUSED: nobody listens) or ETIMEDOUT when no answer comes in time;
- * with `maxReplyBytes`, EMSGSIZE as soon as the answer grows past it (nothing more is read).
+ * EMSGSIZE as soon as the answer grows past its cap (nothing more is read). Every reply is capped
+ * at MAX_CONTROL_REPLY_BYTES (its newline not counted); a larger `maxReplyBytes` (Infinity and NaN
+ * included) is lowered to it, a smaller one is kept.
  */
 export async function sendControlCommand(
   socketPath: string,
   command: ControlCommand | StatusCommand | MailCommand,
   timeoutMs = 10_000,
-  maxReplyBytes = Infinity,
+  maxReplyBytes = MAX_CONTROL_REPLY_BYTES,
 ): Promise<ControlResult> {
+  const cap = maxReplyBytes < MAX_CONTROL_REPLY_BYTES ? maxReplyBytes : MAX_CONTROL_REPLY_BYTES
   return new Promise<ControlResult>((resolve, reject) => {
     const connection = connect(socketPath)
     let body = ''
@@ -269,7 +275,8 @@ export async function sendControlCommand(
     let bytes = 0
     connection.on('data', (chunk) => {
       bytes += Buffer.byteLength(chunk, 'utf8')
-      if (bytes > maxReplyBytes) {
+      // The terminating newline is not counted: one byte over the cap passes only as that newline.
+      if (bytes > cap + 1 || (bytes === cap + 1 && !String(chunk).endsWith('\n'))) {
         clearTimeout(timer)
         fail('control response too large', 'EMSGSIZE')
         return
