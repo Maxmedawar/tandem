@@ -90,6 +90,7 @@ case "$mode" in
   text) echo 'not json'; exit 0 ;;
   big) head -c 9437184 /dev/zero | tr '\\0' x; exit 0 ;;
   stderr) echo 'R1A51-STDERR-MARKER' >&2 ;;
+  env) env > "$D/env.$1.$base" ;;
 esac
 out="$D/out.$1.$base.json"; [ -f "$out" ] || out='${FIXDIR}'/"$1.json"
 cat "$out"
@@ -507,6 +508,42 @@ describe("(51) usage: tokens and cost per account from the ccusage helper", () =
       process.chdir(cwd);
       process.env.PATH = path;
     }
+  });
+
+  it("(51) r the helper's environment is the allow-list plus its own folder variable: no secret, proxy, CCM_/TANDEM_ or other variable of the bridge", async () => {
+    const { folders } = sevenAccounts();
+    setMode("env");
+    const SECRET = "R1A51-SECRET-VALUE";
+    const planted = ["TANDEM_OWNER_PASSWORD", "TANDEM_HUB_LINK_TOKEN", "TANDEM_FLEET_TOKEN", "TANDEM_CALLER_TOKEN", "CCM_TUNNEL_TOKEN", "CCM_BRIDGE_ID", "TANDEM_CONFIG_FILE",
+      "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy", "NO_PROXY", "XDG_DATA_HOME_R1A51", "R1A51_DECOY", "ANTHROPIC_API_KEY", ...Object.values(VAR)];
+    const before = Object.fromEntries(planted.map((v) => [v, process.env[v]]));
+    for (const v of planted) process.env[v] = SECRET;
+    process.env.LANG = "C";
+    try {
+      await cc.collectTokens(T0, { bin: FAKE, harnesses: H() });
+    } finally {
+      for (const v of planted) { if (before[v] === undefined) delete process.env[v]; else process.env[v] = before[v]; }
+    }
+    expect(cc.HELPER_ENV).toEqual(["PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "TMPDIR"]);
+    // What `sh` itself adds to its children.
+    const SHELL = ["PWD", "OLDPWD", "SHLVL", "_"];
+    expect(process.env.TANDEM_HOME).toBeTruthy();
+    for (const [name, { agent, folder }] of Object.entries(folders)) {
+      const dump = readFileSync(join(FAKE_DIR, `env.${agent}.${folder ? basename(folder) : "none"}`), "utf8");
+      expect(dump, name).not.toContain(SECRET);
+      const names = dump.trim().split("\n").map((l) => l.slice(0, l.indexOf("="))).filter((n) => !SHELL.includes(n)).sort();
+      const want = [...cc.HELPER_ENV.filter((v: string) => process.env[v] !== undefined), ...(folder === undefined ? [] : [VAR[agent]])].sort();
+      expect(names, name).toEqual(want);
+      for (const v of ["PATH", "HOME", "TZ", "LANG"]) expect(names, `${name} ${v}`).toContain(v);
+      if (folder !== undefined) expect(dump, name).toContain(`${VAR[agent]}=${folder}\n`);
+    }
+    expect(tokRow("claude", "claude")).toMatchObject({ tokens: { total: 101 }, tokens_note: null });
+    // The test-only option (read-only.test.ts r3 hands its logging proxy over with it) does reach the helper; a folder variable in it does not.
+    await cc.collectTokens(T0 + 1, { bin: FAKE, harnesses: [harness("codex")], extraEnv: { HTTPS_PROXY: "http://127.0.0.1:9", CODEX_HOME: "/r1a51-not-this", GROK_HOME: "/r1a51-not-this" } });
+    const dump = readFileSync(join(FAKE_DIR, "env.codex..codex"), "utf8");
+    expect(dump).toContain("HTTPS_PROXY=http://127.0.0.1:9\n");
+    expect(dump).toContain(`CODEX_HOME=${folders.codex!.folder}\n`);
+    expect(dump).not.toContain("r1a51-not-this");
   });
 
   it("(51) o PIN.md names the version, commit, command and four integrities; fetch.sh carries each; LICENSE is MIT", () => {

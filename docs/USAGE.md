@@ -65,8 +65,9 @@ against its published digest (`packaging/helpers/ccusage/PIN.md`, licence in
 ccusage <agent> daily --json --offline
 ```
 
-with the working folder `/`, every agent folder variable removed and only that agent's set to the
-account folder:
+with the working folder `/` and an environment of its own: only `PATH`, `HOME`, `LANG`, `LC_ALL`,
+`LC_CTYPE`, `TZ` and `TMPDIR` from the bridge, plus that agent's folder variable set to the account
+folder. No token, password, proxy setting or other variable of the bridge reaches ccusage:
 
 | Agent | Variable | Default folder | Limit |
 |---|---|---|---|

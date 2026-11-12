@@ -212,12 +212,10 @@ syncBuiltinESMExports()
       expect(status).toBe(502);
       expect(seen).toEqual(["connect canary.invalid:443"]);
       seen.length = 0;
-      for (const v of PROXIES) process.env[v] = `http://127.0.0.1:${port}`;
+      // The helper gets nothing of the bridge's environment but an allow-list, so the proxy is handed to it by the test option.
       const now = Date.now() + 1000;
-      try {
-        guardHome();
-        await cc.collectTokens(now, { bin: BIN, harnesses: H() });
-      } finally { for (const v of PROXIES) delete process.env[v]; }
+      guardHome();
+      await cc.collectTokens(now, { bin: BIN, harnesses: H(), extraEnv: Object.fromEntries(PROXIES.map((v) => [v, `http://127.0.0.1:${port}`])) });
       expectAllRead(PLAIN, now);
       expect(seen).toEqual([]);
     } finally {

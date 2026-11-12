@@ -5,8 +5,9 @@
  *
  *   ccusage <agent> daily --json --offline        (cwd /, its own process group)
  *
- * with the bridge's environment minus all five folder variables, then only that agent's variable set
- * to the folder. `--offline` makes ccusage use its embedded price table: no price fetch, no network.
+ * with an environment built from a short allow-list (HELPER_ENV: PATH, HOME, locale, TZ, TMPDIR) plus
+ * only that agent's folder variable: nothing else of the bridge's environment (no token, password,
+ * proxy or other setting) reaches this third-party program. `--offline` makes ccusage use its embedded price table: no price fetch, no network.
  * A run is killed with its whole process group after KILL_MS, or once its stdout passes 8 MiB; its
  * stderr is drained and dropped, never stored or logged (it may hold paths). Only numbers leave
  * parseDaily: tokens and cost of today (the row of `now`'s local date) and in total. A failed run
@@ -63,6 +64,8 @@ export const CCUSAGE_AGENTS: Readonly<Record<string, AgentRow>> = {
   },
 }
 const FOLDER_VARS = Object.values(CCUSAGE_AGENTS).map((a) => a.env)
+/** All the helper gets from the bridge's environment; its agent's folder variable is added per run. */
+export const HELPER_ENV: readonly string[] = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'LC_CTYPE', 'TZ', 'TMPDIR']
 
 /** One daily row's (or the totals') numbers; undefined when they are not whole non-negative tokens and a finite non-negative cost. */
 function numbers(v: unknown): { tokens: number; cost: number } | undefined {
@@ -100,7 +103,13 @@ export function parseDaily(stdout: string, now: number): { today: { tokens: numb
   return { today, total }
 }
 
-export interface TokenOptions { bin?: string; timeoutMs?: number; harnesses?: Iterable<Harness> }
+export interface TokenOptions {
+  bin?: string
+  timeoutMs?: number
+  harnesses?: Iterable<Harness>
+  /** Tests only (a logging proxy): more variables for the helper. A folder variable here is dropped. */
+  extraEnv?: Readonly<Record<string, string>>
+}
 type Job = { agent: string; row: AgentRow; name: string; folder: string | undefined; listed: boolean }
 type Result = Omit<TokenRun, 'account' | 'agent'>
 
@@ -133,9 +142,11 @@ const spawnReason = (e: unknown) => {
 let running: ChildProcess | undefined
 const killGroup = (pid: number | undefined) => { if (pid) try { process.kill(-pid, 'SIGKILL') } catch { /* gone */ } }
 
-function runOnce(bin: string, job: Job, timeoutMs: number, now: number): Promise<Result> {
+function runOnce(bin: string, job: Job, timeoutMs: number, now: number, extraEnv: TokenOptions['extraEnv']): Promise<Result> {
   return new Promise((done) => {
-    const env = { ...process.env }
+    const env: Record<string, string> = {}
+    for (const v of HELPER_ENV) if (process.env[v] !== undefined) env[v] = process.env[v]!
+    Object.assign(env, extraEnv)
     for (const v of FOLDER_VARS) delete env[v]
     if (job.folder !== undefined) env[job.row.env] = job.folder
     let child: ChildProcess
@@ -182,7 +193,7 @@ function runOnce(bin: string, job: Job, timeoutMs: number, now: number): Promise
   })
 }
 
-function runJob(job: Job, bin: string, helper: boolean, timeoutMs: number, now: number): Promise<Result> | Result {
+function runJob(job: Job, bin: string, helper: boolean, opts: TokenOptions, now: number): Promise<Result> | Result {
   // ccusage splits CLAUDE_CONFIG_DIR, CODEX_HOME, OPENCODE_DATA_DIR and ANTIGRAVITY_DATA_DIR on `,`.
   if (job.folder?.includes(',')) return { reason: 'folder name has a comma' }
   if (job.folder !== undefined && job.listed && !exists(job.folder)) return { reason: 'folder missing' }
@@ -191,7 +202,7 @@ function runJob(job: Job, bin: string, helper: boolean, timeoutMs: number, now: 
   if (job.folder !== undefined && job.row.usageDir && basename(job.folder) !== job.row.usageDir && !exists(join(job.folder, job.row.usageDir))) {
     return { today: { tokens: 0, cost: 0 }, total: { tokens: 0, cost: 0 } }
   }
-  return runOnce(bin, job, timeoutMs, now)
+  return runOnce(bin, job, opts.timeoutMs ?? KILL_MS, now, opts.extraEnv)
 }
 
 /** Bumped by stopTokens: a pass started before it records nothing more. */
@@ -205,7 +216,7 @@ async function pass(now: number, opts: TokenOptions, gen: number): Promise<void>
   const helper = isHelper(bin)
   for (const job of jobs([...(opts.harnesses ?? loadHarnesses().harnesses.values())])) {
     if (gen !== generation) return
-    const result = await runJob(job, bin, helper, opts.timeoutMs ?? KILL_MS, now)
+    const result = await runJob(job, bin, helper, opts, now)
     if (gen !== generation) return
     recordTokens([{ account: job.name, agent: job.agent, ...result }], now)
   }
