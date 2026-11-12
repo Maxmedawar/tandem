@@ -2,8 +2,8 @@
  * caller-tokens.ts: a caller token per session (U-R1A-36A), so the bridge knows which agent asks.
  *
  * TerminalSession.spawn (the one place every session starts) mints a token for the session's exact
- * name right before tmux new-session and hands it to that session alone (`new-session -e
- * TANDEM_CALLER_TOKEN=...`); close() revokes it. An agent's own stdio server (src/stdio-server.ts)
+ * name right before tmux new-session and hands it to that session's pane alone (`new-session -e
+ * TANDEM_CALLER_TOKEN=...`, unset from the session environment in the same call); close() revokes it. An agent's own stdio server (src/stdio-server.ts)
  * reads the variable once at start, deletes it from its environment, and resolves it here: a name
  * makes that process the agent `session:<name>` for its whole life (setProcessCaller); an unknown
  * token refuses to start, never the owner. No token at all is the owner's own client, as before.
@@ -14,12 +14,16 @@
  * or logged. One row per exact name (case kept): a new spawn of a name replaces its token. A row
  * outlives a bridge restart, so an adopted session keeps the token its agent already has.
  *
- * Stated limits (T23, same user): any process inside the session can read the token from the
- * agent's environment, and an agent that strips the variable before starting its stdio server is
- * the owner: the token names an agent, it does not wall agents off from each other. The tmux client
- * holds `-e TANDEM_CALLER_TOKEN=...` in its argument list while the new-session call runs (visible
- * to the same user only). A session that dies without close() keeps a valid row until its name is
- * spawned again.
+ * Stated limits (T23, same user): the token names an agent, it does not wall agents of one user
+ * off from each other. An agent that strips the variable before starting its stdio server is the
+ * owner. The token lives in the environment of the pane's processes (not in the tmux session
+ * environment: spawn removes it there in the same tmux call), so a process of this user can still
+ * read it with `ps eww` (macOS: any program that is not Apple's own; Linux: /proc/<pid>/environ),
+ * and the tmux client holds `-e TANDEM_CALLER_TOKEN=...` in its argument list while new-session
+ * runs. A process of this user can also write its own row into state.db. A session that ends
+ * without close() keeps its row until the name is spawned again; the stdio server refuses such a
+ * token at start (the session must be there), but a stdio server already running keeps its caller
+ * until it exits.
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, closeSync, existsSync, mkdirSync, openSync } from 'node:fs'

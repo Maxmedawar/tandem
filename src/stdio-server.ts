@@ -19,7 +19,8 @@
  * child with its session's TANDEM_CALLER_TOKEN in the environment, so this process serves that one
  * agent for its whole life. The variable is read and deleted at once (sessions this process opens
  * get their own). A token that names a session makes every call here that agent's
- * (`session:<name>`); one that names nothing refuses to start, never the owner. No variable: the
+ * (`session:<name>`); one that names nothing, or a session that is no longer there, refuses to
+ * start, never the owner. No variable: the
  * owner's own client.
  */
 
@@ -57,6 +58,12 @@ if (callerToken !== undefined) {
     callerName = resolveCallerToken(callerToken);
   } catch {
     callerName = undefined;
+  }
+  // A token outlives a session that ended without close() (the kill switch's --close, a crash, a
+  // plain kill-session): it names an agent only while its session is there on Tandem's socket.
+  if (callerName !== undefined) {
+    const { TerminalSession } = await import("../bridge/terminal-session.ts");
+    if (!(await TerminalSession.exists(callerName).catch(() => false))) callerName = undefined;
   }
   if (callerName === undefined) {
     const refusal = "tandem stdio: caller token unknown; refusing to start\n";

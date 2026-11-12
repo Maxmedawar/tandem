@@ -793,8 +793,8 @@ export class TerminalSession {
     // binary (or login shell) runs INSIDE the pane; the cwd is set via -c.
     const startedAtMs = Date.now()
     await scrubServerSecrets()
-    // This session's own caller token, in its tmux environment only (never the server's global one,
-    // never this process's env); a spawn that fails from here on revokes it.
+    // This session's own caller token, for its pane's process only (never the server's global
+    // environment, never this process's env); a spawn that fails from here on revokes it.
     const callerToken = mintCallerToken(name)
     try {
       await tmux([
@@ -811,6 +811,14 @@ export class TerminalSession {
         '-c',
         cwd,
         ...engineArgv,
+        // In the same tmux call: the pane's process has the token by now, so it leaves the session
+        // environment, where `tmux show-environment -t` would hand it to any process of this user.
+        ';',
+        'set-environment',
+        '-t',
+        sessionTarget(name),
+        '-u',
+        'TANDEM_CALLER_TOKEN',
       ])
       // The switch turned on since the check above: engage() may have listed the sessions before this
       // one existed, so it is ended here (the file is written before the list, so one of the two sees it).

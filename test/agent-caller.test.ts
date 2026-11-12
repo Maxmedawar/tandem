@@ -67,6 +67,7 @@ const limits = await import('../bridge/limits.ts')
 const { agentEntry, writeLimits } = await import('./fixtures/limits.ts')
 const { openMailbox } = await import('../bridge/mailbox.ts')
 const { HOP_BUDGET } = await import('../bridge/fabric/sqlite-fabric-client.ts')
+const { KILL_SWITCH_ON } = await import('../bridge/kill-switch.ts')
 const { Client } = await import('@modelcontextprotocol/sdk/client/index.js')
 const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/stdio.js')
 
@@ -109,10 +110,26 @@ function tmuxOut(args: string[]): string {
     return ''
   }
 }
-/** The TANDEM_CALLER_TOKEN in ccm-<name>'s own tmux environment (kept in SECRETS, never printed). */
-function tokenOf(name: string): string | undefined {
-  const m = /^TANDEM_CALLER_TOKEN=(.*)$/m.exec(tmuxOut(['show-environment', '-t', `=ccm-${name}`, 'TANDEM_CALLER_TOKEN']))
-  return keep(m?.[1])
+/** ccm-<name>'s tmux session environment, as any process of this user can read it. */
+const sessionEnv = (name: string) => tmuxOut(['show-environment', '-t', `=ccm-${name}`])
+/** The TANDEM_CALLER_TOKEN inside ccm-<name> (a shell session): its shell writes it to a file, which
+ *  is read and removed at once (kept in SECRETS, never printed; the screen shows the command only). */
+async function tokenOf(name: string): Promise<string | undefined> {
+  const file = join(BOX, `tok-${name}`)
+  await rq('POST', `/sessions/${name}/send`, { text: `printf %s "$TANDEM_CALLER_TOKEN" > '${file}'` })
+  await until(() => existsSync(file) && statSync(file).size > 0, 5_000)
+  const text = existsSync(file) ? readFileSync(file, 'utf8') : ''
+  rmSync(file, { force: true })
+  return keep(text || undefined)
+}
+/** The stored SHA-256 of <name>'s token, or undefined. */
+function hashRow(name: string): string | undefined {
+  const db = new DatabaseSync(DB, { readOnly: true })
+  try {
+    return (db.prepare('SELECT hash FROM caller_tokens WHERE name = ?').get(name) as Json)?.hash
+  } finally {
+    db.close()
+  }
 }
 const ccm = () => tmuxOut(['list-sessions', '-F', '#{session_name}']).split('\n').filter((n) => n.startsWith('ccm-'))
 const screen = (name: string) => tmuxOut(['capture-pane', '-p', '-J', '-S', '-', '-t', `=ccm-${name}:`])
@@ -209,7 +226,7 @@ beforeAll(async () => {
   const opened = await rq('POST', '/sessions/open', { engine: 'shell', name: AGENT, cwd: WORK })
   if (opened.status !== 200) throw new Error(`open ${AGENT}: ${opened.status}`)
   // A missing token (before the unit) still starts the rows with a well-formed made-up one.
-  AGENT_TOKEN = tokenOf(AGENT) ?? 'A'.repeat(43)
+  AGENT_TOKEN = (await tokenOf(AGENT)) ?? 'A'.repeat(43)
 })
 
 afterAll(async () => {
@@ -284,11 +301,18 @@ describe('(t2) the spawn mints, close revokes', () => {
   it('(36A) (t2) a shell session opened through route() holds its own TANDEM_CALLER_TOKEN, resolving to its name', async () => {
     const opened = await rq('POST', '/sessions/open', { engine: 'shell', name: 'r1a36a-t2', cwd: WORK })
     expect(opened.status).toBe(200)
-    t2 = tokenOf('r1a36a-t2') ?? ''
+    t2 = (await tokenOf('r1a36a-t2')) ?? ''
     expect(TOKEN_RE.test(t2)).toBe(true)
     expect(tokens.resolveCallerToken(t2)).toBe('r1a36a-t2')
     expect(TOKEN_RE.test(AGENT_TOKEN) && tokens.resolveCallerToken(AGENT_TOKEN) === AGENT).toBe(true)
     expect(t2 === AGENT_TOKEN).toBe(false)
+  })
+
+  it('(36A) (audit a1) the token is in the pane\'s processes only: no session\'s tmux environment holds TANDEM_CALLER_TOKEN', () => {
+    for (const name of [AGENT, 'r1a36a-t2']) {
+      expect(sessionEnv(name).length > 0).toBe(true)
+      expect(sessionEnv(name).includes('TANDEM_CALLER_TOKEN')).toBe(false)
+    }
   })
 
   it('(36A) (t2) the tmux global environment and this process hold no TANDEM_CALLER_TOKEN, and this process has no caller', () => {
@@ -344,16 +368,16 @@ describe('(c1) the stdio server\'s caller', () => {
 
 describe('(c2) A3.9: the agent opens, messages and closes a session on its computer', () => {
   let from = 0
-  let bToken = ''
+  let bHash = ''
   beforeAll(() => { from = auditLines().length })
 
   it('(36A) (c2) open_session of r1a36a-b (fake agent, allowed folder) as the agent: opened, with its own token', async () => {
     const r = await agent.call('open_session', { name: 'r1a36a-b', engine: 'r1a36a-fake', cwd: WORK })
     expect(r.error).toBeUndefined()
     expect(ccm().includes('ccm-r1a36a-b')).toBe(true)
-    bToken = tokenOf('r1a36a-b') ?? ''
-    expect(tokens.resolveCallerToken(bToken)).toBe('r1a36a-b')
-    expect(bToken === AGENT_TOKEN).toBe(false)
+    bHash = hashRow('r1a36a-b') ?? ''
+    expect(/^[0-9a-f]{64}$/.test(bHash)).toBe(true)
+    expect(bHash === createHash('sha256').update(AGENT_TOKEN).digest('hex')).toBe(false)
   })
 
   it('(36A) (c2) send_to_session text at the fake agent\'s settled idle is typed', async () => {
@@ -372,7 +396,7 @@ describe('(c2) A3.9: the agent opens, messages and closes a session on its compu
     const r = await agent.call('close_session', { name: 'r1a36a-b' })
     expect(r).toEqual(expect.objectContaining({ ok: true, name: 'r1a36a-b' }))
     expect(ccm().includes('ccm-r1a36a-b')).toBe(false)
-    expect(tokens.resolveCallerToken(bToken)).toBeUndefined()
+    expect(hashRow('r1a36a-b')).toBeUndefined()
   })
 
   it('(36A) (c2) open_session with a cwd outside the limits file\'s folders: refused with the limits text', async () => {
@@ -496,6 +520,93 @@ describe('(c5) rooms: an agent\'s posts count as agent posts', () => {
     const e = await ownerF.call('room_post', { projectId, room: 'r36', type: 'message', body: '@w owner post', idempotencyKey: 'owner-1' })
     expect(e.error).toBeUndefined()
     expect(wakes()).toBe(HOP_BUDGET)
+  })
+
+  it('(36A) (audit a8) memory as the agent: it stores no user memory and finds none of the owner\'s', async () => {
+    const kept = await ownerF.call('memory_remember', { scope: 'user', kind: 'fact', text: 'r36a-owner-only-note', importance: 0.5 })
+    expect(kept.error).toBeUndefined()
+    const mine = await ownerF.call('memory_search', { query: 'r36a-owner-only-note' })
+    expect(JSON.stringify(mine)).toContain('r36a-owner-only-note')
+    const refused = await agentF.call('memory_remember', { scope: 'user', kind: 'fact', text: 'r36a-agent-user-note', importance: 0.5 })
+    expect(typeof refused.error).toBe('string')
+    for (const args of [{ query: 'r36a-owner-only-note' }, { query: 'r36a-owner-only-note', scope: 'user' }, { query: 'r36a-agent-user-note' }]) {
+      expect(JSON.stringify(await agentF.call('memory_search', args))).not.toContain('-note')
+    }
+    expect(JSON.stringify(await ownerF.call('memory_search', { query: 'r36a-agent-user-note' }))).not.toContain('r36a-agent-user-note')
+  })
+})
+
+describe('(audit) U-R1A-36A audit rows', () => {
+  it('(36A) (audit a2) a session that ended without close (kill-session, as the kill switch closes one) or never started: its token refuses to start', async () => {
+    expect((await rq('POST', '/sessions/open', { engine: 'shell', name: 'r1a36a-dead', cwd: WORK })).status).toBe(200)
+    const t = (await tokenOf('r1a36a-dead')) ?? ''
+    expect(tokens.resolveCallerToken(t)).toBe('r1a36a-dead')
+    tmuxOut(['kill-session', '-t', '=ccm-r1a36a-dead'])
+    expect(ccm().includes('ccm-r1a36a-dead')).toBe(false)
+    const never = keep(tokens.mintCallerToken('r1a36a-never'))!
+    for (const token of [t, never]) {
+      const r = await runRefused(token)
+      expect(r.code).toBe(1)
+      expect(r.stderr).toBe(`${REFUSED}\n`)
+      expect(r.stdout).toBe('')
+    }
+    await rq('POST', '/sessions/r1a36a-dead/close')
+  })
+
+  it('(36A) (audit a3) an oversized token, one with a space or a line end after it, one in another case: exit 1 with exactly the refusal line', async () => {
+    for (const token of ['A'.repeat(100_000), `${AGENT_TOKEN} `, `${AGENT_TOKEN}\n`, ` ${AGENT_TOKEN}`, `${AGENT_TOKEN}${AGENT_TOKEN}`, AGENT_TOKEN.toUpperCase() === AGENT_TOKEN ? '' : AGENT_TOKEN.toUpperCase()]) {
+      const r = await runRefused(token)
+      expect(r.code).toBe(1)
+      expect(r.stderr).toBe(`${REFUSED}\n`)
+      expect(r.stdout).toBe('')
+    }
+  })
+
+  it('(36A) (audit a4) mail_send with a sender argument as the agent: refused by name, nothing stored as the owner or as another session', async () => {
+    const owners = mailRows('from_id = ?', 'owner').length
+    for (const extra of [{ from: 'owner' }, { sender: 'owner' }, { caller: 'session:w' }, { from: 'session:w' }]) {
+      const r = await agent.call('mail_send', { to: 'w', level: 'fyi', text: 'audit a4', ...extra })
+      expect(r.error).toBe(`unknown key: ${Object.keys(extra)[0]}`)
+    }
+    expect(mailRows('from_id = ?', 'owner').length).toBe(owners)
+    expect(mailRows('from_id = ?', 'session:w').length).toBe(0)
+  })
+
+  it('(36A) (audit a5) session_cap holds for the agent: its open is refused at the cap, nothing starts', async () => {
+    setLimits({ session_cap: 1 })
+    try {
+      const capped = await startChild({ TANDEM_CALLER_TOKEN: AGENT_TOKEN })
+      const r = await capped.call('open_session', { name: 'r1a36a-cap', engine: 'shell', cwd: WORK })
+      expect(String(r.error)).toMatch(/^limits: session_cap 1 reached \(\d+ sessions open\); close one first$/)
+      expect(ccm().includes('ccm-r1a36a-cap')).toBe(false)
+      expect(hashRow('r1a36a-cap')).toBeUndefined()
+    } finally {
+      setLimits()
+    }
+  })
+
+  it('(36A) (audit a6) the kill switch holds for the agent: open and send answer the kill switch text', async () => {
+    writeFileSync(join(TH, 'kill-switch'), 'on (36A audit)\n', { mode: 0o600 })
+    try {
+      expect((await agent.call('open_session', { name: 'r1a36a-ks', engine: 'shell', cwd: WORK })).error).toBe(KILL_SWITCH_ON)
+      expect((await agent.call('send_to_session', { name: AGENT, text: 'true' })).error).toBe(KILL_SWITCH_ON)
+      expect(ccm().includes('ccm-r1a36a-ks')).toBe(false)
+      expect(hashRow('r1a36a-ks')).toBeUndefined()
+    } finally {
+      rmSync(join(TH, 'kill-switch'), { force: true })
+    }
+  })
+
+  it('(36A) (audit a7) relay stop, inject and enqueue with an empty, a slashed or a dotted loopId as the agent: an error every time, no relay handler runs', async () => {
+    const from = auditLines().length
+    for (const loopId of ['', 'a/b', '..', 'x/stop', 'start']) {
+      for (const [action, extra] of [['stop', {}], ['inject', { message: 'x' }], ['enqueue', { task: 'x' }]] as const) {
+        const r = await agent.call('relay', { action, loopId, ...extra })
+        expect(typeof r.error).toBe('string')
+      }
+    }
+    const relayLines = auditLines().slice(from).filter((l) => String(l.route).includes('/relay/'))
+    expect(relayLines.filter((l) => l.denied !== 'agent-relay')).toEqual([])
   })
 })
 
