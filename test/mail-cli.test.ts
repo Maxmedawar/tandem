@@ -389,6 +389,27 @@ describe('U-R1A-41 tandem mail', () => {
     await drain(T2)
   })
 
+  it('(n) the heaviest read (500 rows, 256-byte names, text JSON doubles) stays under the reply cap: nothing is marked delivered unseen', async () => {
+    const to = 'n'.repeat(256)
+    const from = `session:${'f'.repeat(256)}`
+    for (let i = 0; i < 500; i++) box.send({ from, to, level: 'ask', text: '"'.repeat(819), replyByMinutes: 1440 })
+    const seen = new Set<string>()
+    for (let round = 0; round < 10 && seen.size < 500; round++) {
+      const r = await cli(['inbox', '--name', to, '--limit', '500', '--json'])
+      // A refused reply here would have marked its rows delivered with nothing printed.
+      expect([r.code, r.err]).toEqual([0, ''])
+      expect(Buffer.byteLength(r.out, 'utf8')).toBeLessThan(mail.MAX_MAIL_REPLY)
+      const got = JSON.parse(r.out).messages
+      expect(got.length).toBeGreaterThan(0)
+      for (const m of got) {
+        expect(seen.has(m.id), 'delivered twice').toBe(false)
+        seen.add(m.id)
+      }
+    }
+    expect(seen.size).toBe(500)
+    expect(await queued(to)).toEqual([])
+  })
+
   it('(l) `tandem mail` with no subcommand, an unknown one, or bad options -> exit 2 with usage; the owner\'s `inbox` without --name -> exit 2 with its line', async () => {
     for (const args of [[], ['bogus'], ['send'], ['send', 's1'], ['send', 's1', 'x', '--level'], ['send', 's1', 'x', '--level', 'loud'], ['inbox', '--limit', 'x'], ['inbox', '--limit', '0'], ['inbox', 'extra'], ['inbox', '--name'], ['ls', 'x'], ['ls', '--bogus']]) {
       const r = await cli(args)

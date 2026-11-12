@@ -21,6 +21,10 @@
  * Stated limits: the control socket takes requests up to 8 KiB, so a message over about 8 KiB is
  * refused `too_large` here (mail_send takes 16 KiB). --peek reads the mail table read-only beside
  * the runtime's mailbox (the mailbox has no list without marking).
+ * Same user (T23, as bridge/caller-tokens.ts and kill_switch_off state it): the socket gives no
+ * peer pid, so the pid is what the asker says. A process of this user that writes to the socket
+ * itself with another pid, or runs detached from its session with the token variable removed, is
+ * taken for the owner; the sender `owner` is a label, not a wall between one user's agents.
  */
 import { realpathSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -41,11 +45,13 @@ const LEVELS: ReadonlySet<string> = new Set(['fyi', 'ask', 'interrupt'])
 /** Every C0/C1 control but newline and tab, bidi controls, line separators and tag characters. */
 const HIDDEN = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]|[\u{e0000}-\u{e007f}]/gu
 /**
- * The most message text one read answers with: JSON at most doubles text the mailbox takes (only
- * `"`, `\`, newline and tab are escaped), so with 500 rows of fields the reply stays under
- * MAX_MAIL_REPLY. A read that answered more than the CLI takes would mark mail delivered unseen.
+ * The most message text one read answers with. JSON at most doubles text the mailbox takes (only
+ * `"`, `\`, newline and tab are escaped): 512 KiB. Each of up to 500 rows adds at most about 750
+ * bytes of fields (a 337-byte sender `machine:<64>/session:<256>`, a 256-byte name, id, level, state,
+ * two times): 375 KiB. Together under MAX_MAIL_REPLY, so no read answers more than the CLI takes:
+ * such a read would mark mail delivered unseen (400 KiB did, with 256-byte names).
  */
-const READ_TEXT_BYTES = 400 * 1024
+const READ_TEXT_BYTES = 256 * 1024
 const MAX_LIST = 500
 
 const USAGE = `usage: tandem mail send <to> <message...> [--level fyi|ask|interrupt] [--json]
