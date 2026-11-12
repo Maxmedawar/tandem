@@ -529,3 +529,21 @@ describe('(R1) older runtimes, a hung socket, extra arguments', () => {
     expect([r.status, r.stdout, r.stderr]).toEqual([2, '', 'usage: tandem status [--json]\n'])
   })
 })
+
+describe('(R1) a reply with hostile text', () => {
+  it('(40-R1) r6 a status reply whose session name or engine holds control or bidi characters is not used; the text form prints none of them', async () => {
+    for (const bad of [{ name: 'evil\u001b[2J', engine: 'shell' }, { name: 'ok-name', engine: 'sh‮ell' }, { name: 'x\nfake (this computer)', engine: 'shell' }]) {
+      const reply = { ok: true, detail: { sessions: [{ ...bad, state: 'idle', ageMs: 1 }], killSwitch: { on: false, latched: false, tampered: 0 } } }
+      const fake = await fakeSocket(`${JSON.stringify(reply)}\n`)
+      try {
+        const doc: Json = await status.statusDocument()
+        expect(doc.runtime).toBe('running')
+        const text = status.renderStatus(doc)
+        expect(/[\p{Cc}\p{Cf}]/u.test(text.replace(/\n/g, '')), JSON.stringify(text)).toBe(false)
+        for (const s of doc.computers[0].sessions) expect([s.name, s.engine].every((v: string) => /^[A-Za-z0-9._-]+$/.test(v)), JSON.stringify(s)).toBe(true)
+      } finally {
+        await fake.close()
+      }
+    }
+  })
+})

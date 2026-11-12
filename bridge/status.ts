@@ -27,6 +27,8 @@ const PROBE_MS = 1500
 /** The runtime answers within this, so the caller's PROBE_MS never takes a slow screen read for a dead runtime. */
 const ANSWER_MS = 1000
 const STATES: ReadonlySet<string> = new Set(['working', 'idle', 'waiting_for_approval', 'unknown'])
+/** A session name or engine as this product makes them (bridge/sessions.ts, bridge/hub-presence.ts): the text form prints them raw. */
+const NAME = /^[A-Za-z0-9._-]{1,300}$/
 
 export type StatusCounts = { working: number; idle: number; waiting_for_approval: number; unknown: number }
 export type StatusSession = { name: string; engine: string; project: string; state: string; stateAt: number; ageMs: number }
@@ -66,6 +68,7 @@ function replyOf(detail: unknown): RuntimeReply | undefined {
   const sessions: RuntimeReply['sessions'] = []
   for (const s of d.sessions as { name?: unknown; engine?: unknown; state?: unknown; ageMs?: unknown }[]) {
     if (typeof s?.name !== 'string' || typeof s.engine !== 'string' || typeof s.state !== 'string' || typeof s.ageMs !== 'number' || !Number.isFinite(s.ageMs)) return undefined
+    if (!NAME.test(s.name) || !NAME.test(s.engine)) return undefined
     sessions.push({ name: s.name, engine: s.engine, state: STATES.has(s.state) ? s.state : 'unknown', ageMs: s.ageMs })
   }
   return { sessions, killSwitch: { on, latched, tampered } }
