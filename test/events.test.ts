@@ -1,10 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { tandemHome } from "../bridge/tandem-home.ts";
 import { join } from "node:path";
 import { emitCompletion, emitNeedsInput } from "../bridge/events.ts";
 
-const EVENTS_LOG = join(homedir(), ".tandem", "events.log");
+const EVENTS_LOG = join(tandemHome(), "events.log");
 function lastLineWithId(id: string): any {
   const lines = readFileSync(EVENTS_LOG, "utf8").trim().split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {

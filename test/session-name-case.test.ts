@@ -79,7 +79,7 @@ function tmuxNames(): string[] {
     return []
   }
 }
-const auditLog = join(HOME, '.tandem', 'bridge.log')
+const auditLog = join(TH, 'bridge.log')
 const caseLines = () =>
   (existsSync(auditLog) ? readFileSync(auditLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [])
     .filter((l: Record<string, unknown>) => l.denied === 'name-case')

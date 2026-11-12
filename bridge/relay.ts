@@ -28,9 +28,9 @@
  */
 
 import { appendFileSync, mkdirSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { tandemHome } from './tandem-home.ts'
 import { TerminalSession, bypassPermissionsEnabled, readLogPage, type DialogAnswers } from './terminal-session.ts'
 import { loadedHarnesses } from './engine-registry.ts'
 import { KILL_SWITCH_ON, KillSwitchError, killSwitchOn } from './kill-switch.ts'
@@ -53,8 +53,7 @@ import {
   clearAnswer,
 } from './manager.ts'
 
-const HOME = homedir()
-const RELAY_DIR = join(HOME, '.tandem', 'relay')
+const relayDir = () => join(tandemHome(), 'relay')
 
 /** Defaults + hard ceilings. Client-supplied values are clamped to these. */
 const DEFAULT_MAX_TURNS = 24
@@ -171,7 +170,7 @@ interface RelayLoop {
 const loops = new Map<string, RelayLoop>()
 
 function ensureRelayDir(): void {
-  mkdirSync(RELAY_DIR, { recursive: true })
+  mkdirSync(relayDir(), { recursive: true })
 }
 
 /** Append a tagged line to the dual transcript. The byte length is the cursor. */
@@ -304,7 +303,7 @@ export async function startRelay(opts: StartRelayOptions): Promise<StartRelayRes
     workerName: worker.name,
     lead,
     worker,
-    logPath: join(RELAY_DIR, `${loopId}.log`),
+    logPath: join(relayDir(), `${loopId}.log`),
     cwd: opts.cwd,
     memDir,
     running: true,

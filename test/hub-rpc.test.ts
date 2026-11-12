@@ -42,7 +42,7 @@ function bodyOf(response: CcmHttpResponseFrame): unknown {
   return JSON.parse(Buffer.from(response.body_base64 ?? '', 'base64').toString('utf8'))
 }
 
-const logPath = join(home, '.tandem', 'bridge.log')
+const logPath = join(process.env.TANDEM_HOME!, 'bridge.log')
 function auditLines(): Record<string, unknown>[] {
   if (!existsSync(logPath)) return []
   return readFileSync(logPath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))

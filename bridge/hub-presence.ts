@@ -28,8 +28,8 @@
  * proof or reading is ever logged. `now` is the only clock.
  */
 import { chmodSync, mkdirSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { audit } from './audit.ts'
 import { openDeviceKey, type DeviceKey } from './device-keys.ts'
 import { EnvelopeError, openEnvelope, signEnvelope } from './envelope.ts'
@@ -129,7 +129,7 @@ export function usageWire(now: number): UsageWire[] {
 }
 
 function stateFile(): string {
-  return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db')
+  return join(tandemHome(), 'state.db')
 }
 
 /** state.db as bridge/mailbox.ts opens it (folder 0700, file 0600), with the two presence tables. */

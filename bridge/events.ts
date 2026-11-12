@@ -18,12 +18,10 @@
  */
 import { appendFileSync, chmodSync, mkdirSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { audit } from './audit.ts'
+import { tandemHome } from './tandem-home.ts'
 
-const EVENTS_DIR = join(homedir(), '.tandem')
-const EVENTS_LOG = join(EVENTS_DIR, 'events.log')
 /** Append a metadata-only bridge record using the central redaction policy. */
 function logBridge(fields: Record<string, unknown>): void {
   audit(fields)
@@ -31,10 +29,12 @@ function logBridge(fields: Record<string, unknown>): void {
 
 /** Append private event content without inheriting a permissive process umask. */
 function appendEventLine(line: string): void {
-  mkdirSync(EVENTS_DIR, { recursive: true, mode: 0o700 })
-  chmodSync(EVENTS_DIR, 0o700)
-  appendFileSync(EVENTS_LOG, line, { encoding: 'utf8', mode: 0o600 })
-  chmodSync(EVENTS_LOG, 0o600)
+  const dir = tandemHome()
+  const log = join(dir, 'events.log')
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  chmodSync(dir, 0o700)
+  appendFileSync(log, line, { encoding: 'utf8', mode: 0o600 })
+  chmodSync(log, 0o600)
 }
 
 export interface CompletionEvent {

@@ -143,7 +143,7 @@ const tmuxHas = (name: string) => {
 };
 
 function lastAudit(): Record<string, unknown> {
-  const lines = readFileSync(join(homedir(), ".tandem", "bridge.log"), "utf8").split("\n").filter(Boolean);
+  const lines = readFileSync(join(TH, "bridge.log"), "utf8").split("\n").filter(Boolean);
   return JSON.parse(lines[lines.length - 1]!);
 }
 

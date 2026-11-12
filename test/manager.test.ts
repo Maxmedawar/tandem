@@ -18,6 +18,7 @@ import {
   readAnswer,
   takeAnswer,
 } from "../bridge/manager.ts";
+import { tandemHome } from "../bridge/tandem-home.ts";
 
 describe("parseBlocked (the escalation sentinel)", () => {
   it("returns the reason when a line starts with BLOCKED:", () => {
@@ -140,7 +141,7 @@ describe("manager memory (disk-backed, resumable)", () => {
 describe("managerDir", () => {
   it("namespaces each loop under ~/.tandem/manager/<loopId>", () => {
     const d = managerDir("abc123");
-    expect(d).toMatch(/[/\\]\.tandem[/\\]manager[/\\]abc123$/);
+    expect(d).toBe(join(tandemHome(), "manager", "abc123"));
   });
 });
 

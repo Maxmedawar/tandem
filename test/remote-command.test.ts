@@ -62,7 +62,7 @@ const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 })
 
 const SOCK = join(TH, 'tmux', 'tandem')
-const AUDIT = join(HOME, '.tandem', 'bridge.log')
+const AUDIT = join(TH, 'bridge.log')
 const AGENT = 'r1a36b-agent'
 const CALLER = `session:${AGENT}`
 const NOT_ALPHA = 'control_from: alpha may not act on this computer (limits file)'

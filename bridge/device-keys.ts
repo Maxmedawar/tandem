@@ -11,8 +11,8 @@
  */
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign as edSign, verify as edVerify, type KeyObject } from 'node:crypto'
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, unlinkSync, writeSync, chmodSync, type Stats } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 
 export class DeviceKeyError extends Error {
   readonly path: string
@@ -38,7 +38,7 @@ const PUBLIC_KEY = /^[A-Za-z0-9_-]{43}$/
 const SIGNATURE = /^[A-Za-z0-9_-]{86}$/
 
 export function deviceKeyPath(): string {
-  return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'keys', 'device.key')
+  return join(tandemHome(), 'keys', 'device.key')
 }
 
 /** base64url text that decodes to `bytes` bytes and encodes back to itself, else undefined. */

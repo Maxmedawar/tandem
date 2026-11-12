@@ -66,7 +66,7 @@ const { KILL_SWITCH_ON } = await import('../bridge/kill-switch.ts')
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 })
 
 const SOCK = join(TH, 'tmux', 'tandem')
-const AUDIT = join(HOME, '.tandem', 'bridge.log')
+const AUDIT = join(TH, 'bridge.log')
 const CALLER = 'session:r1a36e-agent'
 const NOT = (id: string) => `control_from: ${id} may not act on this computer (limits file)`
 const NO_OPEN = 'control_from_open: alpha may not open sessions here (limits file)'

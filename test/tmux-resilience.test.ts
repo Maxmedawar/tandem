@@ -495,7 +495,7 @@ describe("(19B) r routes on a registered session, passing failure: 503 tmux_busy
   }, 30_000);
   it("(19B) r9 a send-keys that delivers, then fails: 500 send_outcome_unknown, the text is in the pane once, nothing is sent again", async () => {
     const mark = h.log.length;
-    const auditLines = () => readFileSync(join(testEnv.home, ".tandem", "bridge.log"), "utf8").split("\n").filter((l) => l.includes('"denied":"send-outcome-unknown"')).length;
+    const auditLines = () => readFileSync(join(testEnv.tandemHome, "bridge.log"), "utf8").split("\n").filter((l) => l.includes('"denied":"send-outcome-unknown"')).length;
     const before = auditLines();
     h.fail = (a) => (cmdOf(a) === "send-keys" && a.includes("R9_ONCE") ? { ...BUSY, deliver: true } : undefined);
     expect(await ownerReq("POST", `/sessions/${R}/send`, { text: "R9_ONCE" })).toEqual(unknown);

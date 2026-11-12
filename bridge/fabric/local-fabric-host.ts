@@ -1,5 +1,5 @@
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { tandemHome } from '../tandem-home.ts'
 import { isFabricEnabled } from '../../src/fabric/capabilities.ts'
 import type { FabricClient } from '../../src/fabric/client.ts'
 import type { FabricAuditAction, FabricAuditEntry, SQLiteFabricClientOptions } from './sqlite-fabric-client.ts'
@@ -35,7 +35,7 @@ export async function createLocalFabricHost(
     throw new Error('local Fabric storage requires the private Node bridge')
   }
   const configuredPath = env.CCM_FABRIC_DB_PATH?.trim()
-  const databasePath = configuredPath || join(homedir(), '.tandem', 'fabric', 'fabric.sqlite3')
+  const databasePath = configuredPath || join(tandemHome(env.TANDEM_HOME), 'fabric', 'fabric.sqlite3')
 
   const { SQLiteFabricClient } = await import('./sqlite-fabric-client.ts')
   const client = new SQLiteFabricClient({ databasePath, now: options.now, audit: options.audit, onWake: options.onWake })

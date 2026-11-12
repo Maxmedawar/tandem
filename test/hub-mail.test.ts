@@ -135,8 +135,8 @@ const hubSeqOf = (path: string, id: string) => {
 const puts = () => seen.filter((s) => s.path === PUT)
 const takes = () => seen.filter((s) => s.path === TAKE).map((s) => JSON.parse(s.body).ack)
 
-const AUDIT = join(HOME, '.tandem', 'bridge.log')
-const auditLines = (): Json[] => (existsSync(AUDIT) ? readFileSync(AUDIT, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [])
+const auditPath = () => join(process.env.TANDEM_HOME!, 'bridge.log')
+const auditLines = (): Json[] => (existsSync(auditPath()) ? readFileSync(auditPath(), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [])
 const mark = () => auditLines().length
 const since = (n: number) => auditLines().slice(n)
 /** The carrier's own lines (mail.refused, mail.repeat, mail.expired), without the ts. */
@@ -490,7 +490,7 @@ describe('(33B-2) (u2) pull: each copy checked, stored once, then acked', () => 
   })
 
   it('(33B-2) no audit line holds message text', () => {
-    const log = readFileSync(AUDIT, 'utf8')
+    const log = readFileSync(auditPath(), 'utf8')
     expect(log).not.toContain(SECRET)
     expect(log).toContain('"event":"mail.refused"')
   })

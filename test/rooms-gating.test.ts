@@ -118,7 +118,7 @@ function refusal(fn: () => unknown): Json {
   }
 }
 
-const AUDIT = join(HOME, '.tandem', 'bridge.log')
+const AUDIT = join(TH, 'bridge.log')
 const auditText = () => (existsSync(AUDIT) ? readFileSync(AUDIT, 'utf8') : '')
 const auditLines = (): Json[] => auditText().split('\n').filter(Boolean).map((l) => JSON.parse(l))
 

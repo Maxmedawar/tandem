@@ -100,7 +100,9 @@ describe("a TANDEM_HOME inside the real home is dropped, however it is spelled",
     cases.push(["an absent dir in the real home spelled in another letter case", join(swapCase(home), absent), true]);
   }
   it.each(cases)("%s", (_name, value, dropped) => {
-    expect(afterSetup(value)).toBe(dropped ? null : value);
+    const left = afterSetup(value);
+    if (!dropped) expect(left).toBe(value);
+    else expect(left !== null && basename(left).startsWith("tandem-test-th-") && dirname(left) === tmpdir(), `made TANDEM_HOME ${left}`).toBe(true);
   });
 });
 
@@ -489,5 +491,135 @@ describe("the setup removes what it made (TANDEM-B-TESTHOME-T2)", () => {
     // a red run must not leave its stt- folder in the shared tmp root: only the one this child printed
     for (const p of left) if (dirname(p) === SHORT && /^stt-/.test(basename(p))) rmSync(p, { recursive: true, force: true });
     expect(left, `folders left after ${sig}`).toEqual([]);
+  });
+});
+
+// U-R1A-HOMEPATH: in every mode, live and non-live alike, an inherited TANDEM_HOME is kept only when
+// its real path is under the test temp root (tmpdir() before the setup moves it); anything else, a
+// missing one included, is replaced by a made tandem-test-th- folder (0700) in that root. Outside
+// live mode it is removed at exit with its tmux server; in live mode it stays. Each probe is a fresh
+// node importing the setup with an r1ahomepath-n- box as its TMPDIR, removed in afterAll.
+describe("(HOMEPATH) TANDEM_HOME in every mode", () => {
+  const nBoxes: string[] = [];
+  const nBox = () => {
+    const b = mkdtempSync(join(tmpdir(), "r1ahomepath-n-"));
+    nBoxes.push(b);
+    return b;
+  };
+  afterAll(() => {
+    for (const b of nBoxes) rmSync(b, { recursive: true, force: true });
+  });
+  type ThOut = { TH: string | null; isDir: boolean; mode: number; P: Record<string, unknown> };
+  // `extra` runs after the setup with fs = node:fs and P = an object printed with the report.
+  function thProbe(env: Record<string, string>, extra = "") {
+    const script = [
+      'const fs = await import("node:fs");',
+      "const P = {};",
+      "await import(process.argv[1]);",
+      extra,
+      "const th = process.env.TANDEM_HOME ?? null;",
+      "let isDir = false, mode = 0; try { const st = fs.statSync(th); isDir = st.isDirectory(); mode = st.mode & 0o777 } catch {}",
+      "process.stdout.write(JSON.stringify({ TH: th, isDir, mode, P }));",
+    ].join("\n");
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script, SETUP], {
+      env: { PATH: process.env.PATH ?? "", ...env },
+      encoding: "utf8",
+    });
+    const out: ThOut = r.status === 0 ? JSON.parse(r.stdout) : { TH: null, isDir: false, mode: 0, P: {} };
+    return { status: r.status, stderr: r.stderr, out };
+  }
+  const madeIn = (o: ThOut, b: string) => o.TH !== null && basename(o.TH).startsWith("tandem-test-th-") && dirname(o.TH) === b;
+
+  it("(HOMEPATH) n1 live, no TANDEM_HOME: a made tandem-test-th- folder in the child's TMPDIR, 0700, still there after exit", () => {
+    const b = nBox();
+    const r = thProbe({ TANDEM_LIVE: "1", HOME: b, TMPDIR: b });
+    expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+    expect(madeIn(r.out, b) && r.out.isDir, `made TANDEM_HOME ${r.out.TH}`).toBe(true);
+    expect(r.out.mode, "made TANDEM_HOME mode").toBe(0o700);
+    expect(existsSync(r.out.TH ?? ""), "live made TANDEM_HOME kept after exit").toBe(true);
+  });
+
+  it("(HOMEPATH) n2 non-live, no TANDEM_HOME: a made tandem-test-th- folder in the child's TMPDIR while it runs, gone after exit", () => {
+    const b = nBox();
+    const r = thProbe({ HOME: b, TMPDIR: b });
+    expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+    expect(madeIn(r.out, b) && r.out.isDir, `made TANDEM_HOME ${r.out.TH}`).toBe(true);
+    expect(r.out.mode, "made TANDEM_HOME mode").toBe(0o700);
+    expect(existsSync(r.out.TH ?? ""), "non-live made TANDEM_HOME left after exit").toBe(false);
+  });
+
+  it("(HOMEPATH) n3 live and non-live, TANDEM_HOME naming the real ~/.tandem (a string only): replaced by a made folder", () => {
+    const real = join(userInfo().homedir, ".tandem");
+    for (const live of [{ TANDEM_LIVE: "1" }, {}] as Record<string, string>[]) {
+      const b = nBox();
+      const r = thProbe({ ...live, HOME: b, TMPDIR: b, TANDEM_HOME: real });
+      expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+      expect(r.out.TH !== real && madeIn(r.out, b), `live=${live.TANDEM_LIVE === "1"} made TANDEM_HOME ${r.out.TH}`).toBe(true);
+    }
+  });
+
+  it("(HOMEPATH) n4 non-live, TANDEM_HOME a folder inside the child's TMPDIR: kept as is, still there after exit", () => {
+    const b = nBox();
+    const own = join(b, "own-th");
+    mkdirSync(own, { mode: 0o700 });
+    const r = thProbe({ HOME: b, TMPDIR: b, TANDEM_HOME: own });
+    expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+    expect(r.out.TH, "kept TANDEM_HOME").toBe(own);
+    expect(existsSync(own), "kept TANDEM_HOME removed").toBe(true);
+  });
+
+  it("(HOMEPATH) n5 non-live, TANDEM_HOME a sibling of the child's TMPDIR (outside its temp root): replaced", () => {
+    const b = nBox();
+    const sibling = nBox();
+    const r = thProbe({ HOME: b, TMPDIR: b, TANDEM_HOME: sibling });
+    expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+    expect(r.out.TH !== sibling && madeIn(r.out, b), `made TANDEM_HOME ${r.out.TH}`).toBe(true);
+    expect(existsSync(sibling), "sibling folder untouched").toBe(true);
+  });
+
+  it("(HOMEPATH) n6 TANDEM_HOME a symlink inside the child's TMPDIR to the real home: replaced", () => {
+    const b = nBox();
+    const link = join(b, "home-link");
+    symlinkSync(userInfo().homedir, link, "junction"); // nothing goes through it
+    const r = thProbe({ HOME: b, TMPDIR: b, TANDEM_HOME: link });
+    expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+    expect(r.out.TH !== link && madeIn(r.out, b), `made TANDEM_HOME ${r.out.TH}`).toBe(true);
+  });
+
+  it.skipIf(spawnSync("tmux", ["-V"]).status !== 0)("(HOMEPATH) n7 non-live: a tmux server on <made TANDEM_HOME>/tmux/tandem is stopped at exit and the folder is gone", () => {
+    const b = nBox();
+    const start = [
+      "const TH = process.env.TANDEM_HOME;",
+      "if (TH) {",
+      '  const S = TH + "/tmux/tandem"; fs.mkdirSync(TH + "/tmux", { mode: 0o700 });',
+      '  const cp = await import("node:child_process"); const env = { ...process.env }; delete env.TMUX;',
+      '  cp.spawnSync("tmux", ["-S", S, "new-session", "-d", "-s", "ccm-r1ahomepath-n7", "sleep 600"], { env, stdio: "ignore" });',
+      '  P.started = cp.spawnSync("tmux", ["-S", S, "has-session", "-t", "ccm-r1ahomepath-n7"], { env, stdio: "ignore" }).status === 0;',
+      "}",
+    ].join("\n");
+    const r = thProbe({ HOME: b, TMPDIR: b }, start);
+    const sock = join(r.out.TH ?? join(b, "none"), "tmux", "tandem");
+    const env = { ...process.env };
+    delete env.TMUX;
+    const alive = () => spawnSync("tmux", ["-S", sock, "has-session", "-t", "ccm-r1ahomepath-n7"], { env, stdio: "ignore" }).status === 0;
+    try {
+      expect(r.status, `setup exit ${r.stderr}`).toBe(0);
+      expect(r.out.P.started, "tmux server started on the made TANDEM_HOME").toBe(true);
+      expect(alive(), "tmux server still running after exit").toBe(false);
+      expect(existsSync(r.out.TH ?? ""), "made TANDEM_HOME left after exit").toBe(false);
+    } finally {
+      if (r.out.TH && alive()) spawnSync("tmux", ["-S", sock, "kill-server"], { env, stdio: "ignore" }); // the server this case started; never any other
+    }
+  });
+
+  // review-fix (audit): the rule of the first describe still holds when the temp root itself is inside
+  // the real home. Strings only: the TMPDIR named here is never created, so the made folder cannot be
+  // either and the setup stops, naming the variable, instead of keeping the inherited value.
+  it("(HOMEPATH) n8 live, TMPDIR an absent folder inside the real home, TANDEM_HOME inside it: not kept", () => {
+    const root = join(userInfo().homedir, `.r1ahomepath-n8-absent-${process.pid}`);
+    const r = thProbe({ TANDEM_LIVE: "1", HOME: nBox(), TMPDIR: root, TMUX_TMPDIR: nBox(), TANDEM_HOME: join(root, "th") });
+    expect(r.out.TH, "an inherited TANDEM_HOME inside the real home was kept").toBe(null);
+    expect(r.status !== 0 && r.stderr.includes("could not isolate TANDEM_HOME"), `setup exit ${r.status} ${r.stderr}`).toBe(true);
+    expect(existsSync(root), "nothing made in the real home").toBe(false);
   });
 });

@@ -184,7 +184,7 @@ const tandemTmux = (...args: string[]) => execFileSync('tmux', ['-S', join(proce
 const pane = (name: string) => tandemTmux('capture-pane', '-p', '-t', `=ccm-${name}:`)
 
 function auditLines(): Json[] {
-  return readFileSync(join(HOME, '.tandem', 'bridge.log'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
+  return readFileSync(join(process.env.TANDEM_HOME!, 'bridge.log'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
 }
 const lastAudit = () => auditLines().pop()
 

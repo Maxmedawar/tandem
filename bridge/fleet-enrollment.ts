@@ -1,8 +1,8 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, readFile, rename, unlink } from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
+import { tandemHome } from "./tandem-home.ts";
 import { z } from "zod";
 
 const DEFAULT_TTL_MS = 15 * 60 * 1000;
@@ -49,7 +49,7 @@ export class FleetEnrollmentStore {
   }
 
   static async open(directory?: string): Promise<FleetEnrollmentStore> {
-    const resolved = path.resolve(directory ?? path.join(os.homedir(), ".tandem", "fleet", "enrollments"));
+    const resolved = path.resolve(directory ?? path.join(tandemHome(), "fleet", "enrollments"));
     await assertProtectedDirectory(resolved);
     const store = new FleetEnrollmentStore(resolved);
     await store.prune();

@@ -51,8 +51,8 @@
  * from the hub: hidden characters are replaced and an answer over 1,048,576 characters is not
  * passed on.
  */
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { audit } from './audit.ts'
 import { openDeviceKey, type DeviceKey } from './device-keys.ts'
 import { EnvelopeError, openEnvelope, openReplayStore, signEnvelope } from './envelope.ts'
@@ -111,7 +111,7 @@ type Receipt = { state: 'received' } | { state: 'done'; status: number; body?: u
 
 /** One use of state.db's `command_receipt` (the file exists: the replay store made it, mode 0600). */
 function receipts<T>(use: (db: InstanceType<typeof DatabaseSync>) => T): T {
-  const db = new DatabaseSync(join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db'))
+  const db = new DatabaseSync(join(tandemHome(), 'state.db'))
   try {
     db.exec(`PRAGMA busy_timeout = 5000;
       CREATE TABLE IF NOT EXISTS command_receipt (

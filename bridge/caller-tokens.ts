@@ -34,8 +34,8 @@
 import { execFile } from 'node:child_process'
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { DatabaseSync, ensureDbFile } from './sqlite-file.ts'
 
 /** 32 bytes as base64url, no padding. */
@@ -44,7 +44,7 @@ const TOKEN = /^[A-Za-z0-9_-]{43}$/
 const NAME = /^[A-Za-z0-9._-]{1,256}$/
 
 function withTokens<T>(fn: (db: InstanceType<typeof DatabaseSync>) => T): T {
-  const path = join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db')
+  const path = join(tandemHome(), 'state.db')
   const dir = dirname(path)
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)

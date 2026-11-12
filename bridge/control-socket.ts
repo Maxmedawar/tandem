@@ -21,8 +21,8 @@
  */
 import { connect, createServer, type Server, type Socket } from 'node:net'
 import { chmodSync, lstatSync, mkdirSync, rmSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 
 /** Bounds one command. */
 const MAX_REQUEST_BYTES = 8 * 1024
@@ -67,7 +67,7 @@ export interface ControlServer {
 }
 
 export function controlSocketPath(): string {
-  return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'run', 'control.sock')
+  return join(tandemHome(), 'run', 'control.sock')
 }
 
 const OFF_KEYS = new Set(['op', 'pid', 'caller_token', 'tmux'])

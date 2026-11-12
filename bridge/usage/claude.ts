@@ -12,6 +12,7 @@
 import { realpathSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
+import { tandemHome } from '../tandem-home.ts'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
 import { readProtectedRegularFileSync, UnsafeRuntimeConfigError } from '../../src/runtime-config.ts'
@@ -22,7 +23,6 @@ export const ACCOUNT = /^[a-z0-9][a-z0-9-]{0,63}$/
 const AGENT = /^[a-z0-9][a-z0-9-]{0,31}$/
 const MAX_SETTINGS = 64 * 1024
 
-export const tandemHome = () => resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem'))
 /** `<TANDEM_HOME>/usage/<harness name>`: the folder of one agent's drop files. */
 export const dropDirOf = (agent: string) => join(tandemHome(), 'usage', agent)
 

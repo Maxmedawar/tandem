@@ -74,7 +74,7 @@ const { StdioClientTransport } = await import('@modelcontextprotocol/sdk/client/
 vi.setConfig({ testTimeout: 60_000, hookTimeout: 60_000 })
 
 const SOCK = join(TH, 'tmux', 'tandem')
-const AUDIT = join(HOME, '.tandem', 'bridge.log')
+const AUDIT = join(TH, 'bridge.log')
 const DB = join(TH, 'state.db')
 const FABRIC_DB = join(BOX, 'fabric', 'fabric.sqlite3')
 const AGENT = 'r1a36a-agent'

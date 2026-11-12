@@ -82,7 +82,7 @@ function refusal(fn: () => unknown): { status?: number; message?: string } {
   return {}
 }
 
-const auditLog = join(HOME, '.tandem', 'bridge.log')
+const auditLog = join(TH, 'bridge.log')
 const auditLines = (): Record<string, unknown>[] =>
   existsSync(auditLog) ? readFileSync(auditLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []
 

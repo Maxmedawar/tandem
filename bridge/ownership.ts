@@ -21,14 +21,14 @@
  */
 import { randomBytes } from 'node:crypto'
 import { chmod, link, mkdir, open, readFile, unlink } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 
 export type OwnerIdProvider = () => Promise<string>
 
-/** Default Tandem state directory: ~/.tandem (test-injectable via `stateDir`). */
+/** Default Tandem state directory: TANDEM_HOME, else ~/.tandem (test-injectable via `stateDir`). */
 export function defaultStateDir(): string {
-  return join(homedir(), '.tandem')
+  return tandemHome()
 }
 
 function ownerIdPath(stateDir: string): string {

@@ -16,8 +16,9 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeSync, type Stats } from 'node:fs'
-import { homedir, hostname } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { hostname } from 'node:os'
+import { dirname, join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { fileURLToPath } from 'node:url'
 import { fingerprintOf, openDeviceKey, verifySignature } from './device-keys.ts'
 import type { DeviceKey } from './device-keys.ts'
@@ -69,7 +70,7 @@ const goodKey = (k: unknown): k is string => {
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v)
 
 export function rosterDir(): string {
-  return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'roster')
+  return join(tandemHome(), 'roster')
 }
 /** hub/src/bridge-id.ts slugifyBridgeId, copied: see thisId. */
 const slugOf = (raw: string): string =>

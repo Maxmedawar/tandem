@@ -19,8 +19,8 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { chmodSync, lstatSync, mkdirSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { verifySignature } from './device-keys.ts'
 import type { DeviceKey } from './device-keys.ts'
 import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from './sqlite-file.ts'
@@ -181,7 +181,7 @@ export function openEnvelope(raw: unknown, options: OpenOptions): { from: string
 }
 
 function stateFile(): string {
-  return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db')
+  return join(tandemHome(), 'state.db')
 }
 
 /** The nonces seen, in `path` (default `<TANDEM_HOME, else ~/.tandem>/state.db`, shared with the mailbox). */

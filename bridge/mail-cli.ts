@@ -28,8 +28,8 @@
  * taken for the owner; the sender `owner` is a label, not a wall between one user's agents.
  */
 import { realpathSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { fileURLToPath } from 'node:url'
 import { controlSocketPath, sendControlCommand, type ControlResult, type MailCommand } from './control-socket.ts'
 import type { Mailbox, Message } from './mailbox.ts'
@@ -67,7 +67,7 @@ type Json = Record<string, unknown>
 
 /** The mail table's rows queued for `to`, oldest first, within `limit` and READ_TEXT_BYTES; nothing changes. */
 function peekRows(to: string, limit: number): Message[] {
-  const db = new DatabaseSync(join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db'), { readOnly: true })
+  const db = new DatabaseSync(join(tandemHome(), 'state.db'), { readOnly: true })
   try {
     const rows = db.prepare(`SELECT * FROM mail WHERE to_name = ? AND state = 'queued' ORDER BY seq LIMIT ?`).all(to, limit) as Json[]
     const out: Message[] = []
