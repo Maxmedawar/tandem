@@ -4,7 +4,8 @@
  * times only: no text from any session reaches this table. A reading replaces a row only when it
  * is newer. readUsage marks a reading over 30 minutes old stale, and reads a window's share as
  * unknown (null) once its reset time has passed, never the old number. The plan type (Codex) is kept
- * only when it matches PLAN, else NULL.
+ * only when it matches PLAN, else NULL. Table `usage_tokens` holds each account's last ccusage run
+ * (bridge/usage/ccusage.ts): tokens and cost (today and total) as numbers, or NULLs and the reason.
  */
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -48,8 +49,15 @@ function open(): NodeDatabaseSync {
         seven_used REAL, seven_resets_ms INTEGER, read_ms INTEGER, plan TEXT, PRIMARY KEY (account, agent))`)
     // A table from before the plan column gains it; its rows read NULL.
     if (!(db.prepare('PRAGMA table_info(usage_readings)').all() as { name: string }[]).some((c) => c.name === 'plan')) {
-      db.exec('ALTER TABLE usage_readings ADD COLUMN plan TEXT')
+      try {
+        db.exec('ALTER TABLE usage_readings ADD COLUMN plan TEXT')
+      } catch (e) {
+        // Another process added it between the check and this ALTER: done, not a failure.
+        if (!String((e as Error)?.message).includes('duplicate column name: plan')) throw e
+      }
     }
+    db.exec(`CREATE TABLE IF NOT EXISTS usage_tokens (account TEXT, agent TEXT, read_ms INTEGER, tokens_today INTEGER, cost_today REAL,
+      tokens_total INTEGER, cost_total REAL, reason TEXT, PRIMARY KEY (account, agent))`)
   } catch (e) {
     db.close()
     throw e
@@ -93,6 +101,44 @@ export function readUsage(now = Date.now()): AccountUsage[] {
         plan: r.plan ?? null,
       }
     })
+  } finally {
+    db.close()
+  }
+}
+
+/** One ccusage run for one account: its numbers, or (failed) its reason and no numbers. */
+export interface TokenRun {
+  account: string
+  agent: string
+  today?: { tokens: number; cost: number }
+  total?: { tokens: number; cost: number }
+  reason?: string
+}
+export interface TokenRow { account: string; agent: string; read_ms: number; tokens_today: number | null; cost_today: number | null; tokens_total: number | null; cost_total: number | null; reason: string | null }
+
+/** Records runs (each replaces its row); `now` is the read time. No runs: nothing written, no state.db made. */
+export function recordTokens(runs: TokenRun[], now: number): void {
+  if (runs.length === 0) return
+  const db = open()
+  try {
+    const put = db.prepare(`INSERT OR REPLACE INTO usage_tokens (account, agent, read_ms, tokens_today, cost_today, tokens_total, cost_total, reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+    for (const r of runs) {
+      const ok = r.reason === undefined && r.today !== undefined && r.total !== undefined
+      put.run(r.account, r.agent, now, ok ? r.today!.tokens : null, ok ? r.today!.cost : null, ok ? r.total!.tokens : null, ok ? r.total!.cost : null,
+        ok ? null : r.reason ?? 'output not readable')
+    }
+  } finally {
+    db.close()
+  }
+}
+
+/** Every account's last ccusage run; none when there is no state.db yet. */
+export function tokenRows(): TokenRow[] {
+  if (!existsSync(dbFile())) return []
+  const db = open()
+  try {
+    return db.prepare('SELECT * FROM usage_tokens ORDER BY agent, account').all() as unknown as TokenRow[]
   } finally {
     db.close()
   }

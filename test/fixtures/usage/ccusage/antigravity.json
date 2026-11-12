@@ -1,0 +1,34 @@
+{
+  "daily": [
+    {
+      "cacheCreationTokens": 30,
+      "cacheReadTokens": 500,
+      "date": "2026-05-05",
+      "inputTokens": 700,
+      "modelBreakdowns": [
+        {
+          "cacheCreationTokens": 30,
+          "cacheReadTokens": 500,
+          "cost": 0.005175,
+          "inputTokens": 700,
+          "modelName": "",
+          "outputTokens": 225
+        }
+      ],
+      "modelsUsed": [
+        ""
+      ],
+      "outputTokens": 225,
+      "totalCost": 0.005175,
+      "totalTokens": 1530
+    }
+  ],
+  "totals": {
+    "cacheCreationTokens": 30,
+    "cacheReadTokens": 500,
+    "inputTokens": 700,
+    "outputTokens": 225,
+    "totalCost": 0.005175,
+    "totalTokens": 1530
+  }
+}

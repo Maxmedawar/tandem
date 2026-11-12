@@ -1,0 +1,35 @@
+{
+  "daily": [
+    {
+      "cacheCreationTokens": 20,
+      "cacheReadTokens": 10,
+      "date": "2026-01-02",
+      "inputTokens": 100,
+      "modelBreakdowns": [
+        {
+          "cacheCreationTokens": 20,
+          "cacheReadTokens": 10,
+          "cost": 0.02,
+          "inputTokens": 100,
+          "modelName": "",
+          "outputTokens": 50,
+          "storedCost": 0.02
+        }
+      ],
+      "modelsUsed": [
+        ""
+      ],
+      "outputTokens": 50,
+      "totalCost": 0.02,
+      "totalTokens": 180
+    }
+  ],
+  "totals": {
+    "cacheCreationTokens": 20,
+    "cacheReadTokens": 10,
+    "inputTokens": 100,
+    "outputTokens": 50,
+    "totalCost": 0.02,
+    "totalTokens": 180
+  }
+}

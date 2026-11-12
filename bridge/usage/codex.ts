@@ -9,7 +9,7 @@
  * `timestamp`, else the file's mtime; a time over a minute ahead of `now` skips the line. A newest
  * file without a usable line gives no reading: the store keeps the earlier one, which ages.
  */
-import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import type { Harness } from '../harness-registry.ts'
@@ -134,14 +134,33 @@ export function readCodexFolder(folder: string, account: string, now: number): R
 }
 
 const expand = (p: string) => resolve(p.startsWith('~/') ? join(homedir(), p.slice(2)) : p)
+const real = (p: string) => { try { return realpathSync(p) } catch { return p } }
+const exists = (p: string) => { try { lstatSync(p); return true } catch { return false } }
 
-/** Every account folder of `harness` (its `account_dir` and usage.toml's accounts for it), each read once. */
+/**
+ * One agent's account folders: usage.toml's accounts for `agent` first, then `defaultFolder` when it
+ * exists (lstat), each folder once by realpath (the first, so a listed name, wins). A listed folder
+ * is kept whether or not it exists (`listed`). Names: the listed name, else the folder's base name;
+ * `nameByRealpath` (Claude, as claude.ts accountOf names it) takes the base name of its realpath.
+ */
+export function accountFolders(agent: string, defaultFolder: string | undefined, nameByRealpath = false): { folder: string; name: string; listed: boolean }[] {
+  const seen = new Set<string>()
+  const out: { folder: string; name: string; listed: boolean }[] = []
+  const add = (folder: string, name: string, listed: boolean) => {
+    const key = real(folder)
+    if (seen.has(key)) return
+    seen.add(key)
+    out.push({ folder, name, listed })
+  }
+  for (const a of listedAccounts()) if (a.agent === agent) add(expand(a.folder), a.name, true)
+  if (defaultFolder !== undefined && exists(defaultFolder)) add(defaultFolder, nameFromFolder(nameByRealpath ? real(defaultFolder) : defaultFolder), false)
+  return out
+}
+
+/** Every account folder of `harness` (accountFolders: its `account_dir` and usage.toml's accounts for it), each read once. */
 export function codexReadings(harness: Harness, now: number): Reading[] {
-  const folders = new Map<string, string>()
-  for (const a of listedAccounts()) if (a.agent === harness.name && !folders.has(expand(a.folder))) folders.set(expand(a.folder), a.name)
-  if (harness.account_dir && !folders.has(expand(harness.account_dir))) folders.set(expand(harness.account_dir), nameFromFolder(expand(harness.account_dir)))
   const out: Reading[] = []
-  for (const [folder, account] of folders) {
+  for (const { folder, name: account } of accountFolders(harness.name, harness.account_dir ? expand(harness.account_dir) : undefined)) {
     try {
       const r = readCodexFolder(folder, account, now)
       if (r) out.push({ ...r, agent: harness.name })

@@ -1,7 +1,8 @@
-# Account usage (Claude Code, Codex)
+# Account usage (Claude Code, Codex, and tokens for others)
 
 Tandem shows how much of each Claude Code and Codex account's 5-hour and 7-day limit is used and
-when each window resets. It only reads what each agent already writes: what Claude Code hands its
+when each window resets, and tokens and cost per account for Claude Code, Codex, Grok, OpenCode and
+Antigravity. It only reads what each agent already writes: what Claude Code hands its
 status line, and the session logs Codex keeps. It never signs in or out and never opens, copies or
 moves a login file.
 
@@ -52,6 +53,45 @@ reading's time is the line's `timestamp`, else the file's modification time.
 
 If the newest file has no such line yet (a session that has not answered), the earlier reading
 stays as it was and ages.
+
+## Tokens and cost (ccusage)
+
+Tokens and cost per account come from [ccusage](https://github.com/ccusage/ccusage) (MIT), which the
+release ships as `libexec/ccusage`: the native binary of `ccusage` 20.0.49, unchanged and checked
+against its published digest (`packaging/helpers/ccusage/PIN.md`, licence in
+`LICENSE.ccusage.txt`). For each account, one at a time, the bridge runs
+
+```sh
+ccusage <agent> daily --json --offline
+```
+
+with the working folder `/`, every agent folder variable removed and only that agent's set to the
+account folder:
+
+| Agent | Variable | Default folder | Limit |
+|---|---|---|---|
+| Claude Code (`claude`) | `CLAUDE_CONFIG_DIR` | `~/.claude` | yes (above) |
+| Codex (`codex`) | `CODEX_HOME` | `~/.codex` | yes (above) |
+| Grok (`grok`) | `GROK_HOME` | `~/.grok` | `limit: not available` |
+| OpenCode (`opencode`) | `OPENCODE_DATA_DIR` | `$XDG_DATA_HOME/opencode`, else `~/.local/share/opencode` | `limit: not available` |
+| Antigravity (`antigravity`) | `ANTIGRAVITY_DATA_DIR` | ccusage's own roots under `~/.gemini` and `~/.config/antigravity` (one account, `antigravity`) | `limit: not available` |
+
+Accounts are the folders in `usage.toml` for that agent plus the default folder when it exists, each
+folder once (a symlink and its target are one folder; the listed name wins). It runs at start, every
+10 minutes, and on demand at most once a minute. `--offline` makes ccusage use its built-in price
+table, so it sends nothing over the network. A run is stopped (with any process it started) after 60
+seconds.
+
+- Read (by ccusage): the usage logs each agent writes in its account folder (Claude Code
+  `projects/`, Codex `sessions/` and `archived_sessions/`, and the like for the others).
+- Never read: login files (`.credentials.json`, `auth.json`), by the bridge or by ccusage.
+- Kept: per account, today's and all-time tokens and cost, and the time of the run. ccusage's
+  error output is dropped, never kept or logged, and no model, project or session name is kept.
+- A failed run shows `tokens: not available (<reason>)`, one of: `helper missing` (a source checkout
+  has no `libexec/ccusage`), `folder missing`, `folder name has a comma` (ccusage splits these
+  variables on `,`, so such a folder is never run), `timed out`, `exit <n>`, `signal <name>`,
+  `output not readable`, `spawn <code>`. A Claude Code folder with no `projects/` yet makes ccusage
+  exit 1.
 
 ## Stale and unknown
 

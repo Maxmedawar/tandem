@@ -188,6 +188,17 @@ if [ "${TANDEM_BUNDLE_NODE:-1}" != "0" ]; then
   fi
 fi
 
+# Tokens and cost per account come from ccusage (MIT), shipped as its unchanged native binary: the
+# pinned version for this release's platform, checked against its digest before it is used
+# (packaging/helpers/ccusage/PIN.md). A cross build fetches the target's binary. The release ships
+# it, so a build that cannot get it stops.
+echo "  ccusage helper"
+if ! sh "$repo_root/packaging/helpers/ccusage/fetch.sh" "$node_platform" "$stage/libexec/ccusage"; then
+  echo "release blocked: the ccusage helper could not be fetched" >&2
+  exit 1
+fi
+cp "$repo_root/packaging/helpers/ccusage/LICENSE" "$stage/LICENSE.ccusage.txt"
+
 echo "  launcher"
 cp "$repo_root/packaging/tandem" "$stage/bin/tandem"
 chmod 0755 "$stage/bin/tandem"
@@ -236,6 +247,7 @@ process.stdout.write([
   '',
 ].join('\n'))
 NODE
+echo "- ccusage 20.0.49 (libexec/ccusage, native helper): MIT, see LICENSE.ccusage.txt" >> "$stage/THIRD_PARTY_NOTICES.md"
 
 # The manifest is what an installer verifies and what a licence review reads.
 # Every file is listed with its digest, so an installed tree can be checked
