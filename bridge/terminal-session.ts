@@ -325,6 +325,10 @@ const TMUX_RETRY_WAITS_MS = [50, 100, 150]
 /** The one tmux runner (bridge/sessions.ts uses it too): argv only, never a shell string;
  *  `-S <Tandem's socket>` first; the environment minus the bridge's secret settings. Resolves stdout. */
 export async function tmux(args: string[], exec: TmuxExec = execTmux): Promise<string> {
+  // U-R1A-36F: a server keeps its starting client's argv for life, so a `-e` (a caller token) must never
+  // start it: start it first with no token, every time (on a running server this only re-sets the option).
+  // Stated cost: one idle Tandem tmux server stays up after the last session closes.
+  if (args[0] === 'new-session' && args.includes('-e')) await tmux(['start-server', ';', 'set-option', '-s', 'exit-empty', 'off'], exec)
   const argv = ['-S', prepareTmuxSocket(), ...args]
   const env = { ...process.env }
   for (const name of BRIDGE_SECRET_SETTINGS) delete env[name]
