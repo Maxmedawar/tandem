@@ -7,6 +7,12 @@
  * canonicalization), so a forged sender, a changed body, a message for another computer, a moved
  * time or nonce and a replay are each refused by openEnvelope with an EnvelopeError reason.
  *
+ * The first line is the kind's tag (U-R1A-36E): mail `tandem-envelope-v1` (the default; byte for
+ * byte the text before kinds, so every queued mail envelope still verifies), commands
+ * `tandem-command-v1` (bridge/remote-command.ts) and presence `tandem-presence-v1` (defined here;
+ * bridge/hub-presence.ts starts using it in U-R1A-33B-4H and stays on the default until then). An
+ * envelope opens only under the kind it was signed for, so a command can never pass as mail.
+ *
  * The sender's public key is passed in (the roster, U-R1A-31, comes later). Nonces are kept in
  * the table `envelope_seen` of `<TANDEM_HOME, else ~/.tandem>/state.db` (the mailbox's file), so
  * a replay is refused after a restart too. Nothing is printed or audited here: the caller audits.
@@ -29,6 +35,10 @@ export type Envelope = {
   sig: string
   body: string
 }
+
+/** The kinds of envelope, each signed under its own tag. */
+export type EnvelopeKind = 'mail' | 'command' | 'presence'
+const TAGS: Record<EnvelopeKind, string> = { mail: 'tandem-envelope-v1', command: 'tandem-command-v1', presence: 'tandem-presence-v1' }
 
 export type Reason = 'shape' | 'to' | 'from' | 'time' | 'body' | 'signature' | 'replay'
 
@@ -65,19 +75,30 @@ const LONE_SURROGATE = /\p{Cs}/u
 const FIELDS = ['body', 'body_sha256', 'from', 'nonce', 'sig', 'to', 'ts', 'v'].join()
 
 const sha256 = (body: string) => createHash('sha256').update(body, 'utf8').digest('hex')
-const signingText = (e: Omit<Envelope, 'v' | 'sig' | 'body'>) =>
-  `tandem-envelope-v1\n${e.from}\n${e.to}\n${e.nonce}\n${e.ts}\n${e.body_sha256}`
+const signingText = (kind: EnvelopeKind, e: Omit<Envelope, 'v' | 'sig' | 'body'>) =>
+  `${TAGS[kind]}\n${e.from}\n${e.to}\n${e.nonce}\n${e.ts}\n${e.body_sha256}`
+/** `kind` itself when it is one of TAGS' keys, else a RangeError. */
+function checkKind(kind: unknown): EnvelopeKind {
+  if (typeof kind !== 'string' || !Object.hasOwn(TAGS, kind)) throw new RangeError('kind must be mail, command or presence')
+  return kind as EnvelopeKind
+}
 const goodBody = (body: unknown): body is string => typeof body === 'string' && !LONE_SURROGATE.test(body)
 const sizeOf = (e: unknown) => Buffer.byteLength(JSON.stringify(e), 'utf8')
 
-/** A signed envelope from `from` to `to` carrying `body`; EnvelopeError 'shape' on a bad id, body or size. */
-export function signEnvelope(key: Pick<DeviceKey, 'sign'>, input: { from: string; to: string; body: string }, now: number = Date.now()): Envelope {
+/** A signed envelope of `kind` from `from` to `to` carrying `body`; EnvelopeError 'shape' on a bad id, body or size. */
+export function signEnvelope(
+  key: Pick<DeviceKey, 'sign'>,
+  input: { from: string; to: string; body: string },
+  now: number = Date.now(),
+  kind: EnvelopeKind = 'mail',
+): Envelope {
+  const tag = checkKind(kind)
   const { from, to, body } = input
   if (typeof from !== 'string' || !ID.test(from) || typeof to !== 'string' || !ID.test(to) || !goodBody(body) || !Number.isSafeInteger(now) || now < 0) {
     throw new EnvelopeError('shape')
   }
   const head = { from, to, nonce: randomBytes(16).toString('base64url'), ts: now, body_sha256: sha256(body) }
-  const envelope: Envelope = { v: 1, ...head, sig: key.sign(signingText(head)), body }
+  const envelope: Envelope = { v: 1, ...head, sig: key.sign(signingText(tag, head)), body }
   if (sizeOf(envelope) > MAX_ENVELOPE_BYTES) throw new EnvelopeError('shape')
   return envelope
 }
@@ -122,6 +143,10 @@ export interface OpenOptions {
   now?: number
   /** Oldest accepted ts, in ms before now: 1 to MAX_AGE_CAP_MS, default 300,000. */
   maxAgeMs?: number
+  /** Furthest accepted ts, in ms after now: 1 to CLOCK_SKEW_MS, default CLOCK_SKEW_MS. */
+  maxSkewMs?: number
+  /** The kind the envelope must have been signed for; default 'mail'. */
+  kind?: EnvelopeKind
 }
 
 /**
@@ -137,15 +162,20 @@ export function openEnvelope(raw: unknown, options: OpenOptions): { from: string
   if (!Number.isSafeInteger(maxAgeMs) || maxAgeMs < 1 || maxAgeMs > MAX_AGE_CAP_MS) {
     throw new RangeError(`maxAgeMs must be a whole number from 1 to ${MAX_AGE_CAP_MS}`)
   }
+  const maxSkewMs = options.maxSkewMs ?? CLOCK_SKEW_MS
+  if (!Number.isSafeInteger(maxSkewMs) || maxSkewMs < 1 || maxSkewMs > CLOCK_SKEW_MS) {
+    throw new RangeError(`maxSkewMs must be a whole number from 1 to ${CLOCK_SKEW_MS}`)
+  }
+  const kind = checkKind(options.kind ?? 'mail')
   const now = options.now ?? Date.now()
   if (!Number.isSafeInteger(now)) throw new RangeError('now must be a whole number of ms')
   const e = parse(raw)
   if (!e) throw new EnvelopeError('shape')
   if (e.to !== options.self) throw new EnvelopeError('to')
   if (e.from !== options.sender.id) throw new EnvelopeError('from')
-  if (now - e.ts > maxAgeMs || e.ts - now > CLOCK_SKEW_MS) throw new EnvelopeError('time')
+  if (now - e.ts > maxAgeMs || e.ts - now > maxSkewMs) throw new EnvelopeError('time')
   if (sha256(e.body) !== e.body_sha256) throw new EnvelopeError('body')
-  if (!verifySignature(options.sender.publicKey, signingText(e), e.sig)) throw new EnvelopeError('signature')
+  if (!verifySignature(options.sender.publicKey, signingText(kind, e), e.sig)) throw new EnvelopeError('signature')
   if (!options.seen.remember(e.from, e.nonce, e.ts + MAX_AGE_CAP_MS + CLOCK_SKEW_MS)) throw new EnvelopeError('replay')
   return { from: e.from, to: e.to, body: e.body, ts: e.ts, nonce: e.nonce }
 }

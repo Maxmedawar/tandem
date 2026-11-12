@@ -649,6 +649,11 @@ describe('U-R1A-48 tandem limits', () => {
       ['session_cap', () => 100],
       ['interrupt_from', () => ['owner']],
       ['control_from', () => ['evil-1']],
+      ['control_from_open', () => ['evil-1']],
+      ['control_from_send', () => ['evil-1']],
+      ['control_from_close', () => ['evil-1']],
+      ['control_from_read', () => ['evil-1']],
+      ['control_from_ask', () => ['evil-1']],
       ['memory_scope', () => 'all'],
       ['transcript_scope', () => 'computer'],
     ]
