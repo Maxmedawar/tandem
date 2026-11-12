@@ -279,7 +279,7 @@ export function parentPidOf(pid: number): number | undefined {
     return ppid
   }
   try {
-    text = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    text = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5_000 })
   } catch (e) {
     // ps exits 1 with nothing printed when there is no such process.
     if ((e as { status?: unknown }).status === 1 && !String((e as { stdout?: unknown }).stdout ?? '').trim()) return undefined
@@ -361,8 +361,20 @@ export async function runKillSwitchCommand(command: ControlCommand): Promise<Con
       },
     }
   }
+  const { audit } = await import('./audit.ts')
   const refused = await offRefusal(command)
-  if (refused) return { ok: false, error: refused }
+  if (refused) {
+    // A refused ask is recorded too. The pid is what the asker said (the socket gives no peer pid).
+    audit({
+      event: 'kill_switch.off_refused',
+      by: 'control',
+      why: refused,
+      pid: command.pid,
+      had_token: typeof command.caller_token === 'string' && command.caller_token !== '',
+      had_tmux: typeof command.tmux === 'string' && command.tmux !== '',
+    })
+    return { ok: false, error: refused }
+  }
   // Unlatch and remove in one synchronous step: no tick can run between them and latch again.
   const wasLatched = guard?.latched === true
   let removed: boolean
@@ -373,8 +385,13 @@ export async function runKillSwitchCommand(command: ControlCommand): Promise<Con
     // Not a regular file: it reads on, so the next tick latches again.
     return { ok: false, error: 'stays_on' }
   }
-  const { audit } = await import('./audit.ts')
-  audit({ event: 'kill_switch.off', by: 'control' })
+  let ppid: number | null = null
+  try {
+    ppid = parentPidOf(command.pid) ?? null
+  } catch {
+    /* recorded as unknown */
+  }
+  audit({ event: 'kill_switch.off', by: 'control', pid: command.pid, ppid })
   return { ok: true, detail: { was_on: wasLatched || removed } }
 }
 
@@ -383,9 +400,29 @@ const OFF_REFUSED = {
   cannot_tell: 'tandem: kill switch off refused: cannot tell whether this runs inside a Tandem session',
 } as const
 
+/** Longer than one guard tick (1 s): a runtime that still holds the switch has put the file back by then. */
+const CONFIRM_MS = 1_200
+const CAME_BACK =
+  'tandem: the kill switch came back on: a running runtime put its file back; stop that runtime, then run tandem kill-switch off again'
+
 /** `tandem kill-switch off`: the owner check here, then the runtime's control socket, else the file. */
 async function off(say: (line: string) => void): Promise<number> {
   const warn = (line: string) => process.stderr.write(`${line}\n`)
+  // Off is only said once it has held for a tick: a latched runtime this ask did not reach (its
+  // socket gone, or a second runtime on this home) puts the file back, and then it is not off.
+  const done = async (wasOn: boolean): Promise<number> => {
+    if (!wasOn) {
+      say('tandem: kill switch was already off')
+      return 0
+    }
+    await sleep(CONFIRM_MS)
+    if (switchFileOn()) {
+      warn(CAME_BACK)
+      return 1
+    }
+    say('tandem: kill switch off')
+    return 0
+  }
   const token = process.env.TANDEM_CALLER_TOKEN
   const tmuxEnv = process.env.TMUX
   const facts: OffFacts = {
@@ -405,16 +442,13 @@ async function off(say: (line: string) => void): Promise<number> {
   } catch (e) {
     if (codeOf(e) === 'ENOENT' || codeOf(e) === 'ECONNREFUSED') {
       // No runtime: the file alone, as before.
-      say(release() ? 'tandem: kill switch off' : 'tandem: kill switch was already off')
-      return 0
+      return done(release())
     }
     warn('tandem: the runtime did not answer; the switch stays on')
     return 1
   }
   if (answer.ok) {
-    const wasOn = (answer.detail as { was_on?: unknown } | undefined)?.was_on
-    say(wasOn === false ? 'tandem: kill switch was already off' : 'tandem: kill switch off')
-    return 0
+    return done((answer.detail as { was_on?: unknown } | undefined)?.was_on !== false)
   }
   if (answer.error === 'agent_refused' || answer.error === 'cannot_tell') {
     warn(OFF_REFUSED[answer.error])
@@ -423,8 +457,7 @@ async function off(say: (line: string) => void): Promise<number> {
   if (answer.error === 'unknown_command') {
     const removed = release()
     warn('tandem: the running runtime is older and keeps no switch record')
-    say(removed ? 'tandem: kill switch off' : 'tandem: kill switch was already off')
-    return 0
+    return done(removed)
   }
   warn(`tandem: kill switch off failed (${String(answer.error)}); the switch stays on`)
   return 1

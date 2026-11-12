@@ -11,7 +11,7 @@
  * runtimes, ends every tmux server whose socket is in the folder, then removes it.
  */
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from 'node:fs'
 import { execFileSync, spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { connect, createServer, type Server } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -306,7 +306,7 @@ describe('(t3) the owner turns it off', () => {
     await sleep(1_000)
     expect(existsSync(SWITCH)).toBe(false)
     expect((await status()).detail).toMatchObject({ on: false, latched: false, tampered: 0 })
-    expect(auditLines('kill_switch.off').slice(offs).map(({ ts, ...rest }) => rest)).toEqual([{ event: 'kill_switch.off', by: 'control' }])
+    expect(auditLines('kill_switch.off').slice(offs).map(({ ts, ...rest }) => rest)).toEqual([{ event: 'kill_switch.off', by: 'control', pid: expect.any(Number), ppid: expect.any(Number) }])
     const again = await cli(['off'])
     expect([again.stdout, again.code]).toEqual(['tandem: kill switch was already off\n', 0])
   })
@@ -562,5 +562,116 @@ describe('(t10) on --close revokes the ended sessions\' tokens', () => {
       cwd: repo, encoding: 'utf8', input: '', timeout: 20_000, env: childEnv({ TANDEM_CALLER_TOKEN: tokens[0], TANDEM_CWD_ALLOWLIST: WORK }),
     })
     expect([stdio.status, stdio.stderr.trim()]).toEqual([1, STDIO_REFUSED])
+  })
+})
+
+// ---- audit rows (U-R1A-35B audit) --------------------------------------------------------------
+describe('(a) audit rows', () => {
+  const CAME_BACK = 'tandem: the kill switch came back on: a running runtime put its file back; stop that runtime, then run tandem kill-switch off again'
+  const run = async () => ({ ok: true })
+
+  it('(35B) a1 off is recorded with the asking pid and its parent; a refused off is recorded too (kill_switch.off_refused, why, pid) and the switch stays on', async () => {
+    await startRuntime()
+    switchFile()
+    await sleep(300)
+    const refusedBefore = auditLines('kill_switch.off_refused').length
+    const offBefore = auditLines('kill_switch.off').length
+    expect(await ask({ op: 'kill_switch_off', pid: process.pid, caller_token: 'made-up-token-value' })).toEqual({ ok: false, error: 'agent_refused' })
+    expect(existsSync(SWITCH)).toBe(true)
+    await sleep(100)
+    expect(auditLines('kill_switch.off_refused').slice(refusedBefore).map(({ ts, ...rest }) => rest)).toEqual([
+      { event: 'kill_switch.off_refused', by: 'control', why: 'agent_refused', pid: process.pid, had_token: true, had_tmux: false },
+    ])
+    expect(readFileSync(AUDIT, 'utf8')).not.toContain('made-up-token-value')
+    expect(await ask({ op: 'kill_switch_off', pid: process.pid })).toEqual({ ok: true, detail: { was_on: true } })
+    await sleep(100)
+    expect(auditLines('kill_switch.off').slice(offBefore).map(({ ts, ...rest }) => rest)).toEqual([
+      { event: 'kill_switch.off', by: 'control', pid: process.pid, ppid: process.ppid },
+    ])
+  })
+
+  it('(35B) a2 a latched runtime whose control socket file is gone: CLI off does not claim off; exit 1, the came-back line, the switch on', async () => {
+    await startRuntime()
+    switchFile()
+    await sleep(300)
+    rmSync(CTL)
+    const r = await cli(['off'])
+    expect([r.stdout, tandemLines(r.stderr), r.code]).toEqual(['', [CAME_BACK], 1])
+    expect(existsSync(SWITCH)).toBe(true)
+  })
+
+  it('(35B) a3 two runtime processes on one home: the second never takes the first\'s socket; off through the first is put back by the second, and the CLI says so', async () => {
+    const first = await startRuntime()
+    const ino = lstatSync(CTL).ino
+    const second = await startRuntime()
+    expect(second.stderr()).toContain('control socket already answered by another runtime')
+    expect(lstatSync(CTL).ino).toBe(ino)
+    expect((await status()).ok).toBe(true)
+    switchFile()
+    await sleep(300)
+    const r = await cli(['off'])
+    expect([r.stdout, tandemLines(r.stderr), r.code]).toEqual(['', [CAME_BACK], 1])
+    expect(existsSync(SWITCH)).toBe(true)
+    // The second runtime's shutdown leaves the first's socket alone.
+    await second.stop()
+    expect(lstatSync(CTL).ino).toBe(ino)
+    expect((await status()).ok).toBe(true)
+    await sleep(300)
+    const again = await cli(['off'])
+    expect([again.stdout, again.code]).toEqual(['tandem: kill switch off\n', 0])
+    void first
+  })
+
+  it('(35B) a4 close() ends within 1 s though a connection sits open and silent', async () => {
+    const server = await cs.startControlServer({ run })
+    const idle = connect(CTL)
+    await new Promise<void>((r) => idle.on('connect', () => r()))
+    idle.on('error', () => {})
+    const t0 = Date.now()
+    await Promise.race([server.close(), sleep(3_000)])
+    const took = Date.now() - t0
+    idle.destroy()
+    expect(took).toBeLessThan(1_000)
+    expect(existsSync(CTL)).toBe(false)
+  })
+
+  it('(35B) a5 a symlink (to a live socket, to nothing) or a plain file at the socket path: start throws and removes nothing', async () => {
+    const elsewhere = join(BOX, 'a5', 'c.sock')
+    const live = await cs.startControlServer({ run: async () => ({ ok: true, detail: 'live' }), socketPath: elsewhere })
+    try {
+      mkdirSync(join(TH, 'run'), { recursive: true, mode: 0o700 })
+      symlinkSync(elsewhere, CTL)
+      await expect(cs.startControlServer({ run })).rejects.toThrow('control socket path is not a socket')
+      expect(lstatSync(CTL).isSymbolicLink()).toBe(true)
+      expect(await ask({ op: 'kill_switch_status' }, elsewhere)).toEqual({ ok: true, detail: 'live' })
+      rmSync(CTL)
+      symlinkSync(join(BOX, 'a5', 'nowhere'), CTL)
+      await expect(cs.startControlServer({ run })).rejects.toThrow('control socket path is not a socket')
+      expect(lstatSync(CTL).isSymbolicLink()).toBe(true)
+      expect(existsSync(join(BOX, 'a5', 'nowhere')), 'a socket was made where the link points').toBe(false)
+      rmSync(CTL)
+      writeFileSync(CTL, 'not a socket')
+      await expect(cs.startControlServer({ run })).rejects.toThrow('control socket path is not a socket')
+      expect(readFileSync(CTL, 'utf8')).toBe('not a socket')
+    } finally {
+      await live.close()
+    }
+  })
+
+  it('(35B) a6 the file renamed away: restored, one tamper; chmod 000 or truncated: still on, no tamper', async () => {
+    const rt = await startRuntime()
+    switchFile()
+    await sleep(300)
+    const before = auditLines('kill_switch.tampered').length
+    renameSync(SWITCH, join(BOX, 'a6-moved'))
+    expect(await until(() => existsSync(SWITCH), 300)).toBe(true)
+    await sleep(500)
+    expect(auditLines('kill_switch.tampered').length).toBe(before + 1)
+    truncateSync(SWITCH, 0)
+    chmodSync(SWITCH, 0)
+    await sleep(500)
+    expect((await status()).detail).toMatchObject({ on: true, latched: true, tampered: 1 })
+    expect(auditLines('kill_switch.tampered').length).toBe(before + 1)
+    expect((await rt.ask('state')).tampered).toBe(1)
   })
 })

@@ -172,4 +172,19 @@ describe('(r) the relay while the kill switch is on', () => {
     expect(lead.sent.some((s) => s.text.includes(KILL_SWITCH_ON))).toBe(false)
     expect(turns(loop)).toBe(want)
   })
+
+  it('(35B) a7 (audit) a report that only quotes the kill switch text while the switch is off is a turn like any other: passed on once, never sent again', async () => {
+    off()
+    const quote = `I read bridge/kill-switch.ts: it says "${KILL_SWITCH_ON}"`
+    const lead = fakeSession('lead', ['step one', 'DONE'])
+    const worker = fakeSession('worker', ['did it'], (call) => (call === 1 ? quote : undefined))
+    const loop = fakeLoop(lead, worker)
+    loop.deadline = Date.now() + 4_000
+    expect(await run(loop)).toEqual({ kind: 'done' })
+    expect(worker.sent.length).toBe(1)
+    expect(lead.sent.length).toBe(2)
+    expect(lead.sent[1].text).toContain(quote)
+    expect(turns(loop)).toBe(2)
+    expect(sysLines(loop, 'paused: kill switch on')).toBe(0)
+  })
 })

@@ -18,7 +18,7 @@
  * sandboxes.
  */
 import { connect, createServer, type Server, type Socket } from 'node:net'
-import { chmodSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, lstatSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
@@ -96,12 +96,26 @@ export async function startControlServer(options: {
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   chmodSync(directory, 0o700)
   if ((statSync(directory).mode & 0o077) !== 0) throw new Error('control directory is not owner-only')
+  // Only a socket is ever probed, replaced or listened on: a link here would be followed (bind on
+  // macOS makes the socket where a dangling link points), so a link, file or folder is refused.
+  let odd = false
+  try {
+    odd = !lstatSync(socketPath).isSocket()
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('control socket path cannot be read')
+  }
+  if (odd) throw new Error('control socket path is not a socket')
   // Never take a socket another runtime answers on: only a stale one (refused) or none is removed.
   const found = await probe(socketPath)
   if (found === 'ECONNREFUSED') rmSync(socketPath, { force: true })
   else if (found !== 'ENOENT') throw new Error('control socket already answered by another runtime')
 
-  const server: Server = createServer((connection) => handle(connection, options.run, options.log))
+  const open = new Set<Socket>()
+  const server: Server = createServer((connection) => {
+    open.add(connection)
+    connection.on('close', () => open.delete(connection))
+    handle(connection, options.run, options.log)
+  })
   // One command at a time is more than this surface needs; the bound exists so
   // a caller cannot hold connections open faster than they are answered.
   server.maxConnections = 16
@@ -113,8 +127,12 @@ export async function startControlServer(options: {
 
   return {
     socketPath,
+    // Closing removes this server's socket file at once (node does it). Open connections are ended
+    // here, or one silent caller would hold shutdown for its whole timeout; nothing is removed
+    // afterwards, when the path may already be the next runtime's socket.
     close: () => new Promise<void>((resolve) => {
-      server.close(() => { rmSync(socketPath, { force: true }); resolve() })
+      server.close(() => resolve())
+      for (const connection of open) connection.destroy()
     }),
   }
 }

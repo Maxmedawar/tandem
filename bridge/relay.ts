@@ -348,7 +348,9 @@ async function sendRaced(
   try {
     const sendP = session.send(text).then(
       (r: { report: string }) =>
-        r.report.includes(KILL_SWITCH_ON) ? { kind: 'killswitch' as const } : { kind: 'report' as const, report: r.report },
+        // The refusal text counts as a refusal only while the switch reads on: a report that merely
+        // quotes it is a turn like any other (else its instruction would be sent again, uncounted).
+        r.report.includes(KILL_SWITCH_ON) && killSwitchOn() ? { kind: 'killswitch' as const } : { kind: 'report' as const, report: r.report },
       (e: unknown) =>
         e instanceof KillSwitchError || (e instanceof Error && e.message.includes(KILL_SWITCH_ON))
           ? { kind: 'killswitch' as const }
