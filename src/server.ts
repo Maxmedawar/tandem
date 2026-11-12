@@ -75,6 +75,11 @@ if (fabric || process.env.TANDEM_HUB_LINK_URL) {
   }
 }
 
+// Who is up on this computer (bridge/presence.ts): one reader for this process, made at its first
+// use (its module loads the hub wire code): the hub presence carrier and `tandem mail ls` share it.
+let presence: import("../bridge/presence.ts").Presence | undefined;
+const presenceReader = async () => (presence ??= (await import("../bridge/presence.ts")).createPresence());
+
 // The link module (and the hub wire code it imports) loads only when the link is
 // configured, so with the URL unset nothing new is loaded or started. With the store open
 // this computer dials as the memory home; without it, its MCP server passes the fabric
@@ -105,9 +110,8 @@ if (process.env.TANDEM_HUB_LINK_URL) {
         }
       }
       try {
-        const { createPresence } = await import("../bridge/presence.ts");
         const { hubPresence } = await import("../bridge/hub-presence.ts");
-        stopPresence = hubPresence(hubLinkConfig, { presence: createPresence() }).start();
+        stopPresence = hubPresence(hubLinkConfig, { presence: await presenceReader() }).start();
       } catch {
         console.error("presence: hub sync is off");
       }
@@ -181,7 +185,14 @@ try {
   const { startControlServer } = await import("../bridge/control-socket.ts");
   // `status` (U-R1A-40-R1): this runtime's own sessions' states and the guard, for `tandem status`.
   const { runtimeStatus } = await import("../bridge/status.ts");
-  controlServer = await startControlServer({ run: runKillSwitchCommand, status: runtimeStatus() });
+  // `tandem mail` (U-R1A-41): this process's one mailbox (opened at the first mail op when the store
+  // and the hub link left it closed) and its presence; both load only when a mail op comes.
+  const { runtimeMail } = await import("../bridge/mail-cli.ts");
+  const mail = runtimeMail({
+    mailbox: async () => (mailBox ??= (await import("../bridge/mailbox.ts")).openMailbox()),
+    presence: presenceReader,
+  });
+  controlServer = await startControlServer({ run: runKillSwitchCommand, status: runtimeStatus(), mail });
 } catch {
   console.error("tandem: control socket unavailable; while this runtime runs the kill switch can only be turned off by stopping the runtime");
 }

@@ -56,6 +56,13 @@ tandem - one agent fabric across your computers
                              with --close; nothing starts or is typed until tandem kill-switch off
   tandem kill-switch off|status
                              turn the switch off here, or say whether it is on
+  tandem mail send <to> <message...> [--level fyi|ask|interrupt] [--json]
+                             leave a message in a session's inbox (<session> here,
+                             or <computer>:<session>)
+  tandem mail inbox [--name <session>] [--peek] [--json] [--limit N]
+                             print the inbox's messages and mark them delivered
+  tandem mail ls [--all] [--json]
+                             the sessions up, their engines, states and ages
 
 Everything else happens from your agent.
 USAGE
@@ -126,6 +133,11 @@ case "${1:-}" in
     need_node
     shift
     exec "$node" --experimental-strip-types "$runtime/bridge/kill-switch.ts" "$@"
+    ;;
+  mail)
+    need_node
+    shift
+    exec "$node" --experimental-strip-types "$runtime/bridge/mail-cli.ts" "$@"
     ;;
   ''|-h|--help|help)
     usage
