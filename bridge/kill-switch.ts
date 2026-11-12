@@ -35,11 +35,11 @@
  * written under the lock `<TANDEM_HOME>/opening/.lock`.
  */
 import { closeSync, constants, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, rmSync, unlinkSync, writeSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { insideTandemSession, parentPidOf } from './caller-tokens.ts'
 import type { ControlCommand, ControlResult } from './control-socket.ts'
+import { tandemHome } from './tandem-home.ts'
 
 export const KILL_SWITCH_ON =
   'kill switch on: nothing may start or be typed into on this computer until the owner runs tandem kill-switch off here'
@@ -60,7 +60,6 @@ const LOCK_POLL_MS = 25
 const RESERVABLE = /^[A-Za-z0-9._-]{1,200}$/
 const CREATE = constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW
 
-const tandemHome = () => resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem'))
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const reasonOf = (e: unknown) => (e instanceof Error ? e.message : String(e))
 const codeOf = (e: unknown) => (e as NodeJS.ErrnoException).code

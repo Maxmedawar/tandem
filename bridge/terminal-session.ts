@@ -55,7 +55,8 @@ import { execFile } from 'node:child_process'
 import { closeSync, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readSync, realpathSync, statSync, type Stats } from 'node:fs'
 import { chmod, open, mkdir } from 'node:fs/promises'
 import { cpus, homedir, loadavg } from 'node:os'
-import { dirname, join, resolve, sep } from 'node:path'
+import { dirname, join, sep } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { RE2JS } from 're2js'
 import { CLAUDE_DESCRIPTOR, SendOutcomeUnknownError, SessionGoneError, TmuxBusyError, type EngineDescriptor } from './drivable.ts'
 import { HIGHLIGHTS, NEVER, SKIPS_UPDATE, UPDATE_TEXT, type Dialog } from './harness-registry.ts'
@@ -296,8 +297,8 @@ export const TMUX_FIELD_SEP = '|:|'
 /** Tandem's own tmux socket, `<TANDEM_HOME, else ~/.tandem>/tmux/tandem`, worked out at each call
  *  (never the user's default socket). Throws when the path is over 100 bytes (a Unix socket path
  *  holds about 104). */
-export function tmuxSocketPath(tandemHome = process.env.TANDEM_HOME): string {
-  const path = join(resolve(tandemHome || join(homedir(), '.tandem')), 'tmux', 'tandem')
+export function tmuxSocketPath(home: string | undefined = process.env.TANDEM_HOME): string {
+  const path = join(tandemHome(home), 'tmux', 'tandem')
   if (Buffer.byteLength(path) > 100) throw new Error(`tmux socket path too long: ${path}`)
   return path
 }

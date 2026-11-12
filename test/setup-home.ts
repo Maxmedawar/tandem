@@ -35,13 +35,13 @@ const fold = (p: string): string => (process.platform === "darwin" || process.pl
 
 // Cleanup state lives on globalThis: a reused worker (isolate: false) imports this file again per
 // test file, and one exit listener per process must see every folder any of those imports made.
-type Made = { dir: string; kind: "home" | "tmux" | "tmp"; root: string; env: "HOME" | "TMUX_TMPDIR" | "TMPDIR"; dev: number; ino: number };
+type Made = { dir: string; kind: "home" | "tmux" | "tmp" | "th"; root: string; env: "HOME" | "TMUX_TMPDIR" | "TMPDIR" | "TANDEM_HOME"; dev: number; ino: number };
 type State = { made: Made[]; orig?: Record<string, string | undefined>; live: boolean; hooked?: boolean };
 const KEY = Symbol.for("tandem.test.setup-home");
 const g = globalThis as unknown as Record<symbol, State>;
 const state: State = (g[KEY] ??= { made: [], live: LIVE });
 state.live = LIVE;
-const PREFIX = { home: /^tandem-test-home-/, tmux: /^tandem-test-tmux-/, tmp: /^stt-/ };
+const PREFIX = { home: /^tandem-test-home-/, tmux: /^tandem-test-tmux-/, tmp: /^stt-/, th: /^tandem-test-th-/ };
 
 function removeTree(dir: string): void {
   const st = lstatSync(dir);
@@ -76,6 +76,7 @@ function cleanup(): void {
       if (!ok) throw Object.assign(new Error("not its folder"), { code: "not its folder" });
       if (m.kind === "tmux") killServer(r, `tmux-${uid}`, "default");
       if (m.kind === "home") killServer(r, ".tandem", "tmux", "tandem");
+      if (m.kind === "th") killServer(r, "tmux", "tandem");
       removeTree(r);
       rmSync(r, { recursive: true, force: true });
     } catch (err) {
@@ -142,13 +143,18 @@ for (const k of ["TANDEM_CONFIG_FILE", "TANDEM_DEVICE_READY_FILE", "TANDEM_OWNER
 }
 process.env.TANDEM_HERMES_DISABLE_LIVE = "1";
 
-const th = process.env.TANDEM_HOME;
-if (th !== undefined) {
-  const rel = relative(fold(real(userInfo().homedir)), fold(real(resolve(th))));
-  if (rel === "" || !(rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel))) {
-    delete process.env.TANDEM_HOME;
+// TANDEM_HOME, live mode included (U-R1A-HOMEPATH): an inherited one is kept only when its real path
+// is strictly under the test temp root TMP_ROOT; anything else, a missing one included, is replaced by
+// a made tandem-test-th- folder there (0700). Live runs keep it after the run; otherwise cleanup stops
+// its tmux server, removes it and unsets TANDEM_HOME (a dropped inherited value never comes back).
+guard("TANDEM_HOME", () => {
+  const th = process.env.TANDEM_HOME;
+  if (th) {
+    const rel = relative(fold(real(TMP_ROOT)), fold(real(resolve(th))));
+    if (rel !== "" && rel !== ".." && !rel.startsWith(".." + sep) && !isAbsolute(rel)) return;
   }
-}
+  process.env.TANDEM_HOME = make("th", "TANDEM_HOME", TMP_ROOT, "tandem-test-th-");
+});
 
 // tmux, live mode included: no inherited TMUX/TMUX_* (the live server), and a private TMUX_TMPDIR
 // (tmux silently falls back to /tmp, the live server, when it is not a directory). Outside live

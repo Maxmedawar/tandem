@@ -1,5 +1,5 @@
 import path from "node:path";
-import os from "node:os";
+import { tandemHome } from "../bridge/tandem-home.ts";
 
 const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 
@@ -78,7 +78,7 @@ export function loadOAuthConfig(input: OAuthConfigInput): OAuthConfig {
     publicUrl,
     issuerUrl,
     ownerPassword,
-    stateDir: path.resolve(input.stateDir ?? path.join(os.homedir(), ".tandem", "oauth")),
+    stateDir: path.resolve(input.stateDir ?? path.join(tandemHome(), "oauth")),
     accessTtlSeconds: parseTtl(input.accessTtlSeconds, 600, "access token TTL"),
     refreshTtlSeconds: parseTtl(input.refreshTtlSeconds, 30 * 24 * 60 * 60, "refresh token TTL"),
   };

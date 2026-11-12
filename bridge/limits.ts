@@ -44,8 +44,8 @@
  */
 import { createHash } from 'node:crypto'
 import { closeSync, constants, fsyncSync, lstatSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { parse } from 'smol-toml'
 import { readProtectedRegularFileSync } from '../src/runtime-config.ts'
 import type { Harness } from './harness-registry.ts'
@@ -139,7 +139,7 @@ export function isInterruptSender(v: unknown): v is string {
 }
 
 export function limitsFile(): string {
-  return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'limits.toml')
+  return join(tandemHome(), 'limits.toml')
 }
 
 /** The applied copy beside the limits file. */

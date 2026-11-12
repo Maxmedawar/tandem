@@ -94,7 +94,7 @@ function screenOf(name: string): string {
 const count = (name: string, line: string) => screenOf(name).split('\n').filter((l) => l === line).length
 const noticeLines = (name: string) => screenOf(name).split('\n').filter((l) => l.startsWith('reply: Tandem:'))
 
-const auditLog = join(HOME, '.tandem', 'bridge.log')
+const auditLog = join(TH, 'bridge.log')
 const auditLines = (): Record<string, unknown>[] =>
   existsSync(auditLog) ? readFileSync(auditLog, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []
 const interruptLines = (name: string) => auditLines().filter((l) => l.event === 'mail.interrupt' && l.name === name)

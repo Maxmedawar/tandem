@@ -109,7 +109,7 @@ const tmuxHas = (name: string) => {
   }
 };
 const keys = (log: string) => (existsSync(log) ? readFileSync(log, "utf8").split("\n").filter(Boolean) : []);
-const auditLog = join(HOME, ".tandem", "bridge.log");
+const auditLog = join(TANDEM_HOME, "bridge.log");
 const auditLines = (): Record<string, unknown>[] =>
   existsSync(auditLog) ? readFileSync(auditLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
 const rq = (method: string, path: string, body: Record<string, unknown> = {}) =>

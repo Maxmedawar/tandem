@@ -32,12 +32,12 @@
  */
 import { createHash, randomBytes } from 'node:crypto'
 import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Harness } from './harness-registry.ts'
 import { killSwitchOn } from './kill-switch.ts'
 import type { Message, Point } from './mailbox.ts'
+import { tandemHome } from './tandem-home.ts'
 
 /** A harness file's `hook` value: the option that loads one settings file (harnesses/SCHEMA.md). */
 export const HOOK_OPTION = /^--[a-z][a-z0-9-]{0,31}$/
@@ -52,8 +52,6 @@ const PER_RUN_BYTES = 8192
 const MAX_STDIN = 1024 * 1024
 /** A turn file counts this long after the time it records: Stop does not run when a person interrupts a turn. */
 const TURN_FRESH_MS = 15 * 60_000
-
-const tandemHome = () => resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem'))
 
 /** Refuses (throws naming the path and the reason) a folder that is a symlink, another user's, or open to group or world. */
 function checkDir(dir: string): void {

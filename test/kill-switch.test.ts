@@ -63,7 +63,7 @@ const dh = await import('../bridge/delivery-hooks.ts')
 const SOCK = join(TH, 'tmux', 'tandem')
 const SWITCH = join(TH, 'kill-switch')
 const OPENING = join(TH, 'opening')
-const AUDIT = join(HOME, '.tandem', 'bridge.log')
+const AUDIT = join(TH, 'bridge.log')
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 // Rows that open real sessions pass 5 s when the affected files run together (audit: k2 timed out at 5000 ms).
 vi.setConfig({ testTimeout: 30_000 })

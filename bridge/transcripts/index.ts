@@ -16,13 +16,14 @@ import { chmodSync, createReadStream, mkdirSync, type Dirent, type Stats } from 
 import { lstat, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { tandemHome } from '../tandem-home.ts'
 import { loadedHarnesses } from '../engine-registry.ts'
 import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from '../sqlite-file.ts'
 import * as claudeReader from './readers/claude.ts'
 import * as codexReader from './readers/codex.ts'
 
 /** Tandem's transcript folder: pane logs (terminal-session.ts) and the pointer index. */
-export const TRANSCRIPTS_DIR = join(process.env.TANDEM_HOME || join(homedir(), '.tandem'), 'transcripts')
+export const TRANSCRIPTS_DIR = join(tandemHome(), 'transcripts')
 const DB_PATH = join(TRANSCRIPTS_DIR, 'index.sqlite3')
 
 export interface Message {

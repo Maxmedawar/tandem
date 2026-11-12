@@ -110,7 +110,7 @@ const notTyped = (name: string, token: string) => {
 let seq = 0;
 const tok = () => `r1a18tok${++seq}x${Math.random().toString(36).slice(2, 7)}`;
 
-const auditLog = join(HOME, ".tandem", "bridge.log");
+const auditLog = join(TANDEM_HOME, "bridge.log");
 const auditLines = (): Record<string, unknown>[] =>
   existsSync(auditLog) ? readFileSync(auditLog, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
 /** Runs one router call and returns its answer with the audit lines it wrote. */

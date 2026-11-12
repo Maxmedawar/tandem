@@ -420,6 +420,7 @@ describe('(h2) mcpOverrides', () => {
       mkdirSync(join(root, 'bridge'), { recursive: true })
       writeFileSync(join(root, 'bridge', 'delivery-hooks.ts'), readFileSync(join(repo, 'bridge', 'delivery-hooks.ts')))
       writeFileSync(join(root, 'bridge', 'kill-switch.ts'), 'export const killSwitchOn = () => false\n')
+      writeFileSync(join(root, 'bridge', 'tandem-home.ts'), readFileSync(join(repo, 'bridge', 'tandem-home.ts')))
       if (withStdio) {
         mkdirSync(join(root, 'src'), { recursive: true })
         writeFileSync(join(root, 'src', 'stdio-server.ts'), '')

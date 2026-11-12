@@ -10,7 +10,7 @@
 import { chmodSync, existsSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from '../sqlite-file.ts'
-import { tandemHome } from './claude.ts'
+import { tandemHome } from '../tandem-home.ts'
 
 export const STALE_MS = 30 * 60_000
 const PLAN = /^[a-z0-9_-]{1,32}$/

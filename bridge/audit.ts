@@ -7,8 +7,8 @@
  * not silently persist its contents.
  */
 import { appendFileSync, chmodSync, mkdirSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 
 const CONTENT_FIELDS = new Set([
   'text',
@@ -69,7 +69,7 @@ export function redactAuditFields(fields: Record<string, unknown>): Record<strin
 }
 
 export function audit(fields: Record<string, unknown>, opts: AuditOptions = {}): void {
-  const directory = opts.directory ?? join(homedir(), '.tandem')
+  const directory = opts.directory ?? tandemHome()
   const logPath = join(directory, 'bridge.log')
   let line = ''
   try {

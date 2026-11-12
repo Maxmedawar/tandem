@@ -20,10 +20,8 @@
  * must not take down the relay loop.
  */
 import { appendFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join } from 'node:path'
-
-const MANAGER_ROOT = join(homedir(), '.tandem', 'manager')
+import { tandemHome } from './tandem-home.ts'
 
 /** The manager's working set, persisted to STATE.json. */
 export interface ManagerState {
@@ -48,7 +46,7 @@ export interface ManagerState {
 
 /** Absolute memory dir for a given relay loopId. */
 export function managerDir(loopId: string): string {
-  return join(MANAGER_ROOT, loopId)
+  return join(tandemHome(), 'manager', loopId)
 }
 
 /**

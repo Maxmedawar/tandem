@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { DrivableSession } from '../bridge/drivable.ts'
+import { tandemHome } from '../bridge/tandem-home.ts'
 
 const ROWS = vi.hoisted(() => [
   { id: 'c1', engine: 'claude' },
@@ -36,7 +37,7 @@ afterAll(() => {
   rmSync(home, { recursive: true, force: true })
 })
 
-const logPath = join(home, '.tandem', 'bridge.log')
+const logPath = join(tandemHome(), 'bridge.log')
 function auditLines(): Record<string, unknown>[] {
   if (!existsSync(logPath)) return []
   return readFileSync(logPath, 'utf8').split('\n').filter(Boolean).map((line) => JSON.parse(line))

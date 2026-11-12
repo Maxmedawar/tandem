@@ -13,8 +13,8 @@
  * program: a built-in file names it with `adapter`, and ADAPTERS below is the table of them.
  */
 import { accessSync, closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readFileSync, realpathSync, statSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { basename, delimiter, isAbsolute, join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
 import { RE2JS } from 're2js'
@@ -366,7 +366,7 @@ export function loadHarnesses(opts: { installDir?: string; ownerDir?: string; pa
   errors: HarnessError[]
 } {
   const installDir = opts.installDir ?? fileURLToPath(new URL('../harnesses/', import.meta.url))
-  const ownerDir = opts.ownerDir ?? join(process.env.TANDEM_HOME || join(homedir(), '.tandem'), 'harnesses')
+  const ownerDir = opts.ownerDir ?? join(tandemHome(), 'harnesses')
   const searchPath = opts.path ?? process.env.PATH ?? ''
   const harnesses = new Map<string, Harness>()
   const errors: HarnessError[] = []

@@ -31,8 +31,8 @@
  */
 import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { MAX_ROOM_EVENT_BODY_BYTES } from '../src/fabric/types.ts'
 import { audit } from './audit.ts'
 import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from './sqlite-file.ts'
@@ -245,7 +245,7 @@ function toMessage(r: Row): Message {
 const oldestFirst = (rows: unknown[]) => (rows as Row[]).sort((a, b) => a.seq - b.seq).map(toMessage)
 
 function mailboxFile(): string {
-  return join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'state.db')
+  return join(tandemHome(), 'state.db')
 }
 
 export function openMailbox(options: { path?: string; now?: () => number } = {}) {

@@ -780,7 +780,7 @@ describe("quiet completion events (TANDEM-B-SESSION-R1 review-fix)", () => {
         expect(headers.Title).toBe(`tandem: ${name} quiet`);
         expect(String(p.init.body)).not.toMatch(/\b(done|finished)\b/i);
       }
-      const logged = readFileSync(join(testEnv.home, ".tandem", "events.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const logged = readFileSync(join(testEnv.tandemHome, "events.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
       expect(logged.filter((e) => e.id === name).map((e) => e.status)).toEqual(["quiet", "quiet"]);
     } finally {
       fetchSpy.mockRestore();

@@ -115,7 +115,7 @@ function fakePresence(names: string[]) {
   return { presence, counts }
 }
 
-const AUDIT = join(HOME, '.tandem', 'bridge.log')
+const AUDIT = join(TH, 'bridge.log')
 const auditLines = (): Json[] => (existsSync(AUDIT) ? readFileSync(AUDIT, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [])
 const mark = () => auditLines().length
 const refusedSince = (n: number) => auditLines().slice(n).filter((l) => l.event === 'presence.refused').map(({ ts: _ts, ...rest }) => rest)

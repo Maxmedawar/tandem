@@ -21,7 +21,8 @@
 import { createHash } from 'node:crypto'
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
+import { tandemHome } from './tandem-home.ts'
 import { fileURLToPath } from 'node:url'
 import { stringify } from 'smol-toml'
 import { audit } from './audit.ts'
@@ -50,7 +51,7 @@ const sha256 = (bytes: string | Buffer) => createHash('sha256').update(bytes).di
 const shown = (entry: string) => entry.replace(new RegExp(HIDDEN.source, 'gu'), '?')
 
 /** bridge/limits.ts limitsFile(), the one line copied: the path is needed before that module may be imported. */
-const limitsFile = () => join(resolve(process.env.TANDEM_HOME || join(homedir(), '.tandem')), 'limits.toml')
+const limitsFile = () => join(tandemHome(), 'limits.toml')
 
 /** realpath of the part of `p` that exists, the rest as written (Tandem's folder may not exist yet). */
 function realish(p: string): string {

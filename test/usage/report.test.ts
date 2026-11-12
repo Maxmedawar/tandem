@@ -219,7 +219,7 @@ const pushedBody = (s: Seen) => {
   const opened = openEnvelope(items[0].envelope, { sender: { id: "alpha", publicKey: A.publicKey }, self: "beta", seen: { remember: () => true }, now: clock, maxAgeMs: 60_000 });
   return { body: JSON.parse(opened.body), envelope: items[0].envelope };
 };
-const AUDIT = () => join(process.env.HOME!, ".tandem", "bridge.log");
+const AUDIT = () => join(process.env.TANDEM_HOME!, "bridge.log");
 const auditLines = (): Json[] => (existsSync(AUDIT()) ? readFileSync(AUDIT(), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : []);
 const reading = (over: Json = {}) => ({
   v: 1, kind: "presence", at: clock,
