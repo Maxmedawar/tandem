@@ -795,7 +795,7 @@ export class TerminalSession {
     await scrubServerSecrets()
     // This session's own caller token, for its pane's process only (never the server's global
     // environment, never this process's env); a spawn that fails from here on revokes it.
-    const callerToken = mintCallerToken(name)
+    const callerToken = mintCallerToken(name, cwd)
     try {
       await tmux([
         'new-session',

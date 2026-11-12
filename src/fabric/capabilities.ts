@@ -1,3 +1,4 @@
+import { isAbsolute } from 'node:path'
 import { types as nodeUtilTypes } from 'node:util'
 import type { CallerContext, FabricCapability } from './types.ts'
 import { assertIdentifier, FabricValidationError } from './validation.ts'
@@ -35,6 +36,9 @@ export function createCallerContext(input: unknown): CallerContext {
   assertIdentifier('agentId', data.agentId)
   if (data.projectId !== undefined) assertIdentifier('projectId', data.projectId)
   if (data.actorType !== undefined && data.actorType !== 'agent' && data.actorType !== 'owner') throw new FabricValidationError('callerContext')
+  if (data.folder !== undefined && (typeof data.folder !== 'string' || data.folder.length === 0 || !isAbsolute(data.folder) || data.folder.includes('\0'))) {
+    throw new FabricValidationError('callerContext')
+  }
   const supplied = capabilityValues(data.capabilities)
   if (supplied.some(capability => typeof capability !== 'string' || !KNOWN_CAPABILITIES.has(capability as FabricCapability))) throw new FabricValidationError('callerContext')
   const capabilities = new ImmutableCapabilitySet(supplied)
@@ -45,12 +49,13 @@ export function createCallerContext(input: unknown): CallerContext {
     ...(data.projectId === undefined ? {} : { projectId: data.projectId as string }),
     actorType: (data.actorType as 'agent' | 'owner' | undefined) ?? 'agent',
     capabilities,
+    ...(data.folder === undefined ? {} : { folder: data.folder as string }),
   })
   trustedContexts.add(context)
   return context
 }
 
-const CALLER_KEYS = new Set(['ownerId','deviceId','agentId','projectId','actorType','capabilities'])
+const CALLER_KEYS = new Set(['ownerId','deviceId','agentId','projectId','actorType','capabilities','folder'])
 function callerContextData(input: unknown): Record<string, unknown> {
   if (typeof input !== 'object' || input === null || Array.isArray(input) || nodeUtilTypes.isProxy(input)) throw new FabricValidationError('callerContext')
   try {

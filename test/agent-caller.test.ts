@@ -507,7 +507,7 @@ describe('(c5) rooms: an agent\'s posts count as agent posts', () => {
     expect(HOP_BUDGET).toBe(5)
     ownerF = await startChild(fabric)
     agentF = await startChild({ ...fabric, TANDEM_CALLER_TOKEN: AGENT_TOKEN })
-    projectId = (await ownerF.call('project_create', { displayName: 'R36' })).projectId
+    projectId = (await ownerF.call('project_create', { displayName: 'R36', workspaceRef: WORK })).projectId
     expect(typeof projectId).toBe('string')
     for (let i = 1; i <= 5; i++) {
       const e = await agentF.call('room_post', { projectId, room: 'r36', type: 'message', body: `@w agent post ${i}`, idempotencyKey: `agent-${i}` })

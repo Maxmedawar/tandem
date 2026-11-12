@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs'
+import { chmodSync, closeSync, lstatSync, mkdirSync, openSync, realpathSync, statSync } from 'node:fs'
 import { createRequire } from 'node:module'
-import { dirname, resolve } from 'node:path'
+import { homedir, userInfo } from 'node:os'
+import { dirname, isAbsolute, resolve, sep } from 'node:path'
 import type { DatabaseSync as NodeDatabaseSync } from 'node:sqlite'
 import {
   assertCapability,
@@ -21,6 +22,7 @@ import type { FabricClient } from '../../src/fabric/client.ts'
 import {
   DEFAULT_MEMORY_SEARCH_LIMIT,
   MAX_MEMORY_SEARCH_LIMIT,
+  MAX_MEMORY_TEXT_BYTES,
   MAX_TTL_HOPS,
   type ArchiveProjectResult,
   type CallerContext,
@@ -50,6 +52,7 @@ import {
 import { DeterministicEmbeddingProvider, type EmbeddingProvider } from './memory/embedding.ts'
 import { hybridScore, normalizeMemoryText } from './memory/ranker.ts'
 import { createLocalVectorStore, type LocalVectorStore, type VectorBackend } from './memory/vector-store.ts'
+import { redact } from '../transcripts/redact.ts'
 
 // Vitest 2 does not know about this Node 22 builtin. Native require preserves
 // the real node:sqlite implementation without adding a package dependency.
@@ -815,6 +818,97 @@ function memoryDigest(text: string): string {
   return createHash('sha256').update(normalizeMemoryText(text), 'utf8').digest('hex')
 }
 
+/**
+ * U-R1A-47: every memory text is masked by ../transcripts/redact.ts (remember and promote call it)
+ * before it is embedded, indexed, hashed or written, for every caller; a masked text over the limit
+ * is refused here (400). Memories stored before this are not rewritten.
+ */
+function withinMemoryLimit(masked: string): string {
+  if (Buffer.byteLength(masked, 'utf8') > MAX_MEMORY_TEXT_BYTES) throw new FabricValidationError('text')
+  return masked
+}
+
+const DATA_VOLUME = '/System/Volumes/Data'
+
+/** The real spelling of a folder that exists (letter case included), else its resolved spelling. */
+function canonical(p: string): string {
+  try {
+    return realpathSync.native(p)
+  } catch {
+    return resolve(p)
+  }
+}
+
+/**
+ * A COPY of `projectOf` in ../transcripts/search.ts (the folder-scope rule; keep the two the same,
+ * test/fabric/memory-scope.test.ts runs both over one table): an absolute folder that is not `/`,
+ * the home folder or one of its ancestors, realpath'd; else undefined.
+ */
+export function projectFolderOf(p: unknown): string | undefined {
+  if (typeof p !== 'string' || !isAbsolute(p) || p.includes('\0')) return undefined
+  const given = resolve(p)
+  const real = canonical(given)
+  const homes = new Set<string>()
+  let accountHome = ''
+  try {
+    accountHome = userInfo().homedir
+  } catch {
+    /* no account entry: homedir() only */
+  }
+  for (const h of [homedir(), accountHome]) {
+    if (!h) continue
+    for (const spelling of [resolve(h), canonical(h)]) {
+      homes.add(spelling)
+      // macOS reaches the same folder through its data volume, and realpath keeps that spelling.
+      if (process.platform === 'darwin') homes.add(DATA_VOLUME + spelling)
+    }
+  }
+  for (const c of [given, real]) {
+    if (c === sep || dirname(c) === c) return undefined
+    for (const h of homes) if (h === c || h.startsWith(c + sep)) return undefined
+  }
+  return real
+}
+
+/** `path` is `root` or lies under it (trailing-separator rule, as isCwdAllowed in ../sessions.ts). */
+function atOrUnder(path: string, root: string): boolean {
+  return path === root || path.startsWith(root.endsWith(sep) ? root : root + sep)
+}
+
+/**
+ * The scope rule for an agent's fabric calls (U-R1A-47): a project is the agent's own when its
+ * workspaceRef passes projectFolderOf and its realpath, read now, is the agent's session folder or
+ * an ancestor of it. No workspaceRef, a relative or an unresolvable one: nobody's own.
+ * Stated limits: every session still shares one fabric agent id, so `agent`-scope memories inside
+ * one project are shared by that project's agents (36A G7); a same-user process can write its own
+ * caller_tokens row (36A residual 1c); calls forwarded to another computer's memory home carry no
+ * agent and are refused before they leave (src/mcp-server.ts).
+ */
+function holdsFolder(workspaceRef: string | undefined, folder: string): boolean {
+  const project = projectFolderOf(workspaceRef)
+  if (project === undefined) return false
+  try {
+    return atOrUnder(realpathSync.native(folder), realpathSync.native(project))
+  } catch {
+    return false
+  }
+}
+
+/** A project an agent creates must sit at its session folder or under it (both real, read now). */
+function underFolder(workspaceRef: unknown, folder: string): boolean {
+  if (typeof workspaceRef !== 'string' || !isAbsolute(workspaceRef)) return false
+  try {
+    return atOrUnder(realpathSync.native(workspaceRef), realpathSync.native(folder))
+  } catch {
+    return false
+  }
+}
+
+/** An agent scoped to its folder must name its own project: `agent`-scope memories with no project are every session's (36A G7). */
+function assertNamesProject(ctx: CallerContext): void {
+  if (ctx.folder !== undefined && ctx.projectId === undefined) throw new FabricAccessError()
+}
+
 function optional<T>(value: T | undefined): T | null {
   return value === undefined ? null : value
 }
@@ -996,6 +1090,7 @@ export class SQLiteFabricClient implements FabricClient {
     return this.audited(ctx, 'project.create', () => {
       assertCapability(ctx, 'project:create')
       validateCreateProjectInput(input)
+      if (ctx.folder !== undefined && !underFolder(input.workspaceRef, ctx.folder)) throw new FabricValidationError('workspaceRef')
       const addsOtherMember = (input.memberAgentIds ?? []).some(agentId => agentId !== ctx.agentId)
       if (addsOtherMember) {
         if (ctx.actorType !== 'owner') throw new FabricAccessError()
@@ -1017,7 +1112,7 @@ export class SQLiteFabricClient implements FabricClient {
         )
         const insertMember = this.#database.prepare('INSERT INTO project_members (owner_id, project_id, agent_id) VALUES (?, ?, ?)')
         for (const agentId of members) insertMember.run(ctx.ownerId, projectId, agentId)
-        return this.projectById(ctx.ownerId, projectId, ctx.agentId, ctx.actorType === 'owner', false) ?? (() => { throw new FabricStorageError() })()
+        return this.projectById(ctx.ownerId, projectId, ctx.agentId, ctx.actorType === 'owner', false, undefined) ?? (() => { throw new FabricStorageError() })()
       }))
     }, project => ({ projectId: project.projectId, targetId: project.projectId }))
   }
@@ -1037,7 +1132,10 @@ export class SQLiteFabricClient implements FabricClient {
               INNER JOIN project_members m ON m.owner_id = p.owner_id AND m.project_id = p.project_id
               WHERE p.owner_id = ? AND m.agent_id = ? ORDER BY p.created_at, p.project_id
             `).all(ctx.ownerId, ctx.agentId) as SqlRow[]
-        return rows.map(row => this.projectFromRow(row))
+        const folder = ctx.folder
+        return rows
+          .filter(row => folder === undefined || holdsFolder(optionalString(row, 'workspace_ref'), folder))
+          .map(row => this.projectFromRow(row))
       })
     }, projects => ({ resultCount: projects.length }))
   }
@@ -1046,7 +1144,7 @@ export class SQLiteFabricClient implements FabricClient {
     return this.audited(ctx, 'project.get', () => {
       assertCapability(ctx, 'project:read')
       validateProjectId(projectId)
-      return this.storage(() => this.projectById(ctx.ownerId, projectId, ctx.agentId, ctx.actorType === 'owner', false))
+      return this.storage(() => this.projectById(ctx.ownerId, projectId, ctx.agentId, ctx.actorType === 'owner', false, ctx.folder))
     }, project => ({ resultCount: project ? 1 : 0 }), {
       targetId: safeAuditTarget(projectId), projectId: safeAuditTarget(projectId),
     })
@@ -1677,6 +1775,8 @@ export class SQLiteFabricClient implements FabricClient {
     return this.audited(ctx, 'memory.remember', async () => {
       assertCapability(ctx, 'memory:write')
       validateRememberInput(input)
+      assertNamesProject(ctx)
+      const text = withinMemoryLimit(redact(input.text).text)
       let projectId: string | undefined
       let agentId: string | undefined
       if (input.scope === 'user') {
@@ -1689,13 +1789,13 @@ export class SQLiteFabricClient implements FabricClient {
         if (ctx.projectId !== undefined) projectId = this.currentActiveProject(ctx).projectId
       }
 
-      const [embedding] = await this.#embeddingProvider.embed([input.text])
+      const [embedding] = await this.#embeddingProvider.embed([text])
       if (!embedding || embedding.length !== this.#embeddingProvider.dimensions) throw new FabricStorageError()
       return this.storage(() => this.transaction(() => {
         if (projectId !== undefined) this.authorizedProject(ctx, projectId, true)
         if (input.supersedes) this.validateSupersedes(ctx, input.supersedes, input.scope, projectId, agentId)
         if (!input.supersedes) {
-          const duplicate = this.findDuplicateMemory(ctx.ownerId, input.scope, projectId, agentId, input.text)
+          const duplicate = this.findDuplicateMemory(ctx.ownerId, input.scope, projectId, agentId, text)
           if (duplicate) {
             this.raiseMemoryStrength(requiredString(duplicate, 'id'), input.importance, input.confidence, this.nowIso())
             const current = this.memoryRow(ctx.ownerId, requiredString(duplicate, 'id'))
@@ -1715,12 +1815,12 @@ export class SQLiteFabricClient implements FabricClient {
             created_at, updated_at, source_type, source_agent_id, source_session_id, supersedes, normalized_digest
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          id, ctx.ownerId, input.scope, optional(projectId), optional(agentId), input.kind, input.text,
+          id, ctx.ownerId, input.scope, optional(projectId), optional(agentId), input.kind, text,
           input.importance, optional(input.confidence), timestamp, timestamp, sourceType,
           input.scope === 'user' ? null : ctx.agentId,
-          input.scope === 'user' ? null : optional(input.sessionId), optional(input.supersedes), memoryDigest(input.text),
+          input.scope === 'user' ? null : optional(input.sessionId), optional(input.supersedes), memoryDigest(text),
         )
-        this.#database.prepare('INSERT INTO memory_fts(memory_id, text) VALUES (?, ?)').run(id, input.text)
+        this.#database.prepare('INSERT INTO memory_fts(memory_id, text) VALUES (?, ?)').run(id, text)
         this.#vectorStore.upsert(id, embedding, {
           ownerId: ctx.ownerId, scope: input.scope, projectId: projectId ?? null, agentId: agentId ?? null,
         })
@@ -1734,7 +1834,7 @@ export class SQLiteFabricClient implements FabricClient {
     }, record => ({
       projectId: record.projectId,
       targetId: record.id,
-      byteCount: Buffer.byteLength(input.text, 'utf8'),
+      byteCount: Buffer.byteLength(record.text, 'utf8'),
       ...(merged ? { merged: true } : {}),
     }))
   }
@@ -1743,6 +1843,7 @@ export class SQLiteFabricClient implements FabricClient {
     return this.audited(ctx, 'memory.search', async () => {
       assertCapability(ctx, 'memory:read')
       validateSearchMemoryInput(input)
+      assertNamesProject(ctx)
       if (ctx.projectId !== undefined) this.currentActiveProject(ctx)
       const canReadUser = ctx.actorType === 'owner' && ctx.capabilities.has('memory:read:user') && ctx.projectId === undefined
       const [queryVector] = await this.#embeddingProvider.embed([input.query])
@@ -1794,6 +1895,7 @@ export class SQLiteFabricClient implements FabricClient {
     return this.audited(ctx, 'memory.get', () => {
       assertCapability(ctx, 'memory:read')
       validateMemoryId(id)
+      assertNamesProject(ctx)
       return this.storage(() => {
         const row = this.memoryRow(ctx.ownerId, id)
         if (!row || optionalString(row, 'deleted_at')) throw new FabricAccessError()
@@ -1808,6 +1910,7 @@ export class SQLiteFabricClient implements FabricClient {
     await this.audited(ctx, 'memory.forget', () => {
       assertCapability(ctx, 'memory:delete')
       validateMemoryId(id)
+      assertNamesProject(ctx)
       return this.storage(() => this.transaction(() => {
         const row = this.memoryRow(ctx.ownerId, id)
         if (!row || optionalString(row, 'deleted_at')) throw new FabricAccessError()
@@ -1834,7 +1937,7 @@ export class SQLiteFabricClient implements FabricClient {
       await this.reconcileProject(ctx.ownerId, project.projectId)
       const preview = this.storage(() => this.roomEventRow(ctx.ownerId, project.projectId, input.roomEventId, this.nowMs()))
       if (!preview || !this.canSeeRoomRow(ctx, preview)) throw new FabricAccessError()
-      const [embedding] = await this.#embeddingProvider.embed([requiredString(preview, 'body')])
+      const [embedding] = await this.#embeddingProvider.embed([withinMemoryLimit(redact(requiredString(preview, 'body')).text)])
       if (!embedding || embedding.length !== this.#embeddingProvider.dimensions) throw new FabricStorageError()
       return this.storage(() => this.transaction(() => {
         const activeProject = this.authorizedProject(ctx, project.projectId, true)
@@ -1875,6 +1978,7 @@ export class SQLiteFabricClient implements FabricClient {
         }
         const id = `memory-${randomUUID()}`
         const timestamp = new Date(now).toISOString()
+        const text = withinMemoryLimit(redact(requiredString(eventRow, 'body')).text)
         this.#database.prepare(`
           INSERT INTO memories (
             id, owner_id, scope, project_id, kind, text, importance, confidence,
@@ -1882,12 +1986,12 @@ export class SQLiteFabricClient implements FabricClient {
             normalized_digest
           ) VALUES (?, ?, 'project', ?, ?, ?, ?, ?, ?, ?, 'room', ?, ?, ?, ?)
         `).run(
-          id, ctx.ownerId, activeProject.projectId, input.kind, requiredString(eventRow, 'body'),
+          id, ctx.ownerId, activeProject.projectId, input.kind, text,
           input.importance, optional(input.confidence), timestamp, timestamp,
           requiredString(eventRow, 'from_agent_id'), requiredString(eventRow, 'id'), optionalString(eventRow, 'provenance_session_id') ?? null,
-          memoryDigest(requiredString(eventRow, 'body')),
+          memoryDigest(text),
         )
-        this.#database.prepare('INSERT INTO memory_fts(memory_id, text) VALUES (?, ?)').run(id, requiredString(eventRow, 'body'))
+        this.#database.prepare('INSERT INTO memory_fts(memory_id, text) VALUES (?, ?)').run(id, text)
         this.#vectorStore.upsert(id, embedding, {
           ownerId: ctx.ownerId, scope: 'project', projectId: activeProject.projectId, agentId: null,
         })
@@ -2126,6 +2230,7 @@ export class SQLiteFabricClient implements FabricClient {
     agentId: string,
     ownerActor: boolean,
     active: boolean,
+    folder: string | undefined,
   ): Project | null {
     this.ensureOpen()
     const row = this.#database.prepare(`
@@ -2137,7 +2242,10 @@ export class SQLiteFabricClient implements FabricClient {
         ))
         AND (? = 0 OR p.archived_at IS NULL)
     `).get(ownerId, projectId, ownerActor ? 1 : 0, agentId, active ? 1 : 0) as SqlRow | undefined
-    return row ? this.projectFromRow(row) : null
+    if (!row) return null
+    // An agent scoped to its folder (U-R1A-47): a project not its own answers as an unknown one.
+    if (folder !== undefined && !holdsFolder(optionalString(row, 'workspace_ref'), folder)) return null
+    return this.projectFromRow(row)
   }
 
   private projectFromRow(row: SqlRow): Project {
@@ -2168,7 +2276,7 @@ export class SQLiteFabricClient implements FabricClient {
 
   private authorizedProject(ctx: CallerContext, projectId: string, active: boolean): Project {
     return this.storage(() => {
-      const project = this.projectById(ctx.ownerId, projectId, ctx.agentId, ctx.actorType === 'owner', active)
+      const project = this.projectById(ctx.ownerId, projectId, ctx.agentId, ctx.actorType === 'owner', active, ctx.folder)
       if (!project) throw new FabricAccessError()
       return project
     })
@@ -2518,7 +2626,8 @@ export class SQLiteFabricClient implements FabricClient {
   }
 
   private canReadMemory(ctx: CallerContext, record: MemoryRecord): boolean {
-    if (ctx.projectId !== undefined && !this.projectById(ctx.ownerId, ctx.projectId, ctx.agentId, ctx.actorType === 'owner', true)) return false
+    if (ctx.folder !== undefined && ctx.projectId === undefined) return false
+    if (ctx.projectId !== undefined && !this.projectById(ctx.ownerId, ctx.projectId, ctx.agentId, ctx.actorType === 'owner', true, ctx.folder)) return false
     if (record.scope === 'user') return ctx.actorType === 'owner' && ctx.capabilities.has('memory:read:user') && ctx.projectId === undefined
     if (record.scope === 'project') return record.projectId === ctx.projectId
     return record.agentId === ctx.agentId && record.projectId === ctx.projectId

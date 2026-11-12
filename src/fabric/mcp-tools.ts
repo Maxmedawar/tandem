@@ -52,10 +52,15 @@ const memoryKind = z.enum(['preference', 'fact', 'decision', 'constraint', 'disc
 const importance = z.number().finite().min(0).max(1)
 const confidence = z.number().finite().min(0).max(1).optional()
 
+/** U-R1A-47: how far an agent's calls reach. Stated limits: every session shares one fabric agent id
+ *  (36A G7), and agents on a computer that is not the memory home get no memory tools under "project"
+ *  until forwarded calls carry the agent. */
+const SCOPE = ' An agent inside a Tandem session sees only projects whose workspaceRef holds its session\'s folder and must name one of them as projectId (project_list shows them), unless the owner sets memory_scope = "all"; memory text is masked for secrets when saved.'
+
 const definitions = {
   project_create: {
     title: 'Create project',
-    description: 'Create a Fabric project owned by the authenticated owner.',
+    description: 'Create a Fabric project owned by the authenticated owner.' + SCOPE,
     inputSchema: {
       displayName: z.string().min(1).max(MAX_DISPLAY_NAME_BYTES),
       repoRef: z.string().min(1).max(MAX_REFERENCE_BYTES).optional(),
@@ -69,22 +74,22 @@ const definitions = {
   },
   project_list: {
     title: 'List projects',
-    description: 'List projects visible to the authenticated owner.',
+    description: 'List projects visible to the authenticated owner.' + SCOPE,
     inputSchema: {},
   },
   project_get: {
     title: 'Get project',
-    description: 'Get one owned project.',
+    description: 'Get one owned project.' + SCOPE,
     inputSchema: { projectId: identifier },
   },
   project_archive: {
     title: 'Archive project',
-    description: 'Archive one owned project.',
+    description: 'Archive one owned project.' + SCOPE,
     inputSchema: { projectId: identifier },
   },
   room_post: {
     title: 'Post room event',
-    description: 'Post a retained event to an owned project room.',
+    description: 'Post a retained event to an owned project room.' + SCOPE,
     inputSchema: {
       projectId: identifier,
       room: identifier,
@@ -100,7 +105,7 @@ const definitions = {
   },
   room_read: {
     title: 'Read room events',
-    description: 'Read retained events from an owned project room. Adopt the returned continuation only after success; retrying the input cursor replays the same unread page.',
+    description: 'Read retained events from an owned project room. Adopt the returned continuation only after success; retrying the input cursor replays the same unread page.' + SCOPE,
     inputSchema: {
       projectId: identifier,
       room: identifier,
@@ -110,7 +115,7 @@ const definitions = {
   },
   memory_remember: {
     title: 'Remember',
-    description: 'Store an owner, project, or owner-actor memory with provenance.',
+    description: 'Store an owner, project, or owner-actor memory with provenance.' + SCOPE,
     inputSchema: {
       projectId: identifier.optional(),
       scope: memoryScope,
@@ -123,7 +128,7 @@ const definitions = {
   },
   memory_search: {
     title: 'Search memory',
-    description: 'Search memory visible to the authenticated owner.',
+    description: 'Search memory visible to the authenticated owner.' + SCOPE,
     inputSchema: {
       projectId: identifier.optional(),
       scope: memoryScope.optional(),
@@ -133,17 +138,17 @@ const definitions = {
   },
   memory_get: {
     title: 'Get memory',
-    description: 'Get one memory visible to the authenticated owner.',
+    description: 'Get one memory visible to the authenticated owner.' + SCOPE,
     inputSchema: { projectId: identifier.optional(), id: identifier },
   },
   memory_forget: {
     title: 'Forget memory',
-    description: 'Tombstone one memory visible to the authenticated owner.',
+    description: 'Tombstone one memory visible to the authenticated owner.' + SCOPE,
     inputSchema: { projectId: identifier.optional(), id: identifier },
   },
   memory_promote: {
     title: 'Promote room event',
-    description: 'Promote one retained room event into project memory.',
+    description: 'Promote one retained room event into project memory.' + SCOPE,
     inputSchema: {
       projectId: identifier,
       roomEventId: identifier,

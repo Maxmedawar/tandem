@@ -13,6 +13,9 @@ export interface CallerContext {
   readonly projectId?: string
   readonly actorType: 'agent' | 'owner'
   readonly capabilities: ReadonlySet<FabricCapability>
+  /** An agent's session folder (bridge/caller-tokens.ts), set in-process only for an agent under
+   *  memory_scope "project": its calls then reach only projects whose workspaceRef holds it. */
+  readonly folder?: string
 }
 
 export interface RetentionPolicy {
