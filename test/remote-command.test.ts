@@ -95,7 +95,7 @@ function setLimits(extra: Record<string, unknown> = {}) {
 /** A command body; `over` replaces or adds fields. */
 const cmd = (over: Json = {}) =>
   JSON.stringify({ v: 1, kind: 'command', op: 'open', args: { engine: 'shell', name: 'r1a36b-x', cwd: WORK }, caller: CALLER, ...over })
-const seal = (k: Json, from: string, to: string, body: string, ts = clock) => JSON.stringify(signEnvelope(k, { from, to, body }, ts))
+const seal = (k: Json, from: string, to: string, body: string, ts = clock) => JSON.stringify(signEnvelope(k, { from, to, body }, ts, 'command'))
 const run = (envelope: string) => handleRemoteCommand({ envelope }, { now })
 const fromAlpha = (over: Json = {}) => run(seal(A, 'alpha', 'beta', cmd(over)))
 
@@ -473,7 +473,7 @@ describe('(r5) A side: sendRemoteCommand and the agent\'s tools', () => {
     const sent = JSON.parse(seen[0].body)
     expect(Object.keys(sent).sort()).toEqual(['envelope', 'to'])
     expect(sent.to).toBe('beta')
-    const opened = openEnvelope(sent.envelope, { sender: { id: 'alpha', publicKey: A.publicKey }, self: 'beta', seen: { remember: () => true }, now: clock })
+    const opened = openEnvelope(sent.envelope, { sender: { id: 'alpha', publicKey: A.publicKey }, self: 'beta', seen: { remember: () => true }, now: clock, kind: 'command' })
     expect(JSON.parse(opened.body)).toEqual({ v: 1, kind: 'command', op: 'open', args: { engine: 'shell', name: 'r1a36b-a', cwd: WORK }, caller: CALLER })
     expect(Object.keys(JSON.parse(opened.body))).toEqual(['v', 'kind', 'op', 'args', 'caller'])
   })

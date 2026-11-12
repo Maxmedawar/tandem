@@ -220,14 +220,14 @@ describe.skipIf(Boolean(missing))(title, () => {
     expect(betaBox!.read('bob', 10).map((m) => [m.id, m.from, m.level])).toEqual([[ask.id, `machine:alpha/${CALLER}`, 'ask']])
 
     // One command alpha signs and sends itself (close of a name that is not there), kept for (e3).
-    recorded = JSON.stringify(signEnvelope(keyIn(alpha!.home), { from: 'alpha', to: 'beta', body: commandBody() }))
+    recorded = JSON.stringify(signEnvelope(keyIn(alpha!.home), { from: 'alpha', to: 'beta', body: commandBody() }, undefined, 'command'))
     const sent = await post('alpha', keyIn(alpha!.home), JSON.stringify({ to: 'beta', envelope: recorded }))
     expect(sent.status).toBe(200)
     recordedAnswer = sent.data
   }, 180_000)
 
   it('(36B) (e3) the hub carries, the signature decides: forged, replayed, offline, not a member', async () => {
-    const forged = JSON.stringify(signEnvelope(gamma, { from: 'alpha', to: 'beta', body: commandBody({ op: 'open', args: { engine: 'shell', name: 'r1a36b-e3', cwd: beta!.folder } }) }))
+    const forged = JSON.stringify(signEnvelope(gamma, { from: 'alpha', to: 'beta', body: commandBody({ op: 'open', args: { engine: 'shell', name: 'r1a36b-e3', cwd: beta!.folder } }) }, undefined, 'command'))
     expect(await post('gamma', gamma, JSON.stringify({ to: 'beta', envelope: forged }))).toEqual({ status: 401, data: { error: 'envelope', reason: 'signature' } })
     expect(betaSessions()).not.toContain('ccm-r1a36b-e3')
     // Still 401 replay, run once; since the audit it carries beta's stored receipt of that one run.
@@ -244,5 +244,22 @@ describe.skipIf(Boolean(missing))(title, () => {
     expect((await post('gamma', gamma, JSON.stringify({ to: 'beta', envelope: forged }), { bearer: 'w'.repeat(40) })).status).toBe(401)
     expect(await post('gamma', gamma, JSON.stringify({ to: 'beta', envelope: forged, x: 1 }))).toEqual({ status: 400, data: { error: 'command_invalid' } })
     expect((await post('gamma', gamma, JSON.stringify({ to: 'beta', envelope: 'x'.repeat(70_000) }))).status).toBe(413)
+  }, 120_000)
+  it('(36E) (e4) the hub caps commands per target computer: the 61st in 60 s is 429 target_busy and never reaches the target', async () => {
+    const GAMMA = 'control_from: gamma may not act on this computer (limits file)'
+    const gammaLines = () => {
+      const file = join(tandemHome(alpha!), 'bridge.log')
+      const lines: Json[] = existsSync(file) ? readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []
+      return lines.filter((l) => l.event === 'remote.command' && l.from === 'gamma').length
+    }
+    const to = (target: string) =>
+      JSON.stringify({ to: target, envelope: JSON.stringify(signEnvelope(gamma, { from: 'gamma', to: target, body: commandBody() }, undefined, 'command')) })
+    expect(gammaLines()).toBe(0)
+    for (let i = 1; i <= 60; i++) expect([i, await post('gamma', gamma, to('alpha'))]).toEqual([i, { status: 403, data: { error: GAMMA } }])
+    expect(gammaLines()).toBe(60)
+    expect(await post('gamma', gamma, to('alpha'))).toEqual({ status: 429, data: { error: 'target_busy', requested: 'alpha' } })
+    expect(gammaLines()).toBe(60)
+    expect(await post('gamma', gamma, to('beta'))).toEqual({ status: 403, data: { error: GAMMA } })
+    expect(await post('gamma', gamma, to('root'))).toEqual({ status: 503, data: { error: 'bridge_offline', requested: 'root' } })
   }, 120_000)
 })

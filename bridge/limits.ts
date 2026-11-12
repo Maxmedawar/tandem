@@ -9,6 +9,14 @@
  * `transcript_scope` ("project" or "computer"; src/mcp-server.ts; absent, missing or refused means
  * "project"). The bridge is the only place limits are enforced, and nothing remote can widen them.
  *
+ * Rights of another computer (U-R1A-36E): `open`, `send` (typing text), `close`, `read` (a poll:
+ * send with empty text) and `ask` (Ask mail), each listed on its own in `control_from_open`,
+ * `control_from_send`, `control_from_close`, `control_from_read` and `control_from_ask` (each an
+ * array of computer ids, as `control_from`; absent means []). The lists only add: a computer holds
+ * a right when `control_from` lists it OR that right's own list does, so `control_from` alone
+ * grants all five and an absent or empty per-right list leaves `control_from` in force for that
+ * right. rightsOf() is the only place they are combined.
+ *
  * The file is `$TANDEM_HOME/limits.toml` when TANDEM_HOME is set, else `~/.tandem/limits.toml`,
  * worked out at each read. What is used is the APPLIED COPY beside it, `limits.applied.toml` (0600,
  * the exact bytes of the limits.toml that was applied), written only by commitLimits(), which only
@@ -65,6 +73,12 @@ export interface LimitsSnapshot {
   session_cap: number
   /** Computer ids whose signed commands run here and whose Ask mail is stored here; [] when absent, missing or refused. */
   control_from: string[]
+  /** Computer ids holding one right each on top of control_from (U-R1A-36E); [] when absent, missing or refused. */
+  control_from_open: string[]
+  control_from_send: string[]
+  control_from_close: string[]
+  control_from_read: string[]
+  control_from_ask: string[]
   /** How far an agent's memory calls reach: its own project folder, or every project; "project" when absent, missing or refused. */
   memory_scope: 'project' | 'all'
   /** How far an agent's transcript search reaches: its own session's folder, or this computer; "project" when absent, missing or refused. */
@@ -73,7 +87,16 @@ export interface LimitsSnapshot {
   problem?: string
 }
 
-export const FIELDS = ['folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap', 'control_from', 'memory_scope', 'transcript_scope']
+export const FIELDS = [
+  'folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap', 'control_from',
+  'control_from_open', 'control_from_send', 'control_from_close', 'control_from_read', 'control_from_ask', 'memory_scope', 'transcript_scope',
+]
+/** What another computer may do here, in this order (U-R1A-36E). */
+export const RIGHTS = ['open', 'send', 'close', 'read', 'ask'] as const
+export type Right = (typeof RIGHTS)[number]
+/** The per-right lists, by right. */
+const RIGHT_LISTS = ['control_from_open', 'control_from_send', 'control_from_close', 'control_from_read', 'control_from_ask'] as const
+type RightList = (typeof RIGHT_LISTS)[number]
 /** A computer id (bridge/envelope.ts ID). */
 const COMPUTER_ID = /^[a-z0-9._-]{1,64}$/
 const DEFAULT_SESSION_CAP = 12
@@ -84,7 +107,9 @@ const SHA256 = /^[0-9a-f]{64}$/
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
 /** What `tandem limits init` writes for every field but `folders` and `agents` (U-R1A-17B adds its two fields here and to FIELDS). */
 export const INIT_DEFAULTS = {
-  shell: false, permission_skip: [], session_cap: 12, interrupt_from: [], control_from: [], memory_scope: 'project', transcript_scope: 'project',
+  shell: false, permission_skip: [], session_cap: 12, interrupt_from: [], control_from: [],
+  control_from_open: [], control_from_send: [], control_from_close: [], control_from_read: [], control_from_ask: [],
+  memory_scope: 'project', transcript_scope: 'project',
 } as const
 export type LimitsFields = Omit<LimitsSnapshot, 'digest' | 'problem'>
 const APPLIED = 'limits.applied.toml'
@@ -226,10 +251,15 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
   if (typeof session_cap !== 'number' || !Number.isInteger(session_cap) || session_cap < 1 || session_cap > 100) {
     fail('wrong type for session_cap: expected a whole number 1 to 100')
   }
-  const control_from = raw.control_from ?? []
-  if (!Array.isArray(control_from) || !control_from.every((id) => typeof id === 'string' && COMPUTER_ID.test(id)) || new Set(control_from).size !== control_from.length) {
-    fail('wrong type for control_from: expected an array of computer ids')
+  const ids = (field: string): string[] => {
+    const v = raw[field] ?? []
+    if (!Array.isArray(v) || !v.every((id) => typeof id === 'string' && COMPUTER_ID.test(id)) || new Set(v).size !== v.length) {
+      fail(`wrong type for ${field}: expected an array of computer ids`)
+    }
+    return v as string[]
   }
+  const control_from = ids('control_from')
+  const lists = Object.fromEntries(RIGHT_LISTS.map((f) => [f, ids(f)])) as Record<RightList, string[]>
   const memory_scope = raw.memory_scope ?? 'project'
   if (memory_scope !== 'project' && memory_scope !== 'all') fail('wrong type for memory_scope: expected "project" or "all"')
   const transcript_scope = raw.transcript_scope ?? 'project'
@@ -238,7 +268,7 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
   }
   const from = raw.interrupt_from
   const base = {
-    folders, shell: shell as boolean, permission_skip, agents, session_cap: session_cap as number, control_from: control_from as string[],
+    folders, shell: shell as boolean, permission_skip, agents, session_cap: session_cap as number, control_from, ...lists,
     memory_scope: memory_scope as LimitsSnapshot['memory_scope'], transcript_scope: transcript_scope as LimitsSnapshot['transcript_scope'],
   }
   if (from === undefined) return base
@@ -277,7 +307,7 @@ function readLimits(dir = dirname(limitsFile())): LimitsSnapshot {
   process.stderr.write(`limits: ${problem}; nothing is allowed\n`)
   return {
     folders: [], shell: false, permission_skip: [], agents: {}, digest: disk.digest, problem, session_cap: DEFAULT_SESSION_CAP, control_from: [],
-    memory_scope: 'project', transcript_scope: 'project',
+    control_from_open: [], control_from_send: [], control_from_close: [], control_from_read: [], control_from_ask: [], memory_scope: 'project', transcript_scope: 'project',
   }
 }
 
@@ -350,17 +380,28 @@ export function commitLimits(expected: string): string | undefined {
   return undefined
 }
 
-/** A copy of the applied snapshot. `session_cap`, `control_from`, `memory_scope` and `transcript_scope` are on it
+/** A copy of the applied snapshot. `session_cap`, `control_from`, the five per-right lists, `memory_scope` and `transcript_scope` are on it
  *  but not enumerable, so the snapshot's listed fields (and every reader comparing or printing them) stay as they were before them. */
 export function limitsSnapshot(): LimitsSnapshot {
   fresh()
   const copy = structuredClone(snapshot)
   Object.defineProperty(copy, 'session_cap', { value: snapshot.session_cap, enumerable: false, writable: true, configurable: true })
-  Object.defineProperty(copy, 'control_from', { value: [...snapshot.control_from], enumerable: false, writable: true, configurable: true })
+  for (const field of ['control_from', ...RIGHT_LISTS] as const) {
+    Object.defineProperty(copy, field, { value: [...snapshot[field]], enumerable: false, writable: true, configurable: true })
+  }
   for (const field of ['memory_scope', 'transcript_scope'] as const) {
     Object.defineProperty(copy, field, { value: snapshot[field], enumerable: false, writable: true, configurable: true })
   }
   return copy
+}
+
+/**
+ * The rights computer `id` holds here, in RIGHTS order, from the applied snapshot: right r when
+ * `control_from` or `control_from_<r>` lists it (U-R1A-36E). The only place they are combined.
+ */
+export function rightsOf(id: string): Right[] {
+  const snap = limitsSnapshot()
+  return RIGHTS.filter((r, i) => snap.control_from.includes(id) || snap[RIGHT_LISTS[i]].includes(id))
 }
 
 function sha256Of(file: string): string | undefined {

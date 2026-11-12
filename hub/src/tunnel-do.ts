@@ -22,6 +22,8 @@
  * presenceExchange) are Durable Object RPC methods the link routes in index.ts call. So is
  * remoteCommand (U-R1A-36B): one request frame, POST /remote/command, to the receiving computer's
  * own socket through forward (its timeout and its own-socket rule); the envelope is never read here.
+ * At most 60 commands per target computer in any rolling 60 s (./command-cap, U-R1A-36E); over it
+ * 429 target_busy and no frame. The counts live in this object's memory: a restart forgets them.
  */
 
 import { DurableObject } from 'cloudflare:workers'
@@ -52,6 +54,7 @@ import { HubQueue, type PutResult, type QueuedCopy, type QueueMessage } from './
 import { HubDevices, PROOF_HEADER, PROOF_WINDOW_MS, parseProof, verifyProof, type ProofContext } from './devices'
 import { RosterStore, type OfferAnswer, type PutAnswer } from './roster-store'
 import { PresenceStore, type PresenceItem } from './presence-store'
+import { CommandCap } from './command-cap'
 import type { Env } from './types'
 import { FABRIC_MCP_TRUST } from '../../src/fabric/rpc-contract.ts'
 
@@ -107,6 +110,8 @@ interface PendingRequest {
 
 export class TunnelDO extends DurableObject<Env> {
   private readonly pending = new Map<string, PendingRequest>()
+  /** Commands per target computer in the last 60 s; in memory only (a restart forgets it). */
+  private readonly commandCap = new CommandCap()
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env)
@@ -194,8 +199,9 @@ export class TunnelDO extends DurableObject<Env> {
 
   /**
    * A signed command from the proof's computer to computer `to`, both entries of the stored roster
-   * and not the same computer (else 403 not_in_roster); `to` with no open socket 503 bridge_offline.
-   * Else one frame `POST /remote/command` with `{ envelope }` and `tandem-command-from: <id>` (a
+   * and not the same computer (else 403 not_in_roster); `to` with no open socket 503 bridge_offline;
+   * 60 commands already sent to `to` in the last 60 s 429 target_busy (no frame). Else one frame
+   * `POST /remote/command` with `{ envelope }` and `tandem-command-from: <id>` (a
    * label: the receiver decides by the envelope's signature) on `to`'s socket; the bridge's answer
    * (status and body text) as it comes.
    */
@@ -203,6 +209,7 @@ export class TunnelDO extends DurableObject<Env> {
     if (to === id || !(await this.inRoster(id, key, [to]))) return { status: 403, body: JSON.stringify({ error: 'not_in_roster' }) }
     const socket = this.getSocketFor(to)
     if (!socket) return { status: 503, body: JSON.stringify({ error: 'bridge_offline', requested: to }) }
+    if (!this.commandCap.take(to)) return { status: 429, body: JSON.stringify({ error: 'target_busy', requested: to }) }
     const url = new URL('https://do/__rpc/remote/command')
     const request = new Request(url, {
       method: 'POST',
