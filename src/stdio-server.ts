@@ -45,12 +45,6 @@ try {
   /* no development .env; explicit environment remains supported */
 }
 
-// Bridge the user-facing TANDEM_* config to the engine's CCM_* names. This MUST
-// happen before importing the server module, which loads the router (and its
-// cwd allowlist) at module load.
-if (process.env.TANDEM_CWD_ALLOWLIST) process.env.CCM_CWD_ALLOWLIST = process.env.TANDEM_CWD_ALLOWLIST;
-if (process.env.TANDEM_DEFAULT_CWD) process.env.CCM_DEFAULT_CWD = process.env.TANDEM_DEFAULT_CWD;
-
 // The caller, before the server module reads it. Fail closed: an unresolved value is never the owner.
 //
 // No token (U-R1A-36C): a server whose process or one of its parents is the pane process of a
@@ -125,7 +119,7 @@ const onWake = ({ names, room, eventId }: { names: string[]; room: string; event
     }
   }
 };
-// This process's own fabric store (only with CCM_FABRIC_ENABLED=1). The bridge process may
+// This process's own fabric store (only with TANDEM_FABRIC_ENABLED=1). The bridge process may
 // open the same SQLite file: SQLite's file locks serialise the writes. Its diagnostics and
 // audit lines go to stderr, since stdout is the wire.
 const fabric = await startFabric({ stdout: (value) => process.stderr.write(value), onWake });

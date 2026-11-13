@@ -10,15 +10,15 @@
  * and audit log all live in the router and apply identically to both paths.
  *
  * IMPORT-ORDER CAVEAT: importing this module pulls in the router, which builds
- * the cwd ALLOWLIST from env at module load. Entrypoints must bridge the
- * TANDEM_* env vars to the engine's CCM_* names BEFORE importing this module
- * (both entrypoints use a dynamic `await import(...)` after env setup).
+ * the cwd ALLOWLIST from env at module load (TANDEM_CWD_ALLOWLIST, read through
+ * src/legacy-env.ts). Entrypoints must finish their env setup (.env loading)
+ * BEFORE importing this module (both use a dynamic `await import(...)` after it).
  *
  * The tool surface contains seven tools. read_session is folded into
  * send_to_session (empty text = poll mode); the four relay tools are folded into
  * one `relay` tool with an `action`. The underlying routes are unchanged, so the
  * full capability set remains reachable. With a fabric store (the entry point's
- * own, opened when CCM_FABRIC_ENABLED=1) the 11 room, memory and project tools are
+ * own, opened when TANDEM_FABRIC_ENABLED=1) the 11 room, memory and project tools are
  * added; they reach the same fabric router the hub's calls reach, as the hub's owner.
  * With a hub forwarder instead (no store here, a hub link set) the same 11 tools pass
  * each call to the hub, which sends it to the memory home.
@@ -314,8 +314,9 @@ export async function buildMcpServer(
 
   // 'owner' is the hub's single user, so the derived owner (and every project and
   // memory) is the same whether a call comes through the hub or this server.
-  // An agent under memory_scope "project" (read at each call): true. The owner, or "all": false.
-  const memoryScoped = () => caller !== undefined && limitsSnapshot().memory_scope === "project";
+  // An agent is scoped unless memory_scope is exactly "all" (read at each call); a missing or
+  // unknown value is scoped (fail closed). The owner: false.
+  const memoryScoped = () => caller !== undefined && limitsSnapshot().memory_scope !== "all";
   if (fabric && "forward" in fabric) {
     // Known gap (36B or later): the memory home sees every forwarded call as the owner's, so an
     // agent's room posts sent this way still count as owner posts there. For the same reason an
@@ -422,11 +423,11 @@ export async function buildMcpServer(
   /* ---- past sessions (with a transcript search) ---- */
 
   if (transcripts) {
-    // An agent under transcript_scope "project" (read at each call): the project's realpath must be
-    // its session's folder or under it, else a 403 before search.ts is reached. The owner, or
-    // "computer": as before.
+    // An agent is scoped unless transcript_scope is exactly "computer" (read at each call); a missing or
+    // unknown value is scoped (fail closed): the project's realpath must be its session's folder or
+    // under it, else a 403 before search.ts is reached. The owner, or "computer": as before.
     const outsideScope = (project: string): { status: number; body: unknown } | undefined => {
-      if (caller === undefined || limitsSnapshot().transcript_scope !== "project") return undefined;
+      if (caller === undefined || limitsSnapshot().transcript_scope === "computer") return undefined;
       const folder = callerFolder(caller);
       if (folder === undefined) return { status: 403, body: { error: NO_FOLDER("transcript_scope") } };
       try {

@@ -59,8 +59,8 @@
  *     the same allowlist, limits file and session cap as any caller, with the input gate's agent
  *     rules; it never starts, steers, feeds or stops the relay (403); relay read stays open.
  *
- * Config (env): TANDEM_CWD_ALLOWLIST / TANDEM_DEFAULT_CWD are mapped to the
- * engine's CCM_* names by the entrypoint before this module loads.
+ * Config (env): TANDEM_CWD_ALLOWLIST / TANDEM_DEFAULT_CWD, read through src/legacy-env.ts
+ * when this module loads.
  * TANDEM_ENABLED_ENGINES opts engines in; none is on by default (see engine-registry.ts).
  */
 
@@ -96,6 +96,7 @@ import { processCaller } from './caller-tokens.ts'
 import { limitsGate, limitsSnapshot } from './limits.ts'
 import { KILL_SWITCH_ON, KillSwitchError, killSwitchOn, reserveSessions } from './kill-switch.ts'
 import { admitInput, type InputAction, type InputFrom, type InputVerdict } from './input-gate.ts'
+import { setting } from '../src/legacy-env.ts'
 import type { ReadState } from './harness-detect.ts'
 
 // ---- config ---------------------------------------------------------------
@@ -112,7 +113,7 @@ const AGENT_RELAY = 'relay: an agent may not drive the relay'
 /** The explicit allowlist is built once from env at startup. */
 const ALLOWLIST = buildAllowlist()
 /** If no default is configured, use the first explicitly allowlisted root. */
-const DEFAULT_CWD = process.env.CCM_DEFAULT_CWD ?? ALLOWLIST[0] ?? HOME
+const DEFAULT_CWD = setting(process.env, 'TANDEM_DEFAULT_CWD') ?? ALLOWLIST[0] ?? HOME
 
 export function getAllowlist(): string[] {
   return ALLOWLIST
@@ -354,6 +355,11 @@ async function openNamed(name: string, req: RpcRequest): Promise<RpcResult> {
   } catch (e) {
     return engineError(e)
   }
+  // tmux turns '.' in a session name into '_' (the session would not answer to its name): a
+  // tmux-hosted engine (its harness file names no adapter) gets no '.'; an adapter agent's id keeps it.
+  if (harness.adapter === undefined && name.includes('.')) {
+    return err(400, `invalid session name (allowed: A-Z a-z 0-9 . _ -): ${name}`)
+  }
 
   // A new name equal to an open one ignoring case would share its delivery and transcript files
   // on a case-insensitive disk. Read after the engine is resolved (a refused engine runs no tmux)
@@ -406,8 +412,9 @@ async function handleOpenAdapter(engine: EngineId, name: string, req: RpcRequest
   // A tmux-hosted session may have survived a bridge restart without yet being
   // re-adopted into the in-memory registry. Never let an adapter attachment claim
   // that live session's name and hide/misroute it. Any ccm-<name> collision is a
-  // conflict, including an untagged one.
-  if (await TerminalSession.exists(name)) {
+  // conflict, including an untagged one. An id with '.' is no tmux session's name (tmux keeps none,
+  // and TerminalSession reads `a.b` as the legacy session `ccm-a_b`): it never meets the session `a_b`.
+  if (!name.includes('.') && (await TerminalSession.exists(name))) {
     const existingEngine = await TerminalSession.engineTagOf(name)
     audit({
       route: 'POST /sessions/open',

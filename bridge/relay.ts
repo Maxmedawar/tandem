@@ -34,7 +34,8 @@ import { tandemHome } from './tandem-home.ts'
 import { TerminalSession, bypassPermissionsEnabled, readLogPage, type DialogAnswers } from './terminal-session.ts'
 import { loadedHarnesses } from './engine-registry.ts'
 import { KILL_SWITCH_ON, KillSwitchError, killSwitchOn } from './kill-switch.ts'
-import { harnessDescriptor } from './engines/harness-engine.ts'
+import { HarnessSession, harnessDescriptor } from './engines/harness-engine.ts'
+import { PROMPT_NOT_EMPTY, admitInput, recheckInput } from './input-gate.ts'
 import { emitCompletion, emitEscalation, emitNeedsInput } from './events.ts'
 import {
   managerDir,
@@ -146,6 +147,9 @@ interface RelayLoop {
   pendingInjection?: string
   /** The session currently inside an awaited send(), so stop() can interrupt it. */
   active?: TerminalSession
+  /** Each session's input gate (bridge/input-gate.ts): a HarnessSession on the claude file's rules.
+   *  A session with no gate is gated as itself (no inputState reads unknown: held). */
+  gates?: Map<TerminalSession, object>
   /** Absolute wall-clock deadline (ms epoch) for the CURRENT task. */
   deadline: number
   finished: Promise<void>
@@ -314,6 +318,10 @@ export async function startRelay(opts: StartRelayOptions): Promise<StartRelayRes
     idleTimeoutMs,
     answerIdleTimeoutMs,
     parked: false,
+    gates: new Map<TerminalSession, object>([
+      [lead, new HarnessSession(claude, lead)],
+      [worker, new HarnessSession(claude, worker)],
+    ]),
   }
   loops.set(loopId, loop)
 
@@ -393,20 +401,55 @@ async function waitWhileSwitchOn(loop: RelayLoop): Promise<void> {
   if (loop.running) transcript(loop, 'SYS', 'resumed')
 }
 
+/** How long one relay turn may stay held by the input gate, from its first held verdict. */
+const HELD_TURN_MS = 60_000
+
 /**
- * sendRaced after any pause for the kill switch. A send refused because the switch turned on
- * during it is not a turn: wait again, then send the SAME text; its refusal text never reaches the
- * other session.
+ * The input gate for one relay turn, under an agent's rules: undefined when admitInput answers
+ * `enter` AND the fresh re-check right after it still reads idle with an empty prompt; else the held
+ * reason (`held: prompt not empty`, or `held: <state>`). A failed re-check answers only no, and
+ * reads as `held: prompt not empty`.
+ */
+async function admitTurn(gate: object): Promise<string | undefined> {
+  const v = await admitInput(gate, 'agent', 'type')
+  if (v.verdict !== 'enter') return v.reason === PROMPT_NOT_EMPTY ? `held: ${PROMPT_NOT_EMPTY}` : `held: ${v.state}`
+  // Remaining window: after this re-check, inside session.send (typeAndSubmit: its has-session probe,
+  // the typing and the 200 ms pause before Enter), a person's keys typed then go out with the turn.
+  return (await recheckInput(gate)) ? undefined : `held: ${PROMPT_NOT_EMPTY}`
+}
+
+/**
+ * sendRaced after any pause for the kill switch, and only through the input gate (admitTurn): a
+ * held turn is asked again every PAUSE_POLL_MS; still held HELD_TURN_MS after its first held verdict,
+ * it ends `held` and nothing is typed (never into a person's half-typed text). The loop's own wall
+ * clock and stop() still end the wait. A send refused because the switch turned on during it is not
+ * a turn: wait again, then send the SAME text; its refusal text never reaches the other session.
  */
 async function sendHeld(
   loop: RelayLoop,
   session: TerminalSession,
   text: string,
-): Promise<{ kind: 'report'; report: string } | { kind: 'deadline' } | { kind: 'stopped' }> {
+): Promise<{ kind: 'report'; report: string } | { kind: 'deadline' } | { kind: 'stopped' } | { kind: 'held'; reason: string }> {
+  const gate = loop.gates?.get(session) ?? session
+  let heldSince: number | undefined
   for (;;) {
+    const paused = Date.now()
     await waitWhileSwitchOn(loop)
+    // A kill-switch pause is not held time.
+    if (heldSince !== undefined) heldSince += Date.now() - paused
     if (!loop.running) return { kind: 'stopped' }
     if (Date.now() >= loop.deadline) return { kind: 'deadline' }
+    const reason = await admitTurn(gate)
+    if (reason !== undefined) {
+      if (heldSince === undefined) {
+        heldSince = Date.now()
+        transcript(loop, 'SYS', `turn held (${reason}): waiting up to ${HELD_TURN_MS / 1000} s; nothing typed`)
+      }
+      const left = heldSince + HELD_TURN_MS - Date.now()
+      if (left <= 0) return { kind: 'held', reason }
+      await sleep(Math.min(PAUSE_POLL_MS, left))
+      continue
+    }
     const res = await sendRaced(loop, session, text)
     if (res.kind !== 'killswitch') return res
     // Refused while the switch reads off again already: one poll before the same text again (the
@@ -419,6 +462,7 @@ async function sendHeld(
 type TaskOutcome =
   | { kind: 'done' }
   | { kind: 'blocked'; reason: string }
+  | { kind: 'held'; reason: string } // a turn the input gate held for HELD_TURN_MS: stop, nothing typed
   | { kind: 'needsinput'; question: string } // asked the human — park ALIVE, resume on answer
   | { kind: 'stopped' }
   | { kind: 'deadline' } // this task hit its wall-clock cap (not fatal — park after)
@@ -461,6 +505,11 @@ function taskSeed(task: string): string {
  */
 async function runTask(loop: RelayLoop, firstLeadMessage: string, maxTurns: number): Promise<TaskOutcome> {
   let nextLeadMessage = firstLeadMessage
+  const held = (turn: number, reason: string): TaskOutcome => {
+    appendDecision(loop.memDir, `turn ${turn}: ${reason} · relay stopped, nothing typed`)
+    updateState(loop.memDir, { status: 'blocked', blockedReason: reason })
+    return { kind: 'held', reason }
+  }
 
   for (let turn = 1; turn <= maxTurns; turn++) {
     if (!loop.running) return { kind: 'stopped' }
@@ -483,6 +532,7 @@ async function runTask(loop: RelayLoop, firstLeadMessage: string, maxTurns: numb
     const leadRes = await sendHeld(loop, loop.lead, leadMessage)
     if (leadRes.kind === 'deadline') return { kind: 'deadline' }
     if (leadRes.kind === 'stopped') return { kind: 'stopped' }
+    if (leadRes.kind === 'held') return held(turn, leadRes.reason)
     const leadInstruction = leadRes.report
     transcript(loop, 'LEAD', leadInstruction)
 
@@ -524,6 +574,7 @@ async function runTask(loop: RelayLoop, firstLeadMessage: string, maxTurns: numb
     const workerRes = await sendHeld(loop, loop.worker, leadInstruction)
     if (workerRes.kind === 'deadline') return { kind: 'deadline' }
     if (workerRes.kind === 'stopped') return { kind: 'stopped' }
+    if (workerRes.kind === 'held') return held(turn, workerRes.reason)
     transcript(loop, 'WORKER', workerRes.report)
 
     // Feed the worker's report back to the lead for the next round.
@@ -649,9 +700,10 @@ async function runManager(loop: RelayLoop, goal: string, context: string | undef
       loop.deadline = Date.now() + loop.perTaskWallClockMs
       const outcome = await runTask(loop, leadMessage, loop.maxTurns)
 
-      if (outcome.kind === 'blocked') {
+      if (outcome.kind === 'blocked' || outcome.kind === 'held') {
+        // A held turn stops the relay as a block does (the person is told; sessions closed below).
         blockedReason = outcome.reason
-        endReason = `blocked: ${outcome.reason}`
+        endReason = outcome.kind === 'held' ? outcome.reason : `blocked: ${outcome.reason}`
         break
       }
       if (outcome.kind === 'stopped') {

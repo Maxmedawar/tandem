@@ -87,10 +87,10 @@ function makeRouter(handlers: Record<string, (init?: RequestInit) => Response | 
 }
 
 describe("canonicalizeHermesBaseUrl — loopback-only, no credentials/query/fragment", () => {
-  it("accepts 127.0.0.1, localhost, *.localhost, and IPv6 loopback", () => {
+  it("accepts 127.0.0.1, localhost and IPv6 loopback; refuses *.localhost", () => {
     expect(canonicalizeHermesBaseUrl("http://127.0.0.1:8080")).toBe("http://127.0.0.1:8080");
     expect(canonicalizeHermesBaseUrl("http://localhost:8080")).toBe("http://localhost:8080");
-    expect(canonicalizeHermesBaseUrl("http://foo.localhost:8080")).toBe("http://foo.localhost:8080");
+    expect(() => canonicalizeHermesBaseUrl("http://foo.localhost:8080")).toThrow(/loopback/);
     expect(canonicalizeHermesBaseUrl("http://[::1]:8080")).toBe("http://[::1]:8080");
   });
 
@@ -1156,5 +1156,219 @@ describe("Hermes through the router on a test-only server (U-R1A-16, A1.1)", () 
       expect(await listed()).toEqual(["r1a16-agent"]);
       await call("POST", "/sessions/r1a16-agent/close");
     });
+  });
+});
+
+// ---- U-R1A-18C-2: the base URL host is exactly loopback; each Hermes open ends within 30 s ----
+// Appended rows only (titles "(18C2) ..."). Servers here are node:http on 127.0.0.1, port 0, closed in
+// afterAll; time bounds use fake timers only.
+const { vi } = await import("vitest");
+const { openHermes } = await import("../../bridge/engines/hermes.ts");
+const FAKE_TIMERS_18C2: Parameters<typeof vi.useFakeTimers>[0] = { toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] };
+/** Real I/O turns while fake timers hold the clock (setImmediate is not faked). */
+const ioUntil18c2 = async (done: () => boolean, ms = 5_000) => {
+  const end = performance.now() + ms;
+  while (performance.now() < end && !done()) await new Promise((r) => setImmediate(r));
+};
+
+describe("(18C2) the Hermes base URL host is exactly 127.0.0.1, [::1] or localhost", () => {
+  it("(18C2) c1 refuses *.localhost and localhost. with the loopback error", () => {
+    for (const url of ["http://foo.localhost:8080", "http://a.b.localhost", "http://localhost.localhost", "http://localhost./"]) {
+      expect(() => canonicalizeHermesBaseUrl(url), url).toThrow(/loopback/);
+    }
+    expect(() => canonicalizeHermesBaseUrl("http://foo.localhost:8080")).toThrow(
+      "Hermes base URL host must be loopback (127.0.0.1, [::1] or localhost)",
+    );
+  });
+
+  it("(18C2) c3 pin: 127.0.0.1, [::1], localhost, LOCALHOST and 127.1 accepted (127.1 as 127.0.0.1)", () => {
+    expect(canonicalizeHermesBaseUrl("http://127.0.0.1:8080")).toBe("http://127.0.0.1:8080");
+    expect(canonicalizeHermesBaseUrl("http://[::1]:8080")).toBe("http://[::1]:8080");
+    expect(canonicalizeHermesBaseUrl("http://localhost:8080")).toBe("http://localhost:8080");
+    expect(canonicalizeHermesBaseUrl("http://LOCALHOST:8080")).toBe("http://localhost:8080");
+    expect(canonicalizeHermesBaseUrl("http://127.1")).toBe("http://127.0.0.1");
+  });
+
+  describe("(18C2) c2 through route()", () => {
+    const box = mkdtempSync("/tmp/r1a18c2-hermes-");
+    const passwordFile = join(box, "password");
+    writeFileSync(passwordFile, "r1a18c2-password\n", { mode: 0o600 });
+    let hermes: Awaited<ReturnType<typeof startTestHermes>>;
+    beforeAll(async () => {
+      hermes = await startTestHermes("r1a18c2-password");
+    });
+    afterAll(async () => {
+      await hermes.close();
+      rmSync(box, { recursive: true, force: true });
+    });
+
+    it("(18C2) c2 TANDEM_HERMES_BASE_URL=http://r1a18c2.localhost:<port>: 503 before any request, no URL in the answer, nothing registered", async () => {
+      const port = new URL(hermes.url).port;
+      const env = {
+        TANDEM_ENABLED_ENGINES: "hermes",
+        TANDEM_HERMES_BASE_URL: `http://r1a18c2.localhost:${port}`,
+        TANDEM_HERMES_WRITABLE_AGENTS: "r1a16-agent",
+        TANDEM_HERMES_PASSWORD_PATH: passwordFile,
+        TANDEM_HERMES_DISABLE_LIVE: "0",
+      };
+      const before = hermes.total();
+      const res = await withEnv(env, () => routeForTest("POST", "/sessions/open", { name: "r1a16-agent", engine: "hermes" }));
+      const body = res.body as { error?: string };
+      expect(res.status).toBe(503);
+      expect(body.error).toMatch(/loopback/);
+      expect(body.error).not.toContain("r1a18c2");
+      expect(hermes.total()).toBe(before);
+      const listed = await withEnv(env, () => routeForTest("GET", "/sessions", {}, "engine=all"));
+      expect(((listed.body as { sessions?: { id: string }[] }).sessions ?? []).map((s) => s.id)).not.toContain("r1a16-agent");
+    });
+  });
+});
+
+describe("(18C2) each Hermes open ends within 30 s", () => {
+  const box = mkdtempSync("/tmp/r1a18c2-hermes-");
+  const passwordFile = join(box, "password");
+  writeFileSync(passwordFile, "r1a18c2-password\n", { mode: 0o600 });
+  /** Answers like startTestHermes for r1a18c2-agent, except that while `hang` is set a login request is
+   *  accepted and never answered. */
+  let hang = true;
+  let logins = 0;
+  const held = new Set<import("node:http").ServerResponse>();
+  const server = createServer((req, res) => {
+    const u = new URL(req.url ?? "/", "http://127.0.0.1");
+    const chunks: Buffer[] = [];
+    req.on("data", (c: Buffer) => chunks.push(c));
+    req.on("end", () => {
+      const reply = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
+        res.writeHead(status, { "content-type": "application/json", ...headers });
+        res.end(JSON.stringify(payload));
+      };
+      if (req.method === "POST" && u.pathname === "/api/auth/login") {
+        logins++;
+        if (hang) {
+          held.add(res);
+          return;
+        }
+        return reply(200, { ok: true }, { "set-cookie": "r1a18c2sid=1; Path=/; HttpOnly" });
+      }
+      if (req.method === "GET" && u.pathname === "/api/session" && u.searchParams.get("session_id") === "r1a18c2-agent") {
+        return reply(200, { session: { messages: [], active_stream_id: null } });
+      }
+      return reply(404, { error: "no route" });
+    });
+  });
+  let base = "";
+  beforeAll(async () => {
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  });
+  afterAll(async () => {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    rmSync(box, { recursive: true, force: true });
+  });
+  const env = () => ({
+    TANDEM_ENABLED_ENGINES: "hermes",
+    TANDEM_HERMES_BASE_URL: base,
+    TANDEM_HERMES_WRITABLE_AGENTS: "r1a18c2-agent",
+    TANDEM_HERMES_PASSWORD_PATH: passwordFile,
+    TANDEM_HERMES_DISABLE_LIVE: "0",
+    TANDEM_HERMES_TIMEOUT_MS: "600000",
+  });
+  /** Ends every held login answer, so the abandoned fetch settles. */
+  const release = () => {
+    for (const r of held) r.destroy();
+    held.clear();
+  };
+
+  it("(18C2) d1 openHermes against a login that never answers: not settled at 29,999 ms, 503 open-timeout at 30,000 ms", async () => {
+    hang = true;
+    const seen = logins;
+    vi.useFakeTimers(FAKE_TIMERS_18C2);
+    try {
+      let settled = false;
+      let value: unknown;
+      const p = withEnv(env(), async () => {
+        const out = openHermes("r1a18c2-agent");
+        await ioUntil18c2(() => logins > seen);
+        return out;
+      });
+      void p.then((v) => {
+        settled = true;
+        value = v;
+      });
+      await ioUntil18c2(() => logins > seen);
+      expect(logins).toBe(seen + 1);
+      await vi.advanceTimersByTimeAsync(29_999);
+      await ioUntil18c2(() => settled, 50);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await ioUntil18c2(() => settled);
+      expect(settled).toBe(true);
+      expect(value).toEqual({ status: 503, error: 'Hermes agent "r1a18c2-agent" did not answer within 30 s', denied: "open-timeout" });
+    } finally {
+      vi.useRealTimers();
+      release();
+    }
+  });
+
+  it("(18C2) d2 two opens of one name through route(), the first hanging: the first answers 503 at 30 s, the second then runs its own check and answers 200", async () => {
+    hang = true;
+    const seen = logins;
+    vi.useFakeTimers(FAKE_TIMERS_18C2);
+    try {
+      const body = { name: "r1a18c2-agent", engine: "hermes" };
+      const done: { status: number; body: unknown }[] = [];
+      const both = withEnv(env(), async () => {
+        const first = routeForTest("POST", "/sessions/open", body).then((r) => (done.push(r), r));
+        const second = routeForTest("POST", "/sessions/open", body).then((r) => (done.push(r), r));
+        await ioUntil18c2(() => logins > seen);
+        hang = false;
+        return Promise.all([first, second]);
+      });
+      await ioUntil18c2(() => logins > seen);
+      expect(logins).toBe(seen + 1);
+      await vi.advanceTimersByTimeAsync(29_999);
+      await ioUntil18c2(() => done.length > 0, 50);
+      expect(done).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1);
+      await ioUntil18c2(() => done.length === 2);
+      expect(done.length).toBe(2);
+      const [first, second] = await both;
+      expect(first.status).toBe(503);
+      expect((first.body as { error?: string }).error).toBe('Hermes agent "r1a18c2-agent" did not answer within 30 s');
+      expect(second.status).toBe(200);
+      expect(second.body).not.toHaveProperty("reused");
+      expect(logins).toBe(seen + 2);
+    } finally {
+      vi.useRealTimers();
+      release();
+      await withEnv(env(), () => routeForTest("POST", "/sessions/r1a18c2-agent/close", {}));
+    }
+  });
+});
+
+describe("(18C2) router: '.' in a session name (tmux turns it into '_')", () => {
+  it("(18C2) e1 a tmux-hosted engine (shell): a name with '.' is refused with the existing 400 text, nothing started", async () => {
+    const res = await withEnv({ TANDEM_ENABLED_ENGINES: "shell" }, () =>
+      routeForTest("POST", "/sessions/open", { name: "r1a18c2.e1", engine: "shell" }),
+    );
+    expect(res.status).toBe(400);
+    expect((res.body as { error?: string }).error).toBe("invalid session name (allowed: A-Z a-z 0-9 . _ -): r1a18c2.e1");
+    const listed = await withEnv({ TANDEM_ENABLED_ENGINES: "shell" }, () => routeForTest("GET", "/sessions", {}, "engine=all"));
+    expect(((listed.body as { sessions?: { id: string }[] }).sessions ?? []).map((s) => s.id).filter((id) => id.startsWith("r1a18c2"))).toEqual([]);
+  });
+
+  it("(18C2) e2 an adapter agent (hermes): an id with '.' passes the name check (refused later only by the answer check)", async () => {
+    const res = await withEnv(
+      {
+        TANDEM_ENABLED_ENGINES: "hermes",
+        TANDEM_HERMES_BASE_URL: "http://127.0.0.1:9",
+        TANDEM_HERMES_WRITABLE_AGENTS: "r1a18c2.e2",
+        TANDEM_HERMES_DISABLE_LIVE: "1",
+      },
+      () => routeForTest("POST", "/sessions/open", { name: "r1a18c2.e2", engine: "hermes" }),
+    );
+    expect(res.status).toBe(503);
+    expect((res.body as { error?: string }).error).toBe('Hermes agent "r1a18c2.e2" did not answer');
   });
 });

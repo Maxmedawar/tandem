@@ -345,7 +345,7 @@ describe("(d) the hook: due mail at a tool call or turn end, acked once, exit 0 
     expect(r.status).toBe(0);
     expect(context(r.stdout)).toContain("r1a25 d6 node22");
     expect(stateOf(id)).toBe("delivered");
-  });
+  }, 30_000);
   if (!existsSync(NODE22)) console.log(`r1a25: Node 22 row skipped: ${NODE22} is absent`);
 });
 

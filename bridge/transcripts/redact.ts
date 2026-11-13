@@ -21,6 +21,13 @@ const ENV_ANYWHERE = 12
 /** Short values that are settings, not secrets: masking them would hide ordinary words. */
 const PLAIN = new Set(['true', 'false', 'none', 'null', 'enabled', 'disabled'])
 
+/**
+ * Raised whenever redact() starts masking more. The fabric store (bridge/fabric/sqlite-fabric-client.ts)
+ * masks its stored rows again when the version it recorded is lower; U-R1A-39B does the same for the
+ * transcript index.
+ */
+export const REDACT_VERSION = 1
+
 interface Kind {
   kind: string
   re: RE2JS

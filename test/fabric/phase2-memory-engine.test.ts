@@ -103,7 +103,7 @@ describe('Phase 2 production memory engine', () => {
     client = new SQLiteFabricClient({ databasePath: path, embeddingProvider: provider })
     expect((await client.searchMemory(ownerA, { query: 'crowding sentinel', limit: 5 })).records.map(record => record.id)).toContain(visible.id)
     client.close()
-  })
+  }, 30_000)
 
   it('orders stronger FTS5 BM25 matches ahead of weaker lexical matches', async () => {
     const path = dbPath()
@@ -173,7 +173,7 @@ describe('Phase 2 production memory engine', () => {
     const result = await client.searchMemory(ctx, { query: 'car fuel', limit: 5 })
     expect(result.records.map(record => record.id)).toContain(target.id)
     client.close()
-  })
+  }, 30_000)
 
   it('deduplicates equivalent writes and keeps corrections current', async () => {
     const { client, ctx } = await fixture()

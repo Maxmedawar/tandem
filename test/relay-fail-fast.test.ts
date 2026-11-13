@@ -1,6 +1,6 @@
 import { describe, it, expect, afterAll, afterEach, vi } from "vitest";
-import { rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { startRelay, RelayConfigError } from "../bridge/relay.ts";
 import { TerminalSession, type SpawnOptions } from "../bridge/terminal-session.ts";
@@ -72,6 +72,13 @@ describe("startRelay — fail-fast bypass guard", () => {
 
   it("with bypass allowed, the lead spawns from the built-in claude file: descriptor id claude and that file's argv", async () => {
     process.env.TANDEM_ALLOW_BYPASS = "1";
+    // A stub `claude` first on PATH, in this test's own folder: the relay resolves the built-in
+    // file's program there, so a machine without claude (e.g. the Linux image) runs this case too.
+    const bin = join(testHome.home, "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    const savedPath = process.env.PATH;
+    process.env.PATH = `${bin}${delimiter}${savedPath ?? ""}`;
     const seen: SpawnOptions[] = [];
     const spy = vi.spyOn(TerminalSession, "spawn").mockImplementation(async (o: SpawnOptions) => {
       seen.push(o);
@@ -81,9 +88,12 @@ describe("startRelay — fail-fast bypass guard", () => {
       await expect(startRelay({ goal: "test", cwd: "/tmp", allowlist: ["/tmp"] })).rejects.toThrow(/no tmux in this test/);
     } finally {
       spy.mockRestore();
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
     }
     const builtin = fileURLToPath(new URL("../harnesses/", import.meta.url));
-    const claude = loadHarnesses({ installDir: builtin, ownerDir: join(testHome.home, "no-owner") }).harnesses.get("claude")!;
+    const claude = loadHarnesses({ installDir: builtin, ownerDir: join(testHome.home, "no-owner"), path: bin }).harnesses.get("claude")!;
+    expect(claude.programPath).toBe(join(bin, "claude"));
     expect(claude.source).toBe("builtin");
     expect(seen).toHaveLength(1);
     expect(seen[0]!.name).toMatch(/^relay-[0-9a-f]{8}-lead$/);

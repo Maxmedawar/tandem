@@ -35,6 +35,7 @@ import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, s
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Harness } from './harness-registry.ts'
+import { RENAMED } from '../src/legacy-env.ts'
 import { killSwitchOn } from './kill-switch.ts'
 import type { Message, Point } from './mailbox.ts'
 import { tandemHome } from './tandem-home.ts'
@@ -208,13 +209,16 @@ function configOverrides(option: string, command: (event: string) => string): st
 
 /**
  * The variables a stdio start of src/stdio-server.ts reads (U-R1A-36C: `git grep` of its start
- * files), sorted. Names only: Codex copies these from its own environment into the server's, so
- * TANDEM_CALLER_TOKEN reaches it while no value ever sits on a command line.
+ * files), sorted and unique. Names only: Codex copies these from its own environment into the
+ * server's, so TANDEM_CALLER_TOKEN reaches it while no value ever sits on a command line. The old
+ * names of the renamed settings (src/legacy-env.ts RENAMED) are listed too, so a live install's
+ * old names still reach the server, which reads them with one deprecation line (U-R1A-CCMNAMES).
  */
-export const MCP_ENV_NAMES: readonly string[] = [
-  'CCM_CWD_ALLOWLIST', 'CCM_DEFAULT_CWD', 'CCM_FABRIC_DB_PATH', 'CCM_FABRIC_ENABLED', 'TANDEM_CALLER_TOKEN', 'TANDEM_CONFIG_FILE',
-  'TANDEM_CWD_ALLOWLIST', 'TANDEM_DEFAULT_CWD', 'TANDEM_HOME', 'TANDEM_HUB_LINK_ID', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_HUB_LINK_URL',
-]
+export const MCP_ENV_NAMES: readonly string[] = [...new Set([
+  'TANDEM_CALLER_TOKEN', 'TANDEM_CONFIG_FILE', 'TANDEM_CWD_ALLOWLIST', 'TANDEM_DEFAULT_CWD', 'TANDEM_FABRIC_DB_PATH',
+  'TANDEM_FABRIC_ENABLED', 'TANDEM_HOME', 'TANDEM_HUB_LINK_ID', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_HUB_LINK_URL',
+  ...Object.values(RENAMED),
+])].sort()
 
 /**
  * For a harness file with `mcp_env = "config-overrides"` (an agent that starts its MCP servers with

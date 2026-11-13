@@ -12,8 +12,10 @@
  *
  * Read: each row the hub hands back is checked: the sender in this computer's verified roster,
  * the envelope signed by its key, addressed here, at most PRESENCE_MAX_AGE_MS old, the body
- * exactly a presence body. A refusal writes one `presence.refused` audit line and keeps the old
- * reading; a reading is kept only when newer than the kept one. The hub's `connected` list and the
+ * exactly a presence body. A refusal keeps the old reading and writes a `presence.refused` audit
+ * line at most once per sender per REFUSED_LOG_MS (U-R1A-33B-4 h4: a peer on an older release is
+ * refused at every push); a later line carries `refusals`, that sender's refusals since its last
+ * line. A reading is kept only when newer than the kept one. The hub's `connected` list and the
  * sync time are kept too: a computer is stale when its reading is over STALE_MS old (counted on
  * this computer's clock from no later than its arrival), it is not connected, or the last sync is
  * over STALE_MS old. Names, engines and projects with hidden characters are refused (`shape`). Every state change happens after the store
@@ -51,6 +53,9 @@ export const PRESENCE_MAX_AGE_MS = 60_000
 export const MAX_READING_BYTES = 16_384
 /** ponytail: a computer's 25th account is not carried; raise this with the worst-case size case if anyone has more. */
 export const MAX_USAGE_ROWS = 24
+
+/** At most one presence.refused line per sender in this time (U-R1A-33B-4 h4). */
+export const REFUSED_LOG_MS = 3_600_000
 
 const SLOW_DOWN_MS = 60_000
 const TIMEOUT_MS = 10_000
@@ -207,6 +212,8 @@ export function hubPresence(
   let failed: string | undefined
   /** openEnvelope's replay store: every nonce is new; a replayed reading is caught by its `at`. */
   const fresh = { remember: () => true }
+  /** Per sender: when its last presence.refused line was written and the refusals since. */
+  const refusedLog = new Map<string, { at: number; count: number }>()
 
   /** One envelope from this computer to `to`, session rows dropped from the end until it fits MAX_READING_BYTES; the usage rows (none: no key) always ride. */
   function envelopeTo(to: string, at: number, rows: Row[], usage: UsageWire[]): string {
@@ -223,8 +230,18 @@ export function hubPresence(
     // ponytail: a hub naming more senders than any roster holds only costs a re-check of each.
     if (handled.size >= 1000) handled.clear()
     const refuse = (denied: string) => {
-      audit({ event: 'presence.refused', from: from.slice(0, 300), denied })
       handled.set(from, text)
+      const last = refusedLog.get(from)
+      // A clock stepped back further than REFUSED_LOG_MS counts as past, as mailbox.interruptFor does.
+      if (last !== undefined && Math.abs(now() - last.at) < REFUSED_LOG_MS) {
+        last.count++
+        return
+      }
+      // ponytail: a hub naming more senders than any roster holds only costs extra lines.
+      if (refusedLog.size >= 1000) refusedLog.clear()
+      const refusals = (last?.count ?? 0) + 1
+      refusedLog.set(from, { at: now(), count: 0 })
+      audit({ event: 'presence.refused', from: from.slice(0, 300), denied, ...(refusals > 1 ? { refusals } : {}) })
     }
     let publicKey: string | undefined
     try {

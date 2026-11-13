@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -108,7 +108,12 @@ describe("warnLegacySkipPermissionsIfSet (TANDEM_SKIP_PERMISSIONS is ignored)", 
 describe("the legacy TANDEM_SKIP_PERMISSIONS warning prints once per spawn (U-R1A-12)", () => {
   const BUILTIN = fileURLToPath(new URL("../harnesses/", import.meta.url));
   const tmp = mkdtempSync(join(tmpdir(), "r1a12-controls-"));
-  const claude = () => loadHarnesses({ installDir: BUILTIN, ownerDir: join(tmp, "no-owner") }).harnesses.get("claude")!;
+  // A stub `claude` in this test's own folder: the cases need the built-in file's descriptor,
+  // never the real program (a machine without claude, e.g. the Linux image, runs them too).
+  const bin = join(tmp, "bin");
+  mkdirSync(bin);
+  writeFileSync(join(bin, "claude"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+  const claude = () => loadHarnesses({ installDir: BUILTIN, ownerDir: join(tmp, "no-owner"), path: bin }).harnesses.get("claude")!;
   const prevSkip = process.env.TANDEM_SKIP_PERMISSIONS;
   afterEach(() => {
     if (prevSkip === undefined) delete process.env.TANDEM_SKIP_PERMISSIONS;

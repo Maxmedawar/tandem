@@ -66,13 +66,19 @@ export const LIVENESS_TIMEOUT_MS = 70_000
  */
 export const MAX_HUB_ANSWER_BYTES = 8_388_608
 
+/** The longest any hub answer body is read (U-R1A-33B-4 h1): a caller's own shorter signal still ends it first. */
+export const HUB_ANSWER_TIMEOUT_MS = 120_000
+
 /**
  * Reads a hub answer's body, at most `maxBytes` (inclusive): undefined when a whole-number
  * content-length is over it (cancelled before one body byte is read) or the stream passes it
  * (cancelled at once, the chunks read so far dropped). No body is an empty Buffer. A stream error
- * rejects as fetch would. Shape copied from bridge/engines/hermes.ts readBounded.
+ * rejects as fetch would. A body still unread after `timeoutMs` is cancelled and the read rejects
+ * with a TimeoutError, so a caller that passed fetch no signal never waits for ever on a slow
+ * drip; a caller's signal that ends sooner rejects as it always did. Shape copied from
+ * bridge/engines/hermes.ts readBounded.
  */
-export async function readHubAnswer(answer: Response, maxBytes = MAX_HUB_ANSWER_BYTES): Promise<Buffer | undefined> {
+export async function readHubAnswer(answer: Response, maxBytes = MAX_HUB_ANSWER_BYTES, timeoutMs = HUB_ANSWER_TIMEOUT_MS): Promise<Buffer | undefined> {
   const length = answer.headers.get('content-length')
   if (length !== null && /^\d+$/.test(length.trim()) && Number(length) > maxBytes) {
     await answer.body?.cancel().catch(() => {})
@@ -80,17 +86,29 @@ export async function readHubAnswer(answer: Response, maxBytes = MAX_HUB_ANSWER_
   }
   if (!answer.body) return Buffer.alloc(0)
   const reader = answer.body.getReader()
+  // At the bound the stream is cancelled: the pending read ends (done) and the read rejects.
+  let late = false
+  const timer = setTimeout(() => {
+    late = true
+    reader.cancel().catch(() => {})
+  }, timeoutMs)
+  timer.unref?.()
   const chunks: Uint8Array[] = []
   let total = 0
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    total += value.byteLength
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {})
-      return undefined
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (late) throw new DOMException(`hub answer not read within ${timeoutMs} ms`, 'TimeoutError')
+      if (done) break
+      total += value.byteLength
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {})
+        return undefined
+      }
+      chunks.push(value)
     }
-    chunks.push(value)
+  } finally {
+    clearTimeout(timer)
   }
   return Buffer.concat(chunks)
 }

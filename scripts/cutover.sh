@@ -277,7 +277,8 @@ chmod 0600 "$home/.cutover"
 # tandem.env first, before anything is installed: from the moment a launcher exists in this home it
 # reads TANDEM_SERVICE here, so an install stopped half way never leaves one that acts on the old
 # service. The launcher sources it after the environment, so these win over anything inherited
-# (a CCM_FABRIC_DB_PATH naming the old store included). The token goes from the file to this file
+# (a TANDEM_ name pinned here wins over an old name inherited from the shell, so a renamed setting
+# naming the old store is overridden too). The token goes from the file to this file
 # through the shell's own printf, never through an argument list.
 store="$home/fabric/fabric.sqlite3"
 tmp="$home/.tandem.env.$$"
@@ -285,7 +286,7 @@ tmp="$home/.tandem.env.$$"
   printf "TANDEM_SERVICE='%s'\n" "$service"
   printf "TANDEM_HUB_LINK_ID='%s'\n" "$name"
   printf "TANDEM_PORT='%s'\n" "$port"
-  printf 'CCM_FABRIC_DB_PATH=%s\n' "$(quote "$store")"
+  printf 'TANDEM_FABRIC_DB_PATH=%s\n' "$(quote "$store")"
   if [ -n "$link_url" ]; then
     token=$(cat "$tf")
     printf "TANDEM_HUB_LINK_URL='%s'\n" "$link_url"

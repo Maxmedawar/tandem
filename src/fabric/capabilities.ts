@@ -3,6 +3,7 @@ import { types as nodeUtilTypes } from 'node:util'
 import type { CallerContext, FabricCapability } from './types.ts'
 import { assertIdentifier, FabricValidationError } from './validation.ts'
 import { isFabricFlagEnabled } from './feature.ts'
+import { setting } from '../legacy-env.ts'
 
 const trustedContexts = new WeakSet<object>()
 const KNOWN_CAPABILITIES = new Set<FabricCapability>(['project:create','project:members','project:read','project:archive','memory:read','memory:read:user','memory:write','memory:write:user','memory:delete','room:read','room:post','task:claim','session:control','session:open','shell:execute','device:add','device:revoke'])
@@ -94,7 +95,7 @@ function capabilityValues(value: unknown): FabricCapability[] {
   throw new FabricValidationError('callerContext')
 }
 
-export function isFabricEnabled(env: Record<string, string | undefined> = process.env): boolean { return isFabricFlagEnabled(env.CCM_FABRIC_ENABLED) }
+export function isFabricEnabled(env: Record<string, string | undefined> = process.env): boolean { return isFabricFlagEnabled(setting(env, 'TANDEM_FABRIC_ENABLED')) }
 
 /** Public errors are intentionally generic and carry no target or caller identifiers. */
 export class FabricAuthError extends Error { constructor() { super('fabric operation is not authorized'); this.name = 'FabricAuthError' } }
