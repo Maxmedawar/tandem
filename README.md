@@ -65,7 +65,7 @@ R1a has one hub of your own, a Cloudflare Worker, and the Tandem runtime on each
 
 ### Try it on one computer
 
-You need Node.js 22, tmux and network access for npm. You do not need a Cloudflare account or any agent sign-in: the one session is a plain shell. Run this from the top of your clone:
+You need Node.js 22.6 or newer, tmux and network access for npm. You do not need a Cloudflare account or any agent sign-in: the one session is a plain shell. Paste the whole block into one terminal, from the top of your clone: its lines share one shell (`umask 077`, `cd hub`, `cd ..` carry from line to line). `npm ci` may print install-scripts warnings; they are expected and harmless here.
 
 <!-- r1a-first-commands -->
 ```sh
@@ -82,21 +82,24 @@ WRANGLER_SEND_METRICS=false nohup node_modules/.bin/wrangler dev --local --port 
 echo "$!" > "$HOME/tandem-try/hub.pid"
 cd ..
 i=0; until node -e 'fetch("http://127.0.0.1:8799/").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))'; do i=$((i + 1)); if [ "$i" -gt 180 ]; then cat "$HOME/tandem-try/hub.log"; exit 1; fi; sleep 1; done
+# Hub commands and reads stay off for this computer until you add hub_commands = true and hub_reads = { screens = true, transcripts = true, memory = true } above [agents.shell] in this limits file.
 cat > "$HOME/tandem-try/home/limits.toml" <<LIMITS
 folders = ["$HOME/tandem-try/work"]
 shell = true
 [agents.shell]
 program = "$(node -p 'require("node:fs").realpathSync(process.argv[1])' "$(command -v sh)")"
 LIMITS
+chmod 600 "$HOME/tandem-try/home/limits.toml"
 TANDEM_HOME="$HOME/tandem-try/home" TANDEM_PORT=0 TANDEM_PUBLIC_URL=https://localhost/mcp TANDEM_OWNER_PASSWORD_FILE="$HOME/tandem-try/owner-password" TANDEM_ENABLED_ENGINES=shell TANDEM_CWD_ALLOWLIST="$HOME/tandem-try/work" TANDEM_HUB_LINK_URL=ws://127.0.0.1:8799 TANDEM_HUB_LINK_TOKEN="$(cat "$HOME/tandem-try/link-token")" TANDEM_HUB_LINK_ID=first-computer nohup node --experimental-strip-types src/server.ts > "$HOME/tandem-try/runtime.log" 2>&1 &
 echo "$!" > "$HOME/tandem-try/runtime.pid"
 i=0; until grep -q 'hub link: connected' "$HOME/tandem-try/runtime.log" 2>/dev/null; do i=$((i + 1)); if [ "$i" -gt 60 ]; then cat "$HOME/tandem-try/runtime.log"; exit 1; fi; sleep 1; done
+if grep -q 'nothing is allowed' "$HOME/tandem-try/runtime.log"; then cat "$HOME/tandem-try/runtime.log"; exit 1; fi
 TANDEM_HOME="$HOME/tandem-try/home" TANDEM_ENABLED_ENGINES=shell TANDEM_CWD_ALLOWLIST="$HOME/tandem-try/work" node --input-type=module -e 'import { Client } from "@modelcontextprotocol/sdk/client/index.js"; import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"; const c = new Client({ name: "first-commands", version: "1" }); await c.connect(new StdioClientTransport({ command: process.execPath, args: ["--experimental-strip-types", "src/stdio-server.ts"], env: process.env })); const r = await c.callTool({ name: "open_session", arguments: { name: "first", engine: "shell", cwd: process.env.TANDEM_CWD_ALLOWLIST } }); console.log(r.content[0].text); await c.close(); process.exit(r.isError ? 1 : 0)'
 node -e 'fetch("http://127.0.0.1:8799/").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' && TANDEM_HOME="$HOME/tandem-try/home" node --experimental-strip-types bridge/status.ts --json | node -e 'const d = JSON.parse(require("node:fs").readFileSync(0, "utf8")); const n = d.computers.filter((c) => c.self).flatMap((c) => c.sessions).filter((s) => s.name === "first").length; console.log(n === 1 ? "tandem: the hub answers and status lists 1 session" : "tandem: the session is not listed"); process.exit(n === 1 ? 0 : 1)'
 ```
 <!-- /r1a-first-commands -->
 
-What it does, in order: installs the dependencies; makes a link token, a hub password and an owner password, each in a private file under `~/tandem-try`; starts a local hub on `http://127.0.0.1:8799` in the background (log `~/tandem-try/hub.log`); writes a limits file that allows the folder `~/tandem-try/work` and the shell; starts the runtime linked to that hub (log `~/tandem-try/runtime.log`); opens one shell session named `first` in that folder; and checks that the hub answers and that status lists that one session. The last line prints `tandem: the hub answers and status lists 1 session` and exits 0 when everything works.
+What it does, in order: installs the dependencies; makes a link token, a hub password and an owner password, each in a private file under `~/tandem-try`; starts a local hub on `http://127.0.0.1:8799` in the background (log `~/tandem-try/hub.log`); writes a limits file that allows the folder `~/tandem-try/work` and the shell; starts the runtime linked to that hub (log `~/tandem-try/runtime.log`); opens one shell session named `first` in that folder; and checks that the hub answers and that status lists that one session. The last line prints `tandem: the hub answers and status lists 1 session` and exits 0 when everything works. The runtime log may also show `hub mail: pull failed: 403`: that is expected while hub commands and reads are off for this computer.
 
 See the status again at any time, from the top of the clone (this is what `tandem status --json` prints once Tandem is installed):
 
