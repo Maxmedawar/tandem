@@ -9,6 +9,11 @@
  * `transcript_scope` ("project" or "computer"; src/mcp-server.ts; absent, missing or refused means
  * "project"). The bridge is the only place limits are enforced, and nothing remote can widen them.
  *
+ * What the hub may do here for MCP clients (U-R1A-17B), checked in bridge/hub-rpc.ts on hub frames
+ * only (local MCP calls never pass there): `hub_commands` (true or false: typing and every other
+ * command) and `hub_reads`, a table `{ screens, transcripts, memory }` of true or false. An absent
+ * field or key means on; a missing or refused file or copy turns every hub command and read off.
+ *
  * Rights of another computer (U-R1A-36E): `open`, `send` (typing text), `close`, `read` (a poll:
  * send with empty text) and `ask` (Ask mail), each listed on its own in `control_from_open`,
  * `control_from_send`, `control_from_close`, `control_from_read` and `control_from_ask` (each an
@@ -83,6 +88,10 @@ export interface LimitsSnapshot {
   memory_scope: 'project' | 'all'
   /** How far an agent's transcript search reaches: its own session's folder, or this computer; "project" when absent, missing or refused. */
   transcript_scope: 'project' | 'computer'
+  /** Accept typing and other commands passed on by the hub from MCP clients; true when absent; false when the file is missing or refused. */
+  hub_commands: boolean
+  /** What the hub may read here for MCP clients; each true when absent; all false when the file is missing or refused. */
+  hub_reads: { screens: boolean; transcripts: boolean; memory: boolean }
   /** Why nothing is allowed (missing or refused file). */
   problem?: string
 }
@@ -90,6 +99,7 @@ export interface LimitsSnapshot {
 export const FIELDS = [
   'folders', 'shell', 'permission_skip', 'agents', 'interrupt_from', 'session_cap', 'control_from',
   'control_from_open', 'control_from_send', 'control_from_close', 'control_from_read', 'control_from_ask', 'memory_scope', 'transcript_scope',
+  'hub_commands', 'hub_reads',
 ]
 /** What another computer may do here, in this order (U-R1A-36E). */
 export const RIGHTS = ['open', 'send', 'close', 'read', 'ask'] as const
@@ -105,15 +115,26 @@ const AGENT_FIELDS = ['program', 'sha256']
 const AGENT_NAME = /^[a-z0-9][a-z0-9-]{0,31}$/
 const SHA256 = /^[0-9a-f]{64}$/
 const HIDDEN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u
-/** What `tandem limits init` writes for every field but `folders` and `agents` (U-R1A-17B adds its two fields here and to FIELDS). */
+/** What `tandem limits init` writes for every field but `folders` and `agents`. */
 export const INIT_DEFAULTS = {
   shell: false, permission_skip: [], session_cap: 12, interrupt_from: [], control_from: [],
   control_from_open: [], control_from_send: [], control_from_close: [], control_from_read: [], control_from_ask: [],
   memory_scope: 'project', transcript_scope: 'project',
+  hub_commands: true, hub_reads: { screens: true, transcripts: true, memory: true },
 } as const
 export type LimitsFields = Omit<LimitsSnapshot, 'digest' | 'problem'>
 const APPLIED = 'limits.applied.toml'
 const NOTICE = ' (notice: the limits file changed on disk and is not applied; apply it at this computer)'
+/** What the hub may ask for here, by the limits field that allows it. */
+export type HubRight = 'commands' | 'screens' | 'transcripts' | 'memory'
+const HUB_READS = ['screens', 'transcripts', 'memory'] as const
+/** The answer to a hub request its limits field turns off (U-R1A-17B). */
+export const HUB_REFUSALS: Readonly<Record<HubRight, string>> = Object.freeze({
+  commands: 'hub_commands: this computer does not take commands passed on by the hub (limits file)',
+  screens: 'hub_reads.screens: this computer does not let the hub read its sessions (limits file)',
+  transcripts: 'hub_reads.transcripts: this computer does not let the hub read its transcripts (limits file)',
+  memory: 'hub_reads.memory: this computer does not let the hub read its memory, rooms or projects (limits file)',
+})
 
 type Table = Record<string, unknown>
 const fail = (reason: string): never => { throw new Error(reason) }
@@ -266,10 +287,21 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
   if (transcript_scope !== 'project' && transcript_scope !== 'computer') {
     fail('wrong type for transcript_scope: expected "project" or "computer" ("all" needs search across computers, which is not built)')
   }
+  const hub_commands = raw.hub_commands ?? true
+  if (typeof hub_commands !== 'boolean') fail('wrong type for hub_commands: expected true or false')
+  const reads = raw.hub_reads ?? {}
+  if (!isTable(reads)) return fail('wrong type for hub_reads: expected a table { screens, transcripts, memory } of true or false')
+  for (const [k, v] of Object.entries(reads)) {
+    if (!(HUB_READS as readonly string[]).includes(k)) fail(`unknown field hub_reads.${k}`)
+    if (typeof v !== 'boolean') fail(`wrong type for hub_reads.${k}: expected true or false`)
+  }
+  const on = (k: (typeof HUB_READS)[number]) => (reads[k] ?? true) as boolean
+  const hub_reads = { screens: on('screens'), transcripts: on('transcripts'), memory: on('memory') }
   const from = raw.interrupt_from
   const base = {
     folders, shell: shell as boolean, permission_skip, agents, session_cap: session_cap as number, control_from, ...lists,
     memory_scope: memory_scope as LimitsSnapshot['memory_scope'], transcript_scope: transcript_scope as LimitsSnapshot['transcript_scope'],
+    hub_commands: hub_commands as boolean, hub_reads,
   }
   if (from === undefined) return base
   if (!Array.isArray(from) || !from.every(isInterruptSender)) {
@@ -308,6 +340,7 @@ function readLimits(dir = dirname(limitsFile())): LimitsSnapshot {
   return {
     folders: [], shell: false, permission_skip: [], agents: {}, digest: disk.digest, problem, session_cap: DEFAULT_SESSION_CAP, control_from: [],
     control_from_open: [], control_from_send: [], control_from_close: [], control_from_read: [], control_from_ask: [], memory_scope: 'project', transcript_scope: 'project',
+    hub_commands: false, hub_reads: { screens: false, transcripts: false, memory: false },
   }
 }
 
@@ -380,8 +413,8 @@ export function commitLimits(expected: string): string | undefined {
   return undefined
 }
 
-/** A copy of the applied snapshot. `session_cap`, `control_from`, the five per-right lists, `memory_scope` and `transcript_scope` are on it
- *  but not enumerable, so the snapshot's listed fields (and every reader comparing or printing them) stay as they were before them. */
+/** A copy of the applied snapshot. `session_cap`, `control_from`, the five per-right lists, `memory_scope`, `transcript_scope`, `hub_commands`
+ *  and `hub_reads` are on it but not enumerable, so the snapshot's listed fields (and every reader comparing or printing them) stay as they were before them. */
 export function limitsSnapshot(): LimitsSnapshot {
   fresh()
   const copy = structuredClone(snapshot)
@@ -392,6 +425,8 @@ export function limitsSnapshot(): LimitsSnapshot {
   for (const field of ['memory_scope', 'transcript_scope'] as const) {
     Object.defineProperty(copy, field, { value: snapshot[field], enumerable: false, writable: true, configurable: true })
   }
+  Object.defineProperty(copy, 'hub_commands', { value: snapshot.hub_commands, enumerable: false, writable: true, configurable: true })
+  Object.defineProperty(copy, 'hub_reads', { value: { ...snapshot.hub_reads }, enumerable: false, writable: true, configurable: true })
   return copy
 }
 
@@ -451,6 +486,11 @@ export function limitsGate() {
     /** Start with the harness file's skip_prompts_args exactly when the real cwd is in `permission_skip`. */
     skipPrompts(cwd: string): boolean {
       return inside(cwd, applied.permission_skip)
+    },
+    /** A hub request needing `what` (bridge/hub-rpc.ts only): undefined when allowed, else its HUB_REFUSALS text. */
+    hub(what: HubRight): string | undefined {
+      const allowed = what === 'commands' ? applied.hub_commands : applied.hub_reads[what]
+      return allowed ? undefined : HUB_REFUSALS[what] + (stale ? NOTICE : '')
     },
   }
 }

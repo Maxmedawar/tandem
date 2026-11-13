@@ -11,6 +11,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
 import { FABRIC_MCP_TRUST } from '../src/fabric/rpc-contract.ts'
+import { hubFieldsOn } from './helpers/limits-fixture.ts'
 
 const home = mkdtempSync(join(tmpdir(), 'hub-rpc-home-'))
 const savedHome = process.env.HOME
@@ -18,6 +19,7 @@ process.env.HOME = home
 const { handleHubRequest } = await import('../bridge/hub-rpc.ts')
 const { filterSessionsByEngine } = await import('../bridge/router.ts')
 const { createLocalFabricHost } = await import('../bridge/fabric/local-fabric-host.ts')
+hubFieldsOn()
 
 afterAll(() => {
   process.env.HOME = savedHome

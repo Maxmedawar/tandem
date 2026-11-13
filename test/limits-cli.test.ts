@@ -276,8 +276,9 @@ describe('U-R1A-48 tandem limits', () => {
     try {
       const name = uniq('a')
       const res = await open(name, 'fake-a', WORK)
-      expectLimitsRefusal(res, name, 'fake-a', false)
-      expect(res.body.error).toBe(`limits: no limits file at ${home.file}; nothing is allowed`)
+      // U-R1A-17B: no file turns every hub field off, so the hub's open is refused before the limits gate.
+      expect(res).toEqual({ status: 403, body: { error: limits.HUB_REFUSALS.commands } })
+      expect(lastAudit()).toMatchObject({ route: 'POST /sessions/open', denied: 'hub_commands', hub: true })
       const r = await cli(['apply'], { input: typed('yes') })
       expect([r.code, r.out, r.err]).toEqual([1, '', `tandem: no limits file at ${home.file}; run tandem limits init\n`])
       expect([existsSync(home.file), existsSync(home.copy)]).toEqual([false, false])
@@ -515,8 +516,8 @@ describe('U-R1A-48 tandem limits', () => {
     expect((await close(name)).status).toBe(200)
     same()
 
-    // a refused file: a syntax error, an unknown field, and hub_commands (not a field until U-R1A-17B)
-    for (const [text, reason] of [['folders = [\n', /TOML syntax error/], ['extra = 1\n', /unknown field extra/], ['hub_commands = false\n', /unknown field hub_commands/]] as const) {
+    // a refused file: a syntax error, an unknown field, and an unknown hub_reads key
+    for (const [text, reason] of [['folders = [\n', /TOML syntax error/], ['extra = 1\n', /unknown field extra/], ['hub_reads = { files = true }\n', /unknown field hub_reads\.files/]] as const) {
       writeFileSync(LIMITS, text, { mode: 0o600 })
       const r = await cli(['apply'], { input: typed('yes') })
       expect([r.code, r.out]).toEqual([1, ''])
@@ -560,7 +561,8 @@ describe('U-R1A-48 tandem limits', () => {
     async function a48(o: { tag: string; engine: string; cwd: string; without: Record<string, unknown>; with: Record<string, unknown>; reason: RegExp }) {
       noFiles()
       const none = uniq(o.tag)
-      expectLimitsRefusal(await open(none, o.engine, o.cwd), none, o.engine, false)
+      expect(await open(none, o.engine, o.cwd)).toEqual({ status: 403, body: { error: limits.HUB_REFUSALS.commands } })
+      expect(lastAudit()).toMatchObject({ route: 'POST /sessions/open', denied: 'hub_commands', hub: true })
 
       await ownerApplies(o.without)
       const without = uniq(o.tag)
@@ -607,7 +609,8 @@ describe('U-R1A-48 tandem limits', () => {
     it('(h) permission_skip', async () => {
       noFiles()
       const none = uniq('h-skip')
-      expectLimitsRefusal(await open(none, 'fake-a', SKIP), none, 'fake-a', false)
+      expect(await open(none, 'fake-a', SKIP)).toEqual({ status: 403, body: { error: limits.HUB_REFUSALS.commands } })
+      expect(lastAudit()).toMatchObject({ route: 'POST /sessions/open', denied: 'hub_commands', hub: true })
       // the file without it: the open runs with its prompts on (no skip args); logged
       await ownerApplies(initFields())
       const without = uniq('h-skip')
@@ -809,14 +812,14 @@ for await (const _ of rl) { const s = l.limitsSnapshot(); process.stdout.write(J
     expect(readFileSync(join(h3, '.tandem', 'limits.applied.toml'))).toEqual(readFileSync(f3))
   }, 900_000)
 
-  it('(n) init writes only the fields limits.ts knows (U-R1A-17B adds its two fields to FIELDS and INIT_DEFAULTS)', async () => {
+  it('(n) init writes exactly the fields limits.ts knows, the hub fields on', async () => {
     noFiles()
     expect((await cli(['init', '--folder', WORK, '--agent', 'fake-a'])).code).toBe(0)
     const text = readFileSync(LIMITS, 'utf8')
     expect(Object.keys(parse(text)).sort()).toEqual([...limits.FIELDS].sort())
     expect(Object.keys(limits.INIT_DEFAULTS).sort()).toEqual(limits.FIELDS.filter((f) => f !== 'folders' && f !== 'agents').sort())
-    expect(text).not.toContain('hub_commands')
-    expect(text).not.toContain('hub_reads')
+    expect((parse(text) as Json).hub_commands).toBe(true)
+    expect((parse(text) as Json).hub_reads).toEqual({ screens: true, transcripts: true, memory: true })
   })
 
   it('(o) T23, the same-user limit: with the applied copy deleted, a process started after a wider edit reads the wider file', async () => {

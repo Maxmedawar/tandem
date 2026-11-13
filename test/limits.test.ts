@@ -168,7 +168,9 @@ async function fieldSequence(o: { tag: string; engine: string; cwd: string; with
   rmSync(LIMITS, { force: true });
   await apply();
   const none = uniq(o.tag);
-  expectLimitsRefusal(await open(none, o.engine, o.cwd), none, o.engine, false);
+  // U-R1A-17B: no file turns every hub field off, so the hub's open is refused before the limits gate.
+  expect(await open(none, o.engine, o.cwd)).toEqual({ status: 403, body: { error: limits.HUB_REFUSALS.commands } });
+  expect(lastAudit()).toMatchObject({ route: "POST /sessions/open", denied: "hub_commands", hub: true });
 
   writeLimits(TH, o.without);
   await apply();
@@ -336,7 +338,8 @@ describe("limits file: each field through handleHubRequest (private tmux socket)
     rmSync(LIMITS, { force: true });
     await apply();
     const none = uniq("skip");
-    expectLimitsRefusal(await open(none, "fake-a", SKIP), none, "fake-a", false);
+    expect(await open(none, "fake-a", SKIP)).toEqual({ status: 403, body: { error: limits.HUB_REFUSALS.commands } });
+    expect(lastAudit()).toMatchObject({ route: "POST /sessions/open", denied: "hub_commands", hub: true });
 
     writeLimits(TH, { folders: [WORK], agents });
     await apply();
@@ -378,7 +381,8 @@ describe("limits file: each field through handleHubRequest (private tmux socket)
 
     rmSync(LIMITS, { force: true });
     await apply();
-    expect403(await relay(WORK));
+    expect(await relay(WORK)).toEqual({ status: 403, body: { error: limits.HUB_REFUSALS.commands } });
+    expect(lastAudit()).toMatchObject({ route: "POST /relay/start", denied: "hub_commands", hub: true });
 
     writeLimits(TH, { folders: [WORK], permission_skip: [SKIP], agents: { claude: agentEntry(claude) } });
     await apply();
