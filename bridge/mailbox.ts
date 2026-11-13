@@ -110,6 +110,11 @@ export const MAX_HELD = 1000
 export const MAX_PAIRS = 1000
 /** One late-copy notice per (sender computer, session) at most this often, and never while one waits unread (U-R1A-33B-5 audit). */
 export const LATE_NOTICE_MS = 60_000
+/**
+ * System notices (sender `machine:<computer>/gap`, any kind) one inbox may hold queued: a fixed
+ * share of it. They never count against real mail, which keeps all of MAX_INBOX (U-R1A-33B-6).
+ */
+export const MAX_NOTICES = MAX_INBOX / 10
 const MAX_LIST = 500
 const LEVELS: readonly string[] = ['fyi', 'ask', 'interrupt']
 /** A session name on this computer. */
@@ -275,6 +280,7 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
       CREATE TABLE IF NOT EXISTS mail_remote (id TEXT PRIMARY KEY, envelope TEXT NOT NULL, hub_seq INTEGER);
       CREATE TABLE IF NOT EXISTS mail_counter_out (dest TEXT PRIMARY KEY, n INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS mail_order_in (from_id TEXT NOT NULL, to_name TEXT NOT NULL, next INTEGER NOT NULL, PRIMARY KEY (from_id, to_name));
+      CREATE TABLE IF NOT EXISTS mail_notice_last (to_name TEXT NOT NULL, from_id TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, at_ms INTEGER NOT NULL, PRIMARY KEY (to_name, from_id, kind));
       CREATE TABLE IF NOT EXISTS mail_held (from_id TEXT NOT NULL, to_name TEXT NOT NULL, n INTEGER NOT NULL, body TEXT NOT NULL, held_ms INTEGER NOT NULL, PRIMARY KEY (from_id, to_name, n));
       CREATE TABLE IF NOT EXISTS hub_cursor (k INTEGER PRIMARY KEY CHECK (k = 1), epoch TEXT NOT NULL, cursor INTEGER NOT NULL)`)
     // A mail_remote from before U-R1A-33B-4 has no n column (NULL: kept before numbers). Two
@@ -292,9 +298,17 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
     throw e
   }
 
-  const queuedCount = db.prepare(`SELECT count(*) AS n FROM mail WHERE to_name = ? AND state = 'queued'`)
-  const lateNoticeRow = db.prepare(`SELECT 1 FROM mail WHERE to_name = ? AND from_id = ? AND text = ?
-    AND (state = 'queued' OR (sent_at_ms > ? AND sent_at_ms <= ?)) LIMIT 1`)
+  // A system notice: only systemNotice writes `machine:<computer>/gap`; no real sender ends in /gap
+  // (checkReceive: machine:<id>/owner, /session:<name> or /room:<label>, none holding a slash).
+  const NOTICE = `from_id GLOB 'machine:*/gap'`
+  /** Queued real mail (system notices not counted): the MAX_INBOX check of store and receive. */
+  const queuedCount = db.prepare(`SELECT count(*) AS n FROM mail WHERE to_name = ? AND state = 'queued' AND NOT ${NOTICE}`)
+  const queuedAll = db.prepare(`SELECT count(*) AS n, coalesce(sum(${NOTICE}), 0) AS notices FROM mail WHERE to_name = ? AND state = 'queued'`)
+  // The last system notice per (session, sender, kind): a keyed lookup, never a scan of the session's kept mail.
+  const noticeLast = db.prepare(`SELECT n.at_ms, m.state FROM mail_notice_last n LEFT JOIN mail m ON m.id = n.id
+    WHERE n.to_name = ? AND n.from_id = ? AND n.kind = ?`)
+  const noticeLastSet = db.prepare(`INSERT INTO mail_notice_last (to_name, from_id, kind, id, at_ms) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT (to_name, from_id, kind) DO UPDATE SET id = excluded.id, at_ms = excluded.at_ms`)
   const insert = db.prepare(`INSERT INTO mail (id, from_id, to_name, level, text, sent_at_ms, reply_by_ms, state, state_at_ms)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)`)
   const pendingRows = db.prepare(`SELECT level, count(*) AS n FROM mail WHERE to_name = ? AND state = 'queued' GROUP BY level`)
@@ -375,6 +389,25 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
       if (e instanceof MailError) note(input, { state: 'denied', status: e.status })
       throw e
     }
+  }
+
+  /**
+   * The one writer of system notices (U-R1A-33B-6), inside the caller's transaction: one fyi in
+   * `to`'s inbox from `machine:<from>/gap`, skipped when the last notice of that kind from that
+   * sender still waits unread there or was written in the last LATE_NOTICE_MS, when MAX_NOTICES
+   * notices are queued there, or when the inbox holds MAX_INBOX queued in all. A hub forcing many
+   * gaps or late copies takes at most MAX_NOTICES slots, never the room of real mail.
+   */
+  const systemNotice = (from: string, to: string, kind: 'gap' | 'late', text: string): void => {
+    const t = now()
+    const sender = `machine:${from}/gap`
+    const q = queuedAll.get(to) as { n: number; notices: number }
+    if (Number(q.n) >= MAX_INBOX || Number(q.notices) >= MAX_NOTICES) return
+    const last = noticeLast.get(to, sender, kind) as { at_ms: number; state: string | null } | undefined
+    if (last !== undefined && (last.state === 'queued' || (Number(last.at_ms) > t - LATE_NOTICE_MS && Number(last.at_ms) <= t))) return
+    const id = `mail-${randomUUID()}`
+    insert.run(id, sender, to, 'fyi', text, t, null, t)
+    noticeLastSet.run(to, sender, kind, id, t)
   }
 
   return {
@@ -535,18 +568,14 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
     },
     /**
      * Numbers `first`..`last` from computer `from` to session `to` did not come: in ONE
-     * transaction, one fyi notice in `to`'s inbox from `machine:<from>/gap` (no caller can spell
-     * that sender; none when the inbox holds MAX_INBOX queued already), then the order moves past `last`.
+     * transaction, one gap notice through systemNotice (no caller can spell its sender; skipped
+     * by its rules), then the order moves past `last`.
      */
     closeGap(from: string, to: string, first: number, last: number): void {
       const span = first === last ? String(first) : `${first}-${last}`
-      const text = `mail ${span} from ${from} did not arrive within 30 s; later mail follows`
       db.exec('BEGIN IMMEDIATE')
       try {
-        if (Number((queuedCount.get(to) as { n: number }).n) < MAX_INBOX) {
-          const t = now()
-          insert.run(`mail-${randomUUID()}`, `machine:${from}/gap`, to, 'fyi', text, t, null, t)
-        }
+        systemNotice(from, to, 'gap', `mail ${span} from ${from} did not arrive within 30 s; later mail follows`)
         orderSet.run(from, to, last + 1)
         db.exec('COMMIT')
       } catch (e) {
@@ -556,21 +585,14 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
     },
     /**
      * A copy from computer `from` to session `to` came after its number was passed and its id was
-     * never stored (hub-mail `mail.late`): in ONE transaction, one fyi notice in `to`'s inbox from
-     * `machine:<from>/gap`, none when the inbox holds MAX_INBOX queued already, when that notice from
-     * `from` still waits unread in `to`'s inbox, or when it was written in the last LATE_NOTICE_MS: a
-     * hub replaying many late copies takes at most one inbox slot per sender computer and session,
-     * never the room real mail needs (U-R1A-33B-5 audit). The order row is not moved.
+     * never stored (hub-mail `mail.late`): in ONE transaction, one late notice through systemNotice
+     * (skipped by its rules: a hub replaying many late copies takes at most one inbox slot per
+     * sender computer and session, U-R1A-33B-5 audit). The order row is not moved.
      */
     lateNotice(from: string, to: string): void {
       db.exec('BEGIN IMMEDIATE')
       try {
-        const t = now()
-        const sender = `machine:${from}/gap`
-        const text = `a message from ${from} arrived out of order and was dropped`
-        if (Number((queuedCount.get(to) as { n: number }).n) < MAX_INBOX && lateNoticeRow.get(to, sender, text, t - LATE_NOTICE_MS, t) === undefined) {
-          insert.run(`mail-${randomUUID()}`, sender, to, 'fyi', text, t, null, t)
-        }
+        systemNotice(from, to, 'late', `a message from ${from} arrived out of order and was dropped`)
         db.exec('COMMIT')
       } catch (e) {
         db.exec('ROLLBACK')

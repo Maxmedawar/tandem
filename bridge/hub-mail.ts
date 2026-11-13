@@ -32,7 +32,10 @@
  * One carrier per state.db is assumed there. The receiver stores one sender
  * computer's mail to one session in n order only: an early copy is held (mail_held, at most
  * MAX_HELD per pair) for up to GAP_HOLD_MS, then one `mail.gap` audit line and one inbox notice
- * from `machine:<computer>/gap` name the missing numbers and the held copies follow; a copy whose
+ * from `machine:<computer>/gap` name the missing numbers and the held copies follow (every such system
+ * notice, gap or late, goes through one mailbox rule: at most one per kind, sender computer and
+ * session while one waits unread or within LATE_NOTICE_MS, at most mailbox.MAX_NOTICES queued per
+ * session, never counted against the MAX_INBOX of real mail; U-R1A-33B-6); a copy whose
  * number was passed is dropped as `mail.late` (or `mail.repeat` when that id is stored). The gap
  * pass runs at the start of every pull, before any call, so a hub that stops answering still
  * releases held copies; the hold time is in state.db and survives a restart. The take cursor is
