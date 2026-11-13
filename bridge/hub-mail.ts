@@ -43,14 +43,16 @@
  * `mail.hub_epoch` line, and keeps the old risk that its restarted counters are acked unread.
  * Stated limits: first contact is the baseline (a hub can withhold everything before the first
  * copy it hands over); a hub can still withhold everything (a gap shows only when a later copy from
- * that sender arrives); `mail.late` copies are dropped, not shown, and a resent copy of a message
- * refused at store reads `mail.late` too; a fresh state.db at the receiver starts a new baseline;
+ * that sender arrives); a `mail.late` copy whose id was never stored is dropped and leaves one
+ * inbox notice from `machine:<computer>/gap` (skipped at MAX_INBOX, while that notice waits unread,
+ * or within mailbox.LATE_NOTICE_MS of the last one, so late copies never fill the inbox), and a resent copy of a
+ * message refused at store reads `mail.late` too; a fresh state.db at the receiver starts a new baseline;
  * all of one owner's computers run one release (an older receiver refuses v:2 bodies as `shape`;
  * a v:1 body from an older sender is stored with no order rule); the epoch protects only against a
  * hub that answers with it; order is per (sender computer, recipient session), not across sessions
  * or senders; a hub that answers a first put queue_full or refused yet hands that copy on makes
- * the next row share its number, and the receiver then drops that next row as `mail.late` with no
- * gap notice (the audit line is the only trace). The receiver keeps at most mailbox.MAX_PAIRS
+ * the next row share its number, and the receiver then drops that next row as `mail.late`, which
+ * leaves that one inbox notice (U-R1A-33B-5). The receiver keeps at most mailbox.MAX_PAIRS
  * order rows per sender computer; the pair unused longest starts a new baseline.
  *
  * `now` is the only clock: the replay store, every openEnvelope and every signEnvelope run on it.
@@ -309,6 +311,12 @@ export function hubMail(
     } else {
       // Its gap was reported already (or it was refused at store before): dropped.
       audit({ event: 'mail.late', from: c.from.slice(0, 300), to: body.to.slice(0, 300), n, id: body.id.slice(0, 300) })
+      try {
+        box.lateNotice(c.from, body.to)
+      } catch (e) {
+        if (!(e instanceof MailError)) throw e
+        audit({ event: 'mail.refused', from: c.from.slice(0, 300), id: c.id.slice(0, 300), denied: 'mailbox', status: e.status })
+      }
     }
     record()
   }
