@@ -31,10 +31,11 @@
  * command, which the drop script runs so the owner's own line still shows (his `padding` is kept).
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Harness } from './harness-registry.ts'
+import { RENAMED } from '../src/legacy-env.ts'
 import { killSwitchOn } from './kill-switch.ts'
 import type { Message, Point } from './mailbox.ts'
 import { tandemHome } from './tandem-home.ts'
@@ -205,12 +206,6 @@ function configOverrides(option: string, command: (event: string) => string): st
   }
   return [...out, option, `hooks.state={${trust.join(',')}}`]
 }
-
-// ponytail: guarded import, because test/agent-mcp-token.test.ts (h2) loads a copy of this file with
-// only kill-switch.ts and tandem-home.ts beside it; a real tree always has src/legacy-env.ts.
-const { RENAMED } = existsSync(new URL('../src/legacy-env.ts', import.meta.url))
-  ? await import('../src/legacy-env.ts')
-  : { RENAMED: {} as Readonly<Record<string, string>> }
 
 /**
  * The variables a stdio start of src/stdio-server.ts reads (U-R1A-36C: `git grep` of its start

@@ -421,10 +421,9 @@ describe('(h2) mcpOverrides', () => {
       writeFileSync(join(root, 'bridge', 'delivery-hooks.ts'), readFileSync(join(repo, 'bridge', 'delivery-hooks.ts')))
       writeFileSync(join(root, 'bridge', 'kill-switch.ts'), 'export const killSwitchOn = () => false\n')
       writeFileSync(join(root, 'bridge', 'tandem-home.ts'), readFileSync(join(repo, 'bridge', 'tandem-home.ts')))
-      if (withStdio) {
-        mkdirSync(join(root, 'src'), { recursive: true })
-        writeFileSync(join(root, 'src', 'stdio-server.ts'), '')
-      }
+      mkdirSync(join(root, 'src'), { recursive: true })
+      writeFileSync(join(root, 'src', 'legacy-env.ts'), readFileSync(join(repo, 'src', 'legacy-env.ts')))
+      if (withStdio) writeFileSync(join(root, 'src', 'stdio-server.ts'), '')
       const code = `const m = await import(${JSON.stringify(pathToFileURL(join(root, 'bridge', 'delivery-hooks.ts')).href)});
 try { m.mcpOverrides(${JSON.stringify(harness('x', { mcp_env: 'config-overrides' }))}); console.log('NO THROW') } catch { console.log('THREW') }`
       return spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '-e', code], { encoding: 'utf8', env: { ...process.env, NODE_NO_WARNINGS: '1' } }).stdout.trim()
