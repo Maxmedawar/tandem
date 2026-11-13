@@ -961,7 +961,8 @@ export class TerminalSession {
     await scrubServerSecrets()
     // The binding folder check, right before new-session: this realpath is the -c folder.
     // Remaining window: (1) between this realpath and the tmux server's chdir for -c (one tmux call)
-    // a parent folder swapped for a symlink still moves the start; (2) the program file at the checked
+    // a parent folder swapped for a symlink still moves the start, and a folder removed there starts in
+    // tmux's fallback folder (the home folder) while the session records the checked one; (2) the program file at the checked
     // real path can be replaced in place between the limits gate's sha256 read and the exec; (3) the
     // relay's start runs harnessDescriptor(claude) on the found path, not on a checked real path
     // (relay.ts). Closing (1) and (2) needs a start by file descriptor, which tmux does not offer.
