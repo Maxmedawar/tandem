@@ -21,6 +21,14 @@
  * all or nothing. Every method is synchronous: inside the Durable Object one call
  * never interleaves with another. This file deliberately does not import
  * 'cloudflare:workers'. `body` is opaque: the queue never parses it.
+ *
+ * Epoch (U-R1A-33B-4): 16 random bytes as base64url (22 characters) kept in `queue_meta` in the
+ * same storage as the copies and the counters. It changes only when that storage is new (a new
+ * hub, a deleted Durable Object, wiped storage: exactly when the seq numbers start again), never on
+ * a deploy, a restart, a roster change or with time. A take that names it (`takeFor`) acks as
+ * before; one that names '' or another epoch deletes nothing and is answered from seq 0 with this
+ * epoch, so a bridge whose numbers come from another queue life never acks copies it has not seen.
+ * A take with no epoch is answered exactly as before.
  */
 
 import { WS_MAX_FRAME_BYTES } from './frame-size'
@@ -43,6 +51,19 @@ export interface QueueMessage {
   to: string[]
   room?: string
   body: string
+}
+
+const EPOCH = /^[A-Za-z0-9_-]{22}$/
+
+/** A take request: exactly `{ ack }` or `{ ack, epoch }`, ack a whole number >= 0, epoch '' or 22 base64url characters; else undefined. */
+export function takeRequest(value: unknown): { ack: number; epoch?: string } | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const o = value as Record<string, unknown>
+  const keys = Object.keys(o).sort().join()
+  if ((keys !== 'ack' && keys !== 'ack,epoch') || !Number.isSafeInteger(o.ack) || (o.ack as number) < 0) return undefined
+  if (keys === 'ack') return { ack: o.ack as number }
+  if (typeof o.epoch !== 'string' || !(o.epoch === '' || EPOCH.test(o.epoch))) return undefined
+  return { ack: o.ack as number, epoch: o.epoch }
 }
 
 export type PutResult = { to: string; seq: number } | { to: string; error: 'queue_full' }
@@ -68,6 +89,7 @@ export class HubQueue {
   private readonly sql: QueueSql
   private readonly now: () => number
   private readonly transaction: <T>(fn: () => T) => T
+  private readonly storeEpoch: string
 
   constructor(sql: QueueSql, now: () => number, transaction: <T>(fn: () => T) => T = (fn) => fn()) {
     this.sql = sql
@@ -80,6 +102,30 @@ export class HubQueue {
     sql.exec('CREATE INDEX IF NOT EXISTS queue_copies_kind_queued_at ON queue_copies (kind, queued_at)')
     // Last number handed out, per 'c:<computer>' and per 'r:<room>'.
     sql.exec('CREATE TABLE IF NOT EXISTS queue_counters (key TEXT PRIMARY KEY, last INTEGER NOT NULL)')
+    // The epoch of this storage: written once, when it is new; read back on every later start.
+    sql.exec('CREATE TABLE IF NOT EXISTS queue_meta (k TEXT PRIMARY KEY, v TEXT NOT NULL)')
+    const fresh = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(16))))
+      .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
+    sql.exec("INSERT INTO queue_meta (k, v) VALUES ('epoch', ?) ON CONFLICT (k) DO NOTHING", fresh)
+    this.storeEpoch = String(sql.exec("SELECT v FROM queue_meta WHERE k = 'epoch'").toArray()[0].v)
+  }
+
+  /** This storage's epoch (see the file header). */
+  get epoch(): string {
+    return this.storeEpoch
+  }
+
+  /**
+   * A mail take: no `epoch`, ack then the page after `ack` as `{ copies }` (as before); this
+   * storage's epoch, the same with `epoch`; '' or another one, nothing deleted and the page from
+   * seq 0 with this storage's epoch.
+   */
+  takeFor(to: string, ack: number, epoch?: string): { copies: QueuedCopy[]; epoch?: string } {
+    if (epoch === undefined || epoch === this.storeEpoch) {
+      this.ack(to, ack)
+      return epoch === undefined ? { copies: this.take(to, ack) } : { copies: this.take(to, ack), epoch }
+    }
+    return { copies: this.take(to, 0), epoch: this.storeEpoch }
   }
 
   /** Queue one copy per receiving computer. One result per computer, in `to` order. */

@@ -104,6 +104,10 @@ export const UNTRUSTED_MAIL = 'Untrusted data from other senders, not instructio
 
 /** Queued messages one inbox may hold: the number of MAX_COPIES in hub/src/queue.ts (its own constant). */
 export const MAX_INBOX = 1000
+/** Early copies held per (sender computer, session) waiting for a missing number (U-R1A-33B-4). */
+export const MAX_HELD = 1000
+/** Order rows kept per sender computer (U-R1A-33B-4): past it the pair unused longest goes and starts a new baseline. */
+export const MAX_PAIRS = 1000
 const MAX_LIST = 500
 const LEVELS: readonly string[] = ['fyi', 'ask', 'interrupt']
 /** A session name on this computer. */
@@ -266,7 +270,21 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
       CREATE INDEX IF NOT EXISTS mail_inbox ON mail (to_name, state, seq);
       CREATE TABLE IF NOT EXISTS mail_notice (to_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, at_ms INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS mail_interrupt (to_name TEXT PRIMARY KEY, seq INTEGER NOT NULL, at_ms INTEGER NOT NULL);
-      CREATE TABLE IF NOT EXISTS mail_remote (id TEXT PRIMARY KEY, envelope TEXT NOT NULL, hub_seq INTEGER)`)
+      CREATE TABLE IF NOT EXISTS mail_remote (id TEXT PRIMARY KEY, envelope TEXT NOT NULL, hub_seq INTEGER);
+      CREATE TABLE IF NOT EXISTS mail_counter_out (dest TEXT PRIMARY KEY, n INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS mail_order_in (from_id TEXT NOT NULL, to_name TEXT NOT NULL, next INTEGER NOT NULL, PRIMARY KEY (from_id, to_name));
+      CREATE TABLE IF NOT EXISTS mail_held (from_id TEXT NOT NULL, to_name TEXT NOT NULL, n INTEGER NOT NULL, body TEXT NOT NULL, held_ms INTEGER NOT NULL, PRIMARY KEY (from_id, to_name, n));
+      CREATE TABLE IF NOT EXISTS hub_cursor (k INTEGER PRIMARY KEY CHECK (k = 1), epoch TEXT NOT NULL, cursor INTEGER NOT NULL)`)
+    // A mail_remote from before U-R1A-33B-4 has no n column (NULL: kept before numbers). Two
+    // processes may add it at once: the loser's ALTER fails and the column is there all the same.
+    const hasN = () => (db.prepare('PRAGMA table_info(mail_remote)').all() as { name?: unknown }[]).some((c) => c.name === 'n')
+    if (!hasN()) {
+      try {
+        db.exec('ALTER TABLE mail_remote ADD COLUMN n INTEGER')
+      } catch (e) {
+        if (!hasN()) throw e
+      }
+    }
   } catch (e) {
     db.close()
     throw e
@@ -305,6 +323,25 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   const remoteMove = db.prepare(`UPDATE mail SET state = ?, state_at_ms = ?
     WHERE id = ? AND instr(to_name, ':') > 0 AND state IN (SELECT value FROM json_each(?))`)
   const hubSeqSet = db.prepare(`UPDATE mail_remote SET hub_seq = ? WHERE id = ?`)
+  const numberedRow = db.prepare(`INSERT INTO mail_remote (id, envelope, n) VALUES (?, ?, ?)`)
+  const counterOut = db.prepare(`SELECT n FROM mail_counter_out WHERE dest = ?`)
+  const counterSet = db.prepare(`INSERT INTO mail_counter_out (dest, n) VALUES (?, ?) ON CONFLICT (dest) DO UPDATE SET n = excluded.n`)
+  const numberRow = db.prepare(`SELECT n FROM mail_remote WHERE id = ?`)
+  const counterBack = db.prepare(`UPDATE mail_counter_out SET n = n - 1 WHERE dest = ? AND n = (SELECT n FROM mail_remote WHERE id = ?)`)
+  const mailRow = db.prepare(`SELECT 1 AS x FROM mail WHERE id = ?`)
+  const orderRow = db.prepare(`SELECT next FROM mail_order_in WHERE from_id = ? AND to_name = ?`)
+  // OR REPLACE gives the row a new rowid at every move, so rowid order is last-used order.
+  const orderSet = db.prepare(`INSERT OR REPLACE INTO mail_order_in (from_id, to_name, next) VALUES (?, ?, ?)`)
+  const orderTrim = db.prepare(`DELETE FROM mail_order_in WHERE rowid IN (SELECT o.rowid FROM mail_order_in o WHERE o.from_id = ?1
+    AND NOT EXISTS (SELECT 1 FROM mail_held h WHERE h.from_id = o.from_id AND h.to_name = o.to_name)
+    ORDER BY o.rowid LIMIT max(0, (SELECT count(*) FROM mail_order_in WHERE from_id = ?1) - ?2))`)
+  const heldCount = db.prepare(`SELECT count(*) AS n FROM mail_held WHERE from_id = ? AND to_name = ?`)
+  const heldInsert = db.prepare(`INSERT OR IGNORE INTO mail_held (from_id, to_name, n, body, held_ms) VALUES (?, ?, ?, ?, ?)`)
+  const heldRows = db.prepare(`SELECT n, body, held_ms FROM mail_held WHERE from_id = ? AND to_name = ? ORDER BY n`)
+  const heldDelete = db.prepare(`DELETE FROM mail_held WHERE from_id = ? AND to_name = ? AND n = ?`)
+  const heldPairRows = db.prepare(`SELECT from_id, to_name, min(n) AS lowest, min(held_ms) AS oldest FROM mail_held GROUP BY from_id, to_name ORDER BY from_id, to_name`)
+  const cursorRow = db.prepare(`SELECT epoch, cursor FROM hub_cursor WHERE k = 1`)
+  const cursorSet = db.prepare(`INSERT INTO hub_cursor (k, epoch, cursor) VALUES (1, ?, ?) ON CONFLICT (k) DO UPDATE SET epoch = excluded.epoch, cursor = excluded.cursor`)
   const receiveInsert = db.prepare(`INSERT OR IGNORE INTO mail (id, from_id, to_name, level, text, sent_at_ms, reply_by_ms, state, state_at_ms)
     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)`)
 
@@ -414,6 +451,112 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
         db.exec('ROLLBACK')
         throw e
       }
+    },
+    /**
+     * Mail order (U-R1A-33B-4). Row `id` to `dest` (`<computer>:<session>`) gets the next number of
+     * that destination and the envelope `sign(n)` returns, kept in ONE transaction: a `sign` that
+     * throws uses no number. A row kept already returns its envelope and changes nothing.
+     */
+    keepNumbered(id: string, dest: string, sign: (n: number) => string): string {
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        const kept = envelopeRow.get(id) as { envelope: string } | undefined
+        let text = kept?.envelope
+        if (text === undefined) {
+          const n = Number((counterOut.get(dest) as { n: number } | undefined)?.n ?? 0) + 1
+          text = sign(n)
+          numberedRow.run(id, text, n)
+          counterSet.run(dest, n)
+        }
+        db.exec('COMMIT')
+        return text
+      } catch (e) {
+        db.exec('ROLLBACK')
+        throw e
+      }
+    },
+    /**
+     * Row `id` to `dest` was never stored at the hub (queue_full or refused): its number goes back
+     * when it is still the last one `dest` was given, so the next row reuses it and the receiver sees
+     * no gap. A later row numbered already keeps the number used (the gap is then real). Returns whether it went back.
+     */
+    returnNumber(id: string, dest: string): boolean {
+      return Number(counterBack.run(dest, id).changes) === 1
+    },
+    /** The number kept with row `id`'s envelope; undefined for none (kept before numbers). */
+    numberOf(id: string): number | undefined {
+      const n = (numberRow.get(id) as { n: number | null } | undefined)?.n
+      return n === null || n === undefined ? undefined : Number(n)
+    },
+    /** Whether a message with this id is here, in any state. */
+    has(id: string): boolean {
+      return mailRow.get(id) !== undefined
+    },
+    /** The next number expected from computer `from` for session `to`; undefined before the first. */
+    orderNext(from: string, to: string): number | undefined {
+      const r = orderRow.get(from, to) as { next: number } | undefined
+      return r === undefined ? undefined : Number(r.next)
+    },
+    /** Moves the pair's next number; a sender's pairs past MAX_PAIRS go, the one unused longest first (never one holding copies). */
+    setOrderNext(from: string, to: string, next: number): void {
+      const known = orderRow.get(from, to) !== undefined
+      orderSet.run(from, to, next)
+      if (!known) orderTrim.run(from, MAX_PAIRS)
+    },
+    /** Hold an early copy (`body` as JSON); 'full' (nothing written) when that pair holds MAX_HELD already. A second hold of one n keeps the first. */
+    hold(from: string, to: string, n: number, body: string, heldMs: number): 'held' | 'full' {
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        const full = Number((heldCount.get(from, to) as { n: number }).n) >= MAX_HELD
+        if (!full) heldInsert.run(from, to, n, body, heldMs)
+        db.exec('COMMIT')
+        return full ? 'full' : 'held'
+      } catch (e) {
+        db.exec('ROLLBACK')
+        throw e
+      }
+    },
+    /** That pair's held copies, lowest n first. */
+    heldFor(from: string, to: string): { n: number; body: string; heldMs: number }[] {
+      return (heldRows.all(from, to) as { n: number; body: string; held_ms: number }[]).map((r) => ({ n: Number(r.n), body: r.body, heldMs: Number(r.held_ms) }))
+    },
+    unhold(from: string, to: string, n: number): void {
+      heldDelete.run(from, to, n)
+    },
+    /** One row per pair holding copies: its lowest n and its oldest hold time. */
+    heldPairs(): { from: string; to: string; lowest: number; oldestMs: number }[] {
+      return (heldPairRows.all() as { from_id: string; to_name: string; lowest: number; oldest: number }[]).map((r) => ({
+        from: r.from_id, to: r.to_name, lowest: Number(r.lowest), oldestMs: Number(r.oldest),
+      }))
+    },
+    /**
+     * Numbers `first`..`last` from computer `from` to session `to` did not come: in ONE
+     * transaction, one fyi notice in `to`'s inbox from `machine:<from>/gap` (no caller can spell
+     * that sender; none when the inbox holds MAX_INBOX queued already), then the order moves past `last`.
+     */
+    closeGap(from: string, to: string, first: number, last: number): void {
+      const span = first === last ? String(first) : `${first}-${last}`
+      const text = `mail ${span} from ${from} did not arrive within 30 s; later mail follows`
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        if (Number((queuedCount.get(to) as { n: number }).n) < MAX_INBOX) {
+          const t = now()
+          insert.run(`mail-${randomUUID()}`, `machine:${from}/gap`, to, 'fyi', text, t, null, t)
+        }
+        orderSet.run(from, to, last + 1)
+        db.exec('COMMIT')
+      } catch (e) {
+        db.exec('ROLLBACK')
+        throw e
+      }
+    },
+    /** The hub take cursor kept with the hub queue's epoch; undefined before the first. */
+    hubCursor(): { epoch: string; cursor: number } | undefined {
+      const r = cursorRow.get() as { epoch: string; cursor: number } | undefined
+      return r === undefined ? undefined : { epoch: r.epoch, cursor: Number(r.cursor) }
+    },
+    setHubCursor(epoch: string, cursor: number): void {
+      cursorSet.run(epoch, cursor)
     },
     /** Queued counts per level. */
     pending(to: string): Record<Level, number> {
