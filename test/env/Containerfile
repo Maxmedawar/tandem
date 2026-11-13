@@ -3,7 +3,7 @@ FROM docker.io/library/ubuntu:24.04
 # from the release's published gitleaks_8.30.1_checksums.txt (equal to GitHub's asset digests).
 RUN set -eu; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ca-certificates curl git tmux strace; \
+    apt-get install -y --no-install-recommends ca-certificates curl git tmux strace zip; \
     case "$(dpkg --print-architecture)" in arm64) ARCH=arm64;; amd64) ARCH=x64;; *) echo "unsupported arch" >&2; exit 1;; esac; \
     V=v22.23.4; F=node-$V-linux-$ARCH.tar.gz; \
     cd /tmp; \
