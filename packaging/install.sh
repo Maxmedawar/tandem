@@ -17,12 +17,20 @@ target=""
 versions="$state/versions"
 current="$state/current"
 agents="$state/agents"
-label="com.tandem.runtime"
+service="${TANDEM_SERVICE-tandem}"
+label="com.$service.runtime"
+unit="$service.service"
 archive="${TANDEM_ARCHIVE:-}"
 base_url="${TANDEM_BASE_URL:-https://get.tandem.computer}"
 
 say() { printf '%s\n' "$*"; }
 fail() { printf 'tandem: %s\n' "$*" >&2; exit 1; }
+
+# The service name picks the launchd label and the systemd unit; checked before anything is written or stopped.
+case "$service" in
+  ''|[!abcdefghijklmnopqrstuvwxyz]*|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) fail "TANDEM_SERVICE must be a short lower-case name" ;;
+esac
+[ "${#service}" -le 31 ] || fail "TANDEM_SERVICE must be a short lower-case name"
 
 # macOS and Linux keep services in different places. The difference is
 # confined to two functions at the bottom; everything between here and there
@@ -211,7 +219,7 @@ chmod -R go-rwx "$staging"
 if [ "$host_os" = "darwin" ]; then
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
 else
-  systemctl --user stop tandem.service 2>/dev/null || true
+  systemctl --user stop "$unit" 2>/dev/null || true
 fi
 
 previous="$versions/.$version.previous.$$"
@@ -226,7 +234,9 @@ ln -sfn "$target" "$current"
 
 # The limits file says what sessions here may do; with none, nothing is allowed. Asked once, on the
 # terminal when there is one (curl | sh in a terminal), else written allowing nothing; kept on a reinstall.
-if [ -e "$state/limits.toml" ] || [ -e "$state/limits.applied.toml" ]; then
+if [ "${TANDEM_NO_LIMITS:-0}" = "1" ]; then
+  :
+elif [ -e "$state/limits.toml" ] || [ -e "$state/limits.applied.toml" ]; then
   say "keeping the limits file in $state"
 elif [ -t 1 ] && ( : </dev/tty ) 2>/dev/null; then
   if ! "$current/bin/tandem" limits init </dev/tty; then
@@ -238,6 +248,13 @@ else
   fi
 fi
 
+# Another service carries its name to the launcher it starts; the default adds nothing.
+plist_service=""
+unit_service=""
+if [ "$service" != "tandem" ]; then
+  plist_service="<key>TANDEM_SERVICE</key><string>$service</string>"
+  unit_service=" \"TANDEM_SERVICE=$service\""
+fi
 if [ "$host_os" = "darwin" ]; then
   cat > "$agents/$label.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -257,7 +274,7 @@ if [ "$host_os" = "darwin" ]; then
   <key>StandardOutPath</key><string>$state/runtime.log</string>
   <key>StandardErrorPath</key><string>$state/runtime.log</string>
   <key>EnvironmentVariables</key>
-  <dict><key>TANDEM_HOME</key><string>$state</string></dict>
+  <dict><key>TANDEM_HOME</key><string>$state</string>$plist_service</dict>
 </dict>
 </plist>
 PLIST
@@ -267,7 +284,7 @@ else
   # it and touches nothing outside their home, so it needs no root.
   units="$HOME/.config/systemd/user"
   mkdir -p "$units"
-  cat > "$units/tandem.service" <<UNIT
+  cat > "$units/$unit" <<UNIT
 [Unit]
 Description=Tandem runtime
 After=network-online.target
@@ -277,14 +294,14 @@ Type=simple
 ExecStart="$current/bin/tandem" run
 Restart=on-failure
 RestartSec=10
-Environment="TANDEM_HOME=$state"
+Environment="TANDEM_HOME=$state"$unit_service
 StandardOutput=append:$state/runtime.log
 StandardError=append:$state/runtime.log
 
 [Install]
 WantedBy=default.target
 UNIT
-  chmod 0600 "$units/tandem.service"
+  chmod 0600 "$units/$unit"
 fi
 
 # A runtime that cannot start respawns on a timer, and its log is where that
@@ -308,12 +325,15 @@ elif [ "$host_os" = "darwin" ]; then
     launchctl kickstart -k "gui/$(id -u)/$label" 2>/dev/null || true
 else
   systemctl --user daemon-reload 2>/dev/null || true
-  systemctl --user enable --now tandem.service 2>/dev/null || true
+  systemctl --user enable --now "$unit" 2>/dev/null || true
 fi
 
-# The launcher goes somewhere already on a normal PATH, without sudo.
-mkdir -p "$HOME/.local/bin"
-ln -sfn "$current/bin/tandem" "$HOME/.local/bin/tandem"
+# The launcher goes somewhere already on a normal PATH, without sudo. Only the default service
+# takes the `tandem` command; another one is run by its full path.
+if [ "$service" = "tandem" ]; then
+  mkdir -p "$HOME/.local/bin"
+  ln -sfn "$current/bin/tandem" "$HOME/.local/bin/tandem"
+fi
 
 say ""
 if [ "${TANDEM_NO_START:-0}" = "1" ]; then
@@ -322,9 +342,13 @@ else
   say "Tandem $version is installed and running."
 fi
 say ""
+if [ "$service" != "tandem" ]; then
+  say "  run it as: TANDEM_HOME=$state $state/current/bin/tandem <command>"
+else
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
   *) say "  add ~/.local/bin to your PATH to use the tandem command" ;;
 esac
+fi
 say ""
 say "Everything else happens from your agent."

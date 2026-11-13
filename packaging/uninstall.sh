@@ -11,7 +11,16 @@
 set -eu
 
 state="${TANDEM_HOME:-$HOME/.tandem}"
-label="com.tandem.runtime"
+service="${TANDEM_SERVICE-tandem}"
+case "$service" in
+  ''|[!abcdefghijklmnopqrstuvwxyz]*|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) service="" ;;
+esac
+if [ -z "$service" ] || [ "${#service}" -gt 31 ]; then
+  printf '%s\n' "tandem: TANDEM_SERVICE must be a short lower-case name" >&2
+  exit 1
+fi
+label="com.$service.runtime"
+unit="$service.service"
 purge=0
 [ "${1:-}" = "--purge" ] && purge=1
 
@@ -23,8 +32,8 @@ if [ "$(uname -s)" = "Darwin" ]; then
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
   rm -f "$state/agents/$label.plist"
 else
-  systemctl --user disable --now tandem.service 2>/dev/null || true
-  rm -f "$HOME/.config/systemd/user/tandem.service"
+  systemctl --user disable --now "$unit" 2>/dev/null || true
+  rm -f "$HOME/.config/systemd/user/$unit"
   systemctl --user daemon-reload 2>/dev/null || true
 fi
 
