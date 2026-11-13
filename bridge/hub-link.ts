@@ -49,6 +49,52 @@ export const DIAL_TIMEOUT_MS = 20_000
  *  well above HEARTBEAT_MS so one late echo cannot trip it. */
 export const LIVENESS_TIMEOUT_MS = 70_000
 
+/**
+ * The largest hub answer any bridge reader takes (U-R1A-33B-4H). A hostile or broken hub could
+ * otherwise make the bridge hold an answer of any size in memory (33B-2 G5, 33B-3 G5). It sits
+ * above every legal answer: a mail take page (at most hub/src/queue.ts MAX_COPY_BYTES of copies
+ * plus framing), a fabric or command answer (one link frame, hub/src/frame-size.ts
+ * WS_MAX_FRAME_BYTES, 1,048,576), a roster answer (hub/src/roster-store.ts MAX_ROSTER_BYTES,
+ * 131,072, escaped, or 32 offers of MAX_OFFER_BYTES) and a presence answer (100 roster members x
+ * hub/src/index.ts MAX_ENVELOPE_BYTES, 16,384, JSON-escaped).
+ *
+ * Stated limit: a roster member that fills its presence envelopes (each at most 16,384 bytes) with
+ * characters JSON escapes six-fold (control characters) can push one computer's presence answer
+ * past the cap (100 x 98,304 bytes); that computer's presence then fails like an unreadable answer
+ * until the member stops (presence is advisory; mail, commands and memory are unaffected). Honest
+ * envelopes are JSON text and escape at most two-fold (100 x 32,768 bytes, under the cap).
+ */
+export const MAX_HUB_ANSWER_BYTES = 8_388_608
+
+/**
+ * Reads a hub answer's body, at most `maxBytes` (inclusive): undefined when a whole-number
+ * content-length is over it (cancelled before one body byte is read) or the stream passes it
+ * (cancelled at once, the chunks read so far dropped). No body is an empty Buffer. A stream error
+ * rejects as fetch would. Shape copied from bridge/engines/hermes.ts readBounded.
+ */
+export async function readHubAnswer(answer: Response, maxBytes = MAX_HUB_ANSWER_BYTES): Promise<Buffer | undefined> {
+  const length = answer.headers.get('content-length')
+  if (length !== null && /^\d+$/.test(length.trim()) && Number(length) > maxBytes) {
+    await answer.body?.cancel().catch(() => {})
+    return undefined
+  }
+  if (!answer.body) return Buffer.alloc(0)
+  const reader = answer.body.getReader()
+  const chunks: Uint8Array[] = []
+  let total = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {})
+      return undefined
+    }
+    chunks.push(value)
+  }
+  return Buffer.concat(chunks)
+}
+
 /** True if an open socket has gone silent past `timeoutMs`. Pure. */
 export function isTunnelStale(
   lastRecvAt: number,

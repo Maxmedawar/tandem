@@ -56,7 +56,7 @@ import { tandemHome } from './tandem-home.ts'
 import { audit } from './audit.ts'
 import { openDeviceKey, type DeviceKey } from './device-keys.ts'
 import { EnvelopeError, openEnvelope, openReplayStore, signEnvelope } from './envelope.ts'
-import { hubProofHeader, type HubLinkConfig } from './hub-link.ts'
+import { hubProofHeader, readHubAnswer, type HubLinkConfig } from './hub-link.ts'
 import { KILL_SWITCH_ON, killSwitchOn } from './kill-switch.ts'
 import { rightsOf, thisId, trustedKey, type Right } from './limits.ts'
 import { route } from './router.ts'
@@ -321,8 +321,10 @@ export async function sendRemoteCommand(
         body: sent,
         signal: AbortSignal.timeout(timeoutMs),
       })
-      const text = await answer.text()
+      const bytes = await readHubAnswer(answer)
       const lost = answer.status === 502 || answer.status === 504
+      if (bytes === undefined) return { answer: { status: answer.status, body: { error: 'answer too large' } }, nonce, maybe: lost }
+      const text = bytes.toString('utf8')
       if (text.length > MAX_ANSWER) return { answer: { status: answer.status, body: { error: 'answer too large' } }, nonce, maybe: lost }
       let parsed: unknown
       try {
