@@ -52,7 +52,9 @@ working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to
 debounce_ms = 5000
 # U-R1B-ANCHOR: the placeholder row counts only when no later row starts with `❯` (after spaces or `│`)
 # to the screen end.
-idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*\z']
+# U-R1B-ANCHOR-4: the placeholder row, then at most 3 non-blank lines (F = 3: the cline-screens idle fixtures draw the bar's
+# bottom rule and one status row, plus 1; director J2) with no `❯` row, to \z.
+idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[^\n]*(?:(?:\n[ \t│]*)*\n[ \t│]*[^ \t│❯\n][^\n]*){0,3}(?:\n[ \t│]*)*\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (the ❯ row shows only its placeholder, the rule right under it).
 empty_prompt = ['^[ \t]*❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[ \t]*\n[ \t]*─{20,}[ \t]*(?:\n[ \t]*(?:[^ \t─❯\n][^\n]*)?)*\z']
 

@@ -22,20 +22,34 @@ delivery = "notice"
 [states]
 waiting_for_approval = [
   # U-R1B-ANCHOR: the confirmation ends the screen: no input row holding text (the prompt is hidden) after it, then \z.
-  '(?i)waiting for user confirmation[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
+  # U-R1B-ANCHOR-4: the waiting line is drawn only with the composer shown (collapseDrawerDuringApproval false): then at
+  # most 2 non-blank lines (Footer's rows, chunk-AQRXALHQ.js FooterRow) that are not an input row holding text, to \z.
+  '(?i)waiting for user confirmation[^\n]*(?:(?:\n[ \t]*)*\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)){0,2}(?:\n[ \t]*)*\z',
   # U-R1B-ANCHOR: the confirmation ends the screen: no input row holding text (the prompt is hidden) after it, then \z.
-  '│ (?:Apply this change|Allow execution|Do you want to proceed)[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
+  # U-R1B-ANCHOR-4: the default layout hides the composer while a tool awaits confirmation (0.38.2 collapseDrawerDuringApproval
+  # default true, chunk-7DZN7VCC.js 46319; Composer.tsx returns null, interactiveCli-XAEPLVZH.js 39522): after the marker only the
+  # box's own `│` rows (no input row holding text) and its `╰` edge, then at most 1 line under the box, to \z.
+  '│ (?:Apply this change|Allow execution|Do you want to proceed)[^\n]*(?:\n[ \t]*(?:│[ \t]*(?:[^ \t>*\n][^\n]*|[>*][ \t]*)?)?)*(?:\n[ \t]*╰[^\n]*)?(?:(?:\n[ \t]*)*\n[ \t]*[^ \t│>*\n][^\n]*)?(?:\n[ \t]*)*\z',
   # U-R1B-ANCHOR: the confirmation ends the screen: no input row holding text (the prompt is hidden) after it, then \z.
-  '(?i)(?:allow execution|do you want to|apply this change)[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*?\n[ \t]*(?:│[ \t]*)?(?:[^ \t│>*\n][^\n]*)?\byes\b[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
+  # U-R1B-ANCHOR-4: the default layout hides the composer while a tool awaits confirmation (0.38.2 collapseDrawerDuringApproval
+  # default true, chunk-7DZN7VCC.js 46319; Composer.tsx returns null, interactiveCli-XAEPLVZH.js 39522): after the marker only the
+  # box's own `│` rows (no input row holding text) and its `╰` edge, then at most 1 line under the box, to \z.
+  '(?i)(?:allow execution|do you want to|apply this change)[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*?\n[ \t]*(?:│[ \t]*)?(?:[^ \t│>*\n][^\n]*)?\byes\b[^\n]*(?:\n[ \t]*(?:│[ \t]*(?:[^ \t>*\n][^\n]*|[>*][ \t]*)?)?)*(?:\n[ \t]*╰[^\n]*)?(?:(?:\n[ \t]*)*\n[ \t]*[^ \t│>*\n][^\n]*)?(?:\n[ \t]*)*\z',
   # U-R1B-ANCHOR: the confirmation ends the screen: no input row holding text (the prompt is hidden) after it, then \z.
-  'No, suggest changes \(esc\)[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
+  # U-R1B-ANCHOR-4: the default layout hides the composer while a tool awaits confirmation (0.38.2 collapseDrawerDuringApproval
+  # default true, chunk-7DZN7VCC.js 46319; Composer.tsx returns null, interactiveCli-XAEPLVZH.js 39522): after the marker only the
+  # box's own `│` rows (no input row holding text) and its `╰` edge, then at most 1 line under the box, to \z.
+  'No, suggest changes \(esc\)[^\n]*(?:\n[ \t]*(?:│[ \t]*(?:[^ \t>*\n][^\n]*|[>*][ \t]*)?)?)*(?:\n[ \t]*╰[^\n]*)?(?:(?:\n[ \t]*)*\n[ \t]*[^ \t│>*\n][^\n]*)?(?:\n[ \t]*)*\z',
 ]
 working = [
   # U-R1B-ANCHOR: the marker, at most 3 lines, then the input row in use and its footer to \z (no other input row between or after).
   '(?i)esc to cancel[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?){0,3}(?:\n ?(?:│ )?[>*] [^\n]*)?(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*|│[ \t]*(?:[^ \t>*\n][^\n]*)?|(?:│[ \t]*)?[>*][ \t]*)?)*\z',
 ]
 # U-R1B-ANCHOR: the placeholder row in use, then only lines that are not an input row, to \z (as empty_prompt).
-idle = ['(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file[^\n]*(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*)?)*\z']
+# U-R1B-ANCHOR-4: the placeholder row, then at most 4 non-blank lines (F = 4: 0.38.2 InputPrompt draws one edge row (▄, ▀ or ─)
+# right under the input, then Footer draws at most 2 rows, interactiveCli-XAEPLVZH.js 38034-38134 and 39616, chunk-AQRXALHQ.js
+# FooterRow; plus 1): that edge row, then at most 3 lines that are not an input row, to \z.
+idle = ['(?m)^ ?(?:│ )?[>*] +Type your message or @path/to/file[^\n]*(?:\n[ \t]*[▄▀─][^\n]*)?(?:(?:\n[ \t]*)*\n[ \t]*[^ \t│>*\n][^\n]*){0,3}(?:\n[ \t]*)*\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (the input row shows only its `Type your message` placeholder).
 empty_prompt = ['^ ?(?:│ )?[>*] +Type your message or @path/to/file[ \t]*(?:│[ \t]*)?(?:\n[ \t]*(?:[^ \t│>*\n][^\n]*)?)*\z']
 

@@ -36,6 +36,14 @@
  * busy screen with a long todo list never reads idle), so a quoted spinner or token line anywhere above
  * the real prompt box, with no border line between, reads working (E_LIMITS: agents held, the owner
  * still types); only an indented spinner-glyph line (the rule starts at the line start) reads as the prompt.
+ * Stated limits (U-R1B-ANCHOR-4, the eight agents with no account, built from package text, not live-tested): the idle rules of
+ * opencode, gemini, cursor-agent, copilot and cline end at the screen end after at most F non-blank lines under the prompt (the
+ * most the agent's idle fixtures and package text draw, plus 1); a real idle screen with more lines under its prompt reads
+ * unknown (agents held). cline's F comes from its fixtures (director J2): its 3.0.74 status bar draws 3 or 4 rows under the bar's
+ * rule, so a real cline idle screen reads unknown. droid and goose are unchanged (no red row). gemini's approval rules follow the
+ * default layout (the composer is hidden while a tool awaits confirmation); with ui.collapseDrawerDuringApproval=false, or a
+ * startup notice under the box, a real approval may read unknown (agents held, the owner types). opencode: LIMITS rows above.
+ * pi: no dialog screen recorded from package text; its idle rule is not tied to the screen end (pi.toml is outside this unit).
  *
  * Pure: no session, no tmux, no network. Built-ins only; the owner folder is a missing folder.
  */
@@ -429,9 +437,9 @@ describe("(layout) copilot: quoted markers above the real composers (U-R1B-COPIL
 });
 
 // U-R1B-ANCHOR-3: layouts (c) and (d), and claude's (e)/(f); see the header comment for the stated limits.
-const LAYOUT_COVERED = ["claude", "codex", "antigravity"];
-// U-R1B-ANCHOR-4 moves the first eight; grok: no unit owns its layouts yet (director); grok: approval layout not recorded.
-const LAYOUT_PENDING = ["opencode", "pi", "gemini", "cursor-agent", "copilot", "cline", "droid", "goose", "grok"];
+const LAYOUT_COVERED = ["claude", "codex", "antigravity", "opencode", "pi", "gemini", "cursor-agent", "copilot", "cline", "droid", "goose"];
+// grok: no unit owns its layouts yet (director)
+const LAYOUT_PENDING = ["grok"];
 const LAYOUT_NA = ["hermes", "shell"];
 // Stated limits, `<agent>|<block file>|<bottom file>|<variant>`: exactly the (d) rows red at the U-R1B-ANCHOR-3 BASE.
 // Reason for each: not live-captured: no real <agent> approval screen; the approval rule is not anchored.
@@ -464,6 +472,25 @@ const LIMITS = new Set<string>([
   "codex|screens/codex-waiting_for_approval-3.txt|screens/codex-working-1.txt|indented",
   "codex|screens/codex-waiting_for_approval-3.txt|screens/codex-working-2.txt|verbatim",
   "codex|screens/codex-waiting_for_approval-3.txt|screens/codex-working-2.txt|indented",
+  // U-R1B-ANCHOR-4, the (d) rows red at its BASE. Reason: not proven: opencode 2.2.7 text does not show the permission prompt replacing the composer.
+  "opencode|screens/opencode-waiting_for_approval-1.txt|screens/opencode-working-1.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-1.txt|screens/opencode-working-1.txt|indented",
+  "opencode|screens/opencode-waiting_for_approval-1.txt|screens/opencode-working-2.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-1.txt|screens/opencode-working-2.txt|indented",
+  "opencode|screens/opencode-waiting_for_approval-1.txt|screens/opencode-working-3.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-1.txt|screens/opencode-working-3.txt|indented",
+  "opencode|screens/opencode-waiting_for_approval-2.txt|screens/opencode-working-1.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-2.txt|screens/opencode-working-1.txt|indented",
+  "opencode|screens/opencode-waiting_for_approval-2.txt|screens/opencode-working-2.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-2.txt|screens/opencode-working-2.txt|indented",
+  "opencode|screens/opencode-waiting_for_approval-2.txt|screens/opencode-working-3.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-2.txt|screens/opencode-working-3.txt|indented",
+  "opencode|screens/opencode-waiting_for_approval-3.txt|screens/opencode-working-1.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-3.txt|screens/opencode-working-1.txt|indented",
+  "opencode|screens/opencode-waiting_for_approval-3.txt|screens/opencode-working-2.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-3.txt|screens/opencode-working-2.txt|indented",
+  "opencode|screens/opencode-waiting_for_approval-3.txt|screens/opencode-working-3.txt|verbatim",
+  "opencode|screens/opencode-waiting_for_approval-3.txt|screens/opencode-working-3.txt|indented",
 ]);
 
 /** Where each agent's own state screens live: `<folder>/<file prefix>` (the SOURCES folders). */
