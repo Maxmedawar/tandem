@@ -13,8 +13,13 @@
 # (default <hostname>-next). The old install - its service com.tandem.runtime / tandem.service,
 # its home ~/.tandem and its `tandem` command - is only looked at (test -e / test -L), never read,
 # stopped or changed. This script calls no service manager itself except the read-only
-# `launchctl list` / `systemctl --user is-active` of `status`: install.sh, uninstall.sh and the
-# launcher do, for tandem-next only.
+# `launchctl list` / `systemctl --user is-active` / `systemctl --user show` of `status` and of the
+# start check of `install`: install.sh, uninstall.sh and the launcher do, for tandem-next only.
+#
+# The next service counts as running only while it has a process (launchd: a "PID"; systemd:
+# active/running with a MainPID). A loaded job that crash-loops is NOT RUNNING: `status` and
+# `install` (without --no-start; it waits up to 10 s) then print its last exit and the last line of
+# its runtime.log on stderr and exit 1.
 #
 # Every refusal is checked before anything is written: one stderr line `cutover: <reason>`, rc 1.
 # Unknown subcommand or option: usage on stderr, rc 2. --dry-run runs the same checks (read-only)
@@ -152,6 +157,27 @@ service_state() {
     if systemctl --user is-active --quiet "$1" >/dev/null 2>&1; then echo active; else echo inactive; fi
   fi
 }
+# Read-only: the next service's process. Sets run_pid (empty when it has none) and run_exit.
+next_process() {
+  if [ "$darwin" = 1 ]; then
+    info=$(launchctl list "$new_svc" 2>/dev/null) || info=""
+    run_pid=$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*"PID" = \([0-9][0-9]*\);.*/\1/p' | head -n 1)
+    run_exit=$(printf '%s\n' "$info" | sed -n 's/^[[:space:]]*"LastExitStatus" = \([0-9][0-9]*\);.*/\1/p' | head -n 1)
+    # launchd keeps the wait status: exit code n reads as n * 256 (below 256 it is a signal).
+    [ -z "$run_exit" ] || [ "$run_exit" -lt 256 ] || run_exit=$((run_exit / 256))
+  else
+    info=$(systemctl --user show -p ActiveState,SubState,ExecMainStatus,MainPID "$new_svc" 2>/dev/null) || info=""
+    run_pid=""
+    if printf '%s\n' "$info" | grep -qx 'ActiveState=active' && printf '%s\n' "$info" | grep -qx 'SubState=running'; then
+      run_pid=$(printf '%s\n' "$info" | sed -n 's/^MainPID=\([1-9][0-9]*\)$/\1/p' | head -n 1)
+    fi
+    run_exit=$(printf '%s\n' "$info" | sed -n 's/^ExecMainStatus=\([0-9][0-9]*\)$/\1/p' | head -n 1)
+  fi
+}
+not_running() {
+  line=$(tail -n 1 "$home/runtime.log" 2>/dev/null | tr -d '\r' | cut -c1-200)
+  refuse "next NOT RUNNING (last exit ${run_exit:-unknown}); last log line: ${line:-none}"
+}
 # One named value of the next home's tandem.env, as cutover wrote it.
 env_value() { sed -n "s/^$1='\\(.*\\)'\$/\\1/p" "$home/tandem.env" 2>/dev/null | head -n 1; }
 
@@ -160,7 +186,10 @@ if [ "$sub" = status ]; then
   if [ -f "$home/.cutover" ] && [ -e "$home/current" ]; then
     version=$(sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' "$home/current/manifest.json" 2>/dev/null | head -n 1)
     hub=$(env_value TANDEM_HUB_LINK_URL)
-    say "next $home: installed ${version:-unknown}; computer $(env_value TANDEM_HUB_LINK_ID); port $(env_value TANDEM_PORT); hub ${hub:-none}; $new_svc $(service_state "$new_svc")"
+    next_process
+    if [ -n "$run_pid" ]; then running="running (pid $run_pid)"; else running="not running"; fi
+    say "next $home: installed ${version:-unknown}; computer $(env_value TANDEM_HUB_LINK_ID); port $(env_value TANDEM_PORT); hub ${hub:-none}; $new_svc $running"
+    [ -n "$run_pid" ] || not_running
   else
     say "next $home: not installed"
   fi
@@ -313,5 +342,17 @@ if [ "$nostart" = 1 ]; then
   say "installed, not started"
 else
   TANDEM_HOME="$home" "$home/current/bin/tandem" start </dev/null >&2
+  # Running means the same process on two looks a second apart: a job launchd restarts every
+  # 10 s can show a pid for a moment. Up to 10 s, then NOT RUNNING.
+  seen=""
+  tries=0
+  while :; do
+    next_process
+    [ -n "$run_pid" ] && [ "$run_pid" = "$seen" ] && break
+    seen=$run_pid
+    tries=$((tries + 1))
+    [ "$tries" -le 10 ] || not_running
+    sleep 1
+  done
   say "installed"
 fi
