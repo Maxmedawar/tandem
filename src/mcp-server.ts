@@ -18,7 +18,7 @@
  * send_to_session (empty text = poll mode); the four relay tools are folded into
  * one `relay` tool with an `action`. The underlying routes are unchanged, so the
  * full capability set remains reachable. With a fabric store (the entry point's
- * own, opened when CCM_FABRIC_ENABLED=1) the 11 room, memory and project tools are
+ * own, opened when TANDEM_FABRIC_ENABLED=1) the 11 room, memory and project tools are
  * added; they reach the same fabric router the hub's calls reach, as the hub's owner.
  * With a hub forwarder instead (no store here, a hub link set) the same 11 tools pass
  * each call to the hub, which sends it to the memory home.

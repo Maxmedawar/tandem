@@ -133,6 +133,8 @@ guard("HOME", () => {
 // Always, live mode included: no inherited CCM_* (the live fabric database, the live hub and its
 // token). A test that needs one sets it itself, after this file.
 for (const k of Object.keys(process.env)) if (k.startsWith("CCM_")) delete process.env[k];
+// Their TANDEM_ names (U-R1A-CCMNAMES) too.
+for (const k of ["TANDEM_CWD_ALLOWLIST", "TANDEM_DEFAULT_CWD", "TANDEM_FABRIC_DB_PATH", "TANDEM_FABRIC_ENABLED"]) delete process.env[k];
 
 // Always, live mode included: no inherited TANDEM_HERMES_* (a live Hermes, its password file) and
 // none of the live install's path variables; the real Hermes network stays off. A test that runs

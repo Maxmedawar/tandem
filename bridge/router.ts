@@ -59,8 +59,8 @@
  *     the same allowlist, limits file and session cap as any caller, with the input gate's agent
  *     rules; it never starts, steers, feeds or stops the relay (403); relay read stays open.
  *
- * Config (env): TANDEM_CWD_ALLOWLIST / TANDEM_DEFAULT_CWD are mapped to the
- * engine's CCM_* names by the entrypoint before this module loads.
+ * Config (env): TANDEM_CWD_ALLOWLIST / TANDEM_DEFAULT_CWD, read through src/legacy-env.ts
+ * when this module loads.
  * TANDEM_ENABLED_ENGINES opts engines in; none is on by default (see engine-registry.ts).
  */
 
@@ -96,6 +96,7 @@ import { processCaller } from './caller-tokens.ts'
 import { limitsGate, limitsSnapshot } from './limits.ts'
 import { KILL_SWITCH_ON, KillSwitchError, killSwitchOn, reserveSessions } from './kill-switch.ts'
 import { admitInput, type InputAction, type InputFrom, type InputVerdict } from './input-gate.ts'
+import { setting } from '../src/legacy-env.ts'
 import type { ReadState } from './harness-detect.ts'
 
 // ---- config ---------------------------------------------------------------
@@ -112,7 +113,7 @@ const AGENT_RELAY = 'relay: an agent may not drive the relay'
 /** The explicit allowlist is built once from env at startup. */
 const ALLOWLIST = buildAllowlist()
 /** If no default is configured, use the first explicitly allowlisted root. */
-const DEFAULT_CWD = process.env.CCM_DEFAULT_CWD ?? ALLOWLIST[0] ?? HOME
+const DEFAULT_CWD = setting(process.env, 'TANDEM_DEFAULT_CWD') ?? ALLOWLIST[0] ?? HOME
 
 export function getAllowlist(): string[] {
   return ALLOWLIST

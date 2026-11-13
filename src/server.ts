@@ -25,9 +25,6 @@ try {
   process.exit(1);
 }
 
-if (process.env.TANDEM_CWD_ALLOWLIST) process.env.CCM_CWD_ALLOWLIST = process.env.TANDEM_CWD_ALLOWLIST;
-if (process.env.TANDEM_DEFAULT_CWD) process.env.CCM_DEFAULT_CWD = process.env.TANDEM_DEFAULT_CWD;
-
 const publicHost = process.env.TANDEM_HOST ?? "127.0.0.1";
 const publicPort = Number(process.env.TANDEM_PORT ?? 8787);
 const fleetToken = (process.env.TANDEM_FLEET_TOKEN ?? "").trim();
@@ -48,7 +45,7 @@ if (fleetToken && (!Number.isInteger(fleetPort) || fleetPort < 0 || fleetPort > 
 }
 
 // The fabric store (rooms, memory, projects): opened once for this process, before the
-// hub link and the OAuth server that use it, and only when CCM_FABRIC_ENABLED=1. It never
+// hub link and the OAuth server that use it, and only when TANDEM_FABRIC_ENABLED=1. It never
 // stops the bridge from starting; shutdown closes it.
 const { startFabric } = await import("../bridge/fabric/local-fabric-host.ts");
 // This process's one mailbox (bridge/mailbox.ts), opened below when the store or the hub link is on;

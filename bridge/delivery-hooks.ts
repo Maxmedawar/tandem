@@ -31,7 +31,7 @@
  * command, which the drop script runs so the owner's own line still shows (his `padding` is kept).
  */
 import { createHash, randomBytes } from 'node:crypto'
-import { lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
+import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from 'node:fs'
 import { basename, dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { Harness } from './harness-registry.ts'
@@ -206,15 +206,24 @@ function configOverrides(option: string, command: (event: string) => string): st
   return [...out, option, `hooks.state={${trust.join(',')}}`]
 }
 
+// ponytail: guarded import, because test/agent-mcp-token.test.ts (h2) loads a copy of this file with
+// only kill-switch.ts and tandem-home.ts beside it; a real tree always has src/legacy-env.ts.
+const { RENAMED } = existsSync(new URL('../src/legacy-env.ts', import.meta.url))
+  ? await import('../src/legacy-env.ts')
+  : { RENAMED: {} as Readonly<Record<string, string>> }
+
 /**
  * The variables a stdio start of src/stdio-server.ts reads (U-R1A-36C: `git grep` of its start
- * files), sorted. Names only: Codex copies these from its own environment into the server's, so
- * TANDEM_CALLER_TOKEN reaches it while no value ever sits on a command line.
+ * files), sorted and unique. Names only: Codex copies these from its own environment into the
+ * server's, so TANDEM_CALLER_TOKEN reaches it while no value ever sits on a command line. The old
+ * names of the renamed settings (src/legacy-env.ts RENAMED) are listed too, so a live install's
+ * old names still reach the server, which reads them with one deprecation line (U-R1A-CCMNAMES).
  */
-export const MCP_ENV_NAMES: readonly string[] = [
-  'CCM_CWD_ALLOWLIST', 'CCM_DEFAULT_CWD', 'CCM_FABRIC_DB_PATH', 'CCM_FABRIC_ENABLED', 'TANDEM_CALLER_TOKEN', 'TANDEM_CONFIG_FILE',
-  'TANDEM_CWD_ALLOWLIST', 'TANDEM_DEFAULT_CWD', 'TANDEM_HOME', 'TANDEM_HUB_LINK_ID', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_HUB_LINK_URL',
-]
+export const MCP_ENV_NAMES: readonly string[] = [...new Set([
+  'TANDEM_CALLER_TOKEN', 'TANDEM_CONFIG_FILE', 'TANDEM_CWD_ALLOWLIST', 'TANDEM_DEFAULT_CWD', 'TANDEM_FABRIC_DB_PATH',
+  'TANDEM_FABRIC_ENABLED', 'TANDEM_HOME', 'TANDEM_HUB_LINK_ID', 'TANDEM_HUB_LINK_TOKEN', 'TANDEM_HUB_LINK_URL',
+  ...Object.values(RENAMED),
+])].sort()
 
 /**
  * For a harness file with `mcp_env = "config-overrides"` (an agent that starts its MCP servers with

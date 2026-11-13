@@ -31,15 +31,16 @@ order; the next one starts only after the checks of the one before pass.
 
 mini is the memory home, so its store is copied into the new home before the new runtime first
 starts. The store path the new runtime uses is `~/.tandem-next/fabric/fabric.sqlite3` (pinned in
-`~/.tandem-next/tandem.env` as `CCM_FABRIC_DB_PATH`, so a `CCM_FABRIC_DB_PATH` exported in the
-shell can never point it at the old store). `<OLD STORE>` is the old runtime's store file;
+`~/.tandem-next/tandem.env` as `TANDEM_FABRIC_DB_PATH`, so a store path exported in the shell can
+never point it at the old store). Settings renamed from the old prefix are still read, with one
+warning line, until a later release removes them. `<OLD STORE>` is the old runtime's store file;
 `<COPY DIR>` is a new private folder outside `~/.tandem`; `<SUBJECT>` is the old hub user's OAuth
 subject.
 
 ```sh
 sh scripts/cutover.sh install --dry-run --name mini-next --hub-url <NEW HUB URL> --hub-token-file <TOKEN FILE> --folder <FOLDER> --agent <AGENT>
 sh scripts/cutover.sh install --no-start --name mini-next --hub-url <NEW HUB URL> --hub-token-file <TOKEN FILE> --folder <FOLDER> --agent <AGENT>
-printf "TANDEM_PUBLIC_URL='%s'\nTANDEM_OWNER_PASSWORD_FILE='%s'\nCCM_FABRIC_ENABLED='1'\n" '<PUBLIC URL>' '<PASSWORD FILE>' >> ~/.tandem-next/tandem.env
+printf "TANDEM_PUBLIC_URL='%s'\nTANDEM_OWNER_PASSWORD_FILE='%s'\nTANDEM_FABRIC_ENABLED='1'\n" '<PUBLIC URL>' '<PASSWORD FILE>' >> ~/.tandem-next/tandem.env
 mkdir -m 700 <COPY DIR>
 sqlite3 <OLD STORE> ".backup <COPY DIR>/old-store.sqlite3"
 node --experimental-strip-types scripts/migrate-from-synergy.ts --from <COPY DIR>/old-store.sqlite3 --to ~/.tandem-next/fabric/fabric.sqlite3 --from-subject <SUBJECT>

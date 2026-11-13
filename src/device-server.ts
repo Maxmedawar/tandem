@@ -40,11 +40,6 @@ if (fleetToken.length < 16) fail("TANDEM_FLEET_TOKEN is too short to be safe (ne
 if (!hubUrl) fail("TANDEM_HUB_URL is not set (e.g. wss://hub.your-tailnet.ts.net:8443).");
 if (!deviceId) fail("TANDEM_DEVICE_ID is not set.");
 
-// Bridge the user-facing TANDEM_* config to the engine's CCM_* names. This MUST
-// happen before importing the router, which reads them at module load.
-if (process.env.TANDEM_CWD_ALLOWLIST) process.env.CCM_CWD_ALLOWLIST = process.env.TANDEM_CWD_ALLOWLIST;
-if (process.env.TANDEM_DEFAULT_CWD) process.env.CCM_DEFAULT_CWD = process.env.TANDEM_DEFAULT_CWD;
-
 const { FleetDeviceClient, InvalidHubUrlError } = await import("../bridge/fleet-device-client.ts");
 const { capabilityReport } = await import("../bridge/engine-registry.ts");
 const { getAllowlist } = await import("../bridge/router.ts");

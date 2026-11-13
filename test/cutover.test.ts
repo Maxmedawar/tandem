@@ -687,7 +687,7 @@ describe.runIf(onLinux)('(43) l: lifecycle beside an old install, one local hub 
       "TANDEM_SERVICE='tandem-next'",
       "TANDEM_HUB_LINK_ID='r1a43-next'",
       `TANDEM_PORT='${port}'`,
-      `CCM_FABRIC_DB_PATH='${nextStore}'`,
+      `TANDEM_FABRIC_DB_PATH='${nextStore}'`,
       `TANDEM_HUB_LINK_URL='${harness.hub.replace(/^http/, 'ws')}'`,
       `TANDEM_HUB_LINK_TOKEN='${token}'`,
       '',
