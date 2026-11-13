@@ -349,7 +349,9 @@ export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: Loca
   const refused = right && limitsGate().hub(right)
   if (right && refused) {
     const sign = forwardedSigner(frame, asked, home)
-    audit({ route: `${frame.method.toUpperCase()} ${frame.path}`, denied: DENIED[right], hub: true, ...(sign ? { forwarded: true } : {}) })
+    // The method and path are the hub's own text: logged cut, so a refused frame cannot grow the log by its size.
+    const line = `${frame.method.toUpperCase()} ${frame.path}`
+    audit({ route: line.length > 200 ? `${line.slice(0, 200)}…` : line, denied: DENIED[right], hub: true, ...(sign ? { forwarded: true } : {}) })
     return response(frame.request_id, 403, { error: refused }, sign)
   }
   if (frame.path.startsWith('/transcripts/')) return transcriptRequest(frame)

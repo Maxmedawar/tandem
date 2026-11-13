@@ -228,6 +228,19 @@ describe('(17B) p: the two fields in the limits file', () => {
     expect(snap.hub_reads).toEqual({ screens: true, transcripts: true, memory: true })
   })
 
+  it('(17B) p9 a refused frame with a 200 KB path grows the audit log by under 1 KB', async () => {
+    await applied({ folders: [WORK], ...ALL_OFF })
+    const size = () => (existsSync(LOG) ? readFileSync(LOG).length : 0)
+    const before = size()
+    const lines = auditLines().length
+    const path = `/r1a17b-long/${'p'.repeat(200_000)}`
+    expect(await hub('POST', path)).toEqual({ status: 403, body: { error: HUB.commands }, signed: false })
+    expect(size() - before).toBeLessThan(1024)
+    const [line] = auditLines().slice(lines)
+    expect(line).toMatchObject({ denied: 'hub_commands', hub: true })
+    expect(line.route).toBe(`${`POST ${path}`.slice(0, 200)}…`)
+  })
+
   it('(17B) p7 tandem limits apply shows a hub_reads change as one line and applies it', async () => {
     await applied({ folders: [WORK], agents: {}, ...limits.INIT_DEFAULTS })
     writeLimits(TH, { folders: [WORK], agents: {}, ...limits.INIT_DEFAULTS, hub_reads: { screens: false, transcripts: true, memory: true } })
