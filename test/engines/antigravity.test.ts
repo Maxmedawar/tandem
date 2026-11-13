@@ -139,7 +139,7 @@ describe("antigravity: the built-in harness file", () => {
     const fixture = loadHarnesses({ installDir: join(SCREENS, "harnesses"), ownerDir: NO_OWNER }).harnesses.get("gemini")!;
     expect(h.states?.waiting_for_approval).toEqual(fixture.states?.waiting_for_approval);
     expect(h.states?.working).toEqual(["(?i)esc to cancel[^\\n]*(?:\\n(?:[^─>\\n][^\\n]*)?)*\\z"]);
-    expect(h.states?.idle).toEqual(["\\? for shortcuts"]);
+    expect(h.states?.idle).toEqual(["^\\? for shortcuts[^\\n]*(?:\\n[^─>\\n][^\\n]*)?\\z"]);
     expect(h.states?.debounce_ms).toBe(1500);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
 

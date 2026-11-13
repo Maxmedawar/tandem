@@ -23,10 +23,17 @@ working = [
   # U-R1B-ANCHOR: the marker, at most 2 lines, then the prompt box in use and its footer to \z (no other box between or after).
   '(?i)ctrl\+c to interrupt[^\n]*(?:\n(?:[^─\n][^\n]*)?){0,2}\n─{20,}[^\n]*\n❯[^\n]*(?:\n[^─\n][^\n]*)*\n─{20,}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z',
   '(?i)ctrl\+c to interrupt[^\n]*(?:\n[^─\n][^\n]*)*\z',
-  '^[✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆·•⏺▸▹∙⋅○●] \S+ing.*…',
-  '(?i)\([^)]*\d[^)]*tokens\s*\)',
+  # U-R1B-ANCHOR-3: the marker, at most 12 lines, then the prompt box in use and at most 4 lines under it (as idle) to \z (no other box between or after); not live-captured: built from claude-working-1/-3.txt and the real box of claude-idle-real.txt.
+  '^[✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆·•⏺▸▹∙⋅○●] \S+ing.*…[^\n]*(?:\n(?:[^─\n][^\n]*)?){0,12}\n─{20,}[^\n]*\n❯[^\n]*(?:\n[^─\n][^\n]*)*\n─{20,}[^\n]*(?:\n[^─\n][^\n]*){0,4}\z',
+  # U-R1B-ANCHOR-3: the marker, then no line that starts a border (no box after it) to \z; not live-captured (claude-working-1/-3.txt layouts).
+  '^[✱✲✳✴✵✶✷✸✹✺✻✼✽✾✿❀❁❂❃❇❈❉❊❋✢✣✤✥✦✧✨⊛⊕⊙◉◎◍⁂⁕※⍟☼★☆·•⏺▸▹∙⋅○●] \S+ing.*…[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z',
+  # U-R1B-ANCHOR-3: the marker, at most 12 lines, then the prompt box in use and at most 4 lines under it (as idle) to \z (no other box between or after); not live-captured: built from claude-working-1/-3.txt and the real box of claude-idle-real.txt.
+  '(?i)\([^)]*\d[^)]*tokens\s*\)[^\n]*(?:\n(?:[^─\n][^\n]*)?){0,12}\n─{20,}[^\n]*\n❯[^\n]*(?:\n[^─\n][^\n]*)*\n─{20,}[^\n]*(?:\n[^─\n][^\n]*){0,4}\z',
+  # U-R1B-ANCHOR-3: the marker, then no line that starts a border (no box after it) to \z; not live-captured (claude-working-1/-3.txt layouts).
+  '(?i)\([^)]*\d[^)]*tokens\s*\)[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z',
 ]
-idle = ['^─{20,}[ \t]*\n❯(?:[ \t\x{A0}][^\n]*)?\n─{20,}']
+# U-R1B-ANCHOR-3: the box, then at most 4 non-blank lines that start no border (its two footer lines, and two rows of an open menu or a notice), then \z; proven by the real capture claude-idle-real.txt.
+idle = ['^─{20,}[ \t]*\n❯(?:[ \t\x{A0}][^\n]*)?\n─{20,}[^\n]*(?:\n[^─\n][^\n]*){0,4}\z']
 # U-R1A-18D: an agent's text enters only this box empty: nothing typed, or one of claude 2.1.321's eight placeholder templates (Try "...").
 # Only the last box counts: no line after it starts a border (an older box left above the one in use is not the prompt).
 empty_prompt = ['^─{20,}[ \t]*\n❯(?:[ \t\x{A0}]*|[ \t\x{A0}]Try "(?:fix lint errors|fix typecheck errors|how does [^\s"]+ work\?|refactor [^\s"]+|how do I log an error\?|edit [^\s"]+ to\.\.\.|write a test for [^\s"]+|create a util logging\.py that\.\.\.)"[ \t\x{A0}]*)\n─{20,}[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z']
