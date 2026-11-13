@@ -82,6 +82,7 @@ WRANGLER_SEND_METRICS=false nohup node_modules/.bin/wrangler dev --local --port 
 echo "$!" > "$HOME/tandem-try/hub.pid"
 cd ..
 i=0; until node -e 'fetch("http://127.0.0.1:8799/").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))'; do i=$((i + 1)); if [ "$i" -gt 180 ]; then cat "$HOME/tandem-try/hub.log"; exit 1; fi; sleep 1; done
+# Hub commands and reads stay off for this computer until you add hub_commands = true and hub_reads = { screens = true, transcripts = true, memory = true } above [agents.shell] in this limits file.
 cat > "$HOME/tandem-try/home/limits.toml" <<LIMITS
 folders = ["$HOME/tandem-try/work"]
 shell = true
