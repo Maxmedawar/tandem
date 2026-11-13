@@ -99,7 +99,7 @@ if list_out=$("$wrangler" deployments list --name "$name" </dev/null 2>&1); then
   refuse "a Worker named $name already exists; pick a new name"
 fi
 case "$list_out" in
-  *"code: 10007"*|*"does not exist"*|*"not found"*) ;;
+  *"code: 10007"*) ;;
   *) printf '%s\n' "$list_out" >&2; fail 2 "wrangler deployments list --name $name (could not tell whether the Worker exists)" ;;
 esac
 

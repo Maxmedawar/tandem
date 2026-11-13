@@ -34,7 +34,8 @@ case "$1 $2" in
   "deployments list")
     if [ "\${STUB_EXISTS:-0}" = 1 ]; then echo "Created: 2026-11-12T00:00:00Z"; exit 0; fi
     if [ "\${STUB_LIST_ERR:-0}" = 1 ]; then echo "fetch failed" >&2; exit 1; fi
-    echo "not found" >&2; exit 1 ;;
+    if [ "\${STUB_LIST_VAGUE:-0}" = 1 ]; then echo "Worker not found" >&2; exit 1; fi
+    echo "X [ERROR] A request to the Cloudflare API failed. This Worker does not exist on your account. [code: 10007]" >&2; exit 1 ;;
   "kv namespace")
     if [ "\${STUB_KV_FAIL:-0}" = 1 ]; then echo "kv namespace create failed" >&2; exit 1; fi
     printf '[[kv_namespaces]]\\nbinding = "OAUTH_KV"\\nid = "${KV}"\\n' ;;
@@ -188,6 +189,14 @@ describe('(45) a: audit cases', () => {
 
   it('(45) a2 deployments list fails for another reason than "no such Worker": step 2 failed, nothing made', () => {
     const r = deploy(['--name', 'tandem-x'], { STUB_LIST_ERR: '1' })
+    expect(r.status, r.all).toBe(1)
+    expect(r.err).toContain('hub-deploy: step 2 failed')
+    expect(argvs()).toEqual(['whoami', 'deployments list --name tandem-x'])
+    expect(existsSync(join(HOME, '.tandem-hub'))).toBe(false)
+  })
+
+  it('(45) a2b a vague "not found" without code 10007 is not taken as "no such Worker": step 2 failed, nothing made', () => {
+    const r = deploy(['--name', 'tandem-x'], { STUB_LIST_VAGUE: '1' })
     expect(r.status, r.all).toBe(1)
     expect(r.err).toContain('hub-deploy: step 2 failed')
     expect(argvs()).toEqual(['whoami', 'deployments list --name tandem-x'])
