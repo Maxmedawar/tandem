@@ -11,10 +11,14 @@
  * Drives HarnessSession directly, never route(), so Tandem writes nothing under the real HOME:
  * the owner id is injected and the transcript folder is fixed under a temporary HOME while the
  * bridge modules load. Gemini writes its own session file under ~/.gemini/tmp during a signed-in
- * run (gemini's data; Tandem never edits it). No sign-in, no account or settings change; nothing
- * here answers a gemini prompt: every send waits for an idle screen (a sign-in, trust, model or
- * update menu never reads idle), so a menu fails the step instead of taking the typed text and
- * Enter. The work folder is a fresh temporary folder with no project files.
+ * run (gemini's data; Tandem never edits it). No sign-in, no account or settings change. This file
+ * passes no dialogAnswers, so on a computer with Gemini folder trust on, the fresh work folder's
+ * bordered trust dialog now ends the start `needs owner ... "folder-trust"` with no key (NEEDS MAX:
+ * trust the work folder in Gemini once, or a director line runs the start with dialogAnswers
+ * `safe`); an update banner alone does not stop the start; every send still waits for an idle
+ * screen (a sign-in, trust, model or update menu never reads idle), so a menu fails the step
+ * instead of taking the typed text and Enter. The work folder is a fresh temporary folder with no
+ * project files.
  *
  * Sign-in check: gemini's own first screen, read before anything is typed. Signed out it shows
  * `How would you like to authenticate` (and `Failed to sign in` when Google refuses the client);

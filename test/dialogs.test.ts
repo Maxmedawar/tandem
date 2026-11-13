@@ -260,6 +260,7 @@ describe("(b) the fixtures: which file shows which dialog, and its key", () => {
     ["codex-unknown-update.txt", SCREENS, "codex", "update", "Down"],
     ["unknown-trust-src.txt", GEMINI_SCREENS, "gemini", "folder-trust", "Enter"],
     ["unknown-trust-src.txt", CURSOR_SCREENS, "cursor-agent", "workspace-trust", "a"],
+    ["gemini-trust-bordered-real.txt", DIALOGS, "gemini", "folder-trust", "Enter"],
   ];
   it("every file in test/fixtures/dialogs is in this table", () => {
     expect(readdirSync(DIALOGS).sort()).toEqual(owned.filter(([, d]) => d === DIALOGS).map(([f]) => f).sort());
@@ -612,12 +613,11 @@ describe("(SCHEMA-DIALOGS) ● ▶ and [k] rows", () => {
     it.each(["Trust folder", "Trust this workspace"])("a trust answer %s loads", (answer) => {
       expect(load([{ ...SEL, answer, highlight: "●" }]).errors).toEqual([]);
     });
-    it("an update row's skip answer is not touched by the trust rule", () => {
-      const rows = [
-        { name: "u1", kind: "update", match: ["(?i)new version"], answer: "Remind me every week", highlight: "›" },
-        { name: "u2", kind: "update", match: ["(?i)new version"], answer: "Skip all", highlight: "●" },
-      ];
-      expect(load(rows)).toEqual({ errors: [], dialogs: rows });
+    it.each(["Remind me every week", "Skip all"])("an update answer %s is refused (scope words on every kind)", (answer) => {
+      expect(load([{ name: "u1", kind: "update", match: ["(?i)new version"], answer, highlight: "›" }])).toEqual({
+        errors: ["dialogs[0].answer: an answer never names a wider scope (never parent, all, always or every)"],
+        dialogs: undefined,
+      });
     });
     it("every built-in file loads with no error", () => {
       const built = readdirSync(fileURLToPath(new URL("../harnesses/", import.meta.url))).filter((f) => f.endsWith(".toml"));
@@ -803,7 +803,7 @@ process.stdin.on('data', (buf) => {
   describe("(d) the other screens", () => {
     const fx = (d: string) => fileURLToPath(new URL(`./fixtures/${d}/`, import.meta.url));
     const filesIn = (dir: string) => readdirSync(dir, { withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(dir, e.name));
-    const others = ["screens", "dialogs", "agy-screens", "pi-screens"].flatMap((d) => filesIn(fx(d)));
+    const others = ["screens", "dialogs", "agy-screens", "pi-screens"].flatMap((d) => filesIn(fx(d))).filter((f) => !f.endsWith('/gemini-trust-bordered-real.txt'));
     it.each(others)("%s shows no gemini or cursor-agent dialog", (file) => {
       const pane = readFileSync(file, "utf8");
       for (const n of ["gemini", "cursor-agent"]) {
@@ -819,5 +819,243 @@ process.stdin.on('data', (buf) => {
         expect(ts.shownDialogs(pane, rowsOf(n))).toEqual([]);
       }
     });
+  });
+});
+
+/**
+ * U-R1B-SCHEMA-DIALOGS-2: the real Gemini trust dialog is a bordered box (`│ … │` rows), its update
+ * notice is a banner (boxed alone, or plain and set off by blank lines) that is not a dialog, the
+ * scope words (parent, all, always, every) are refused on every kind after NFKC folding, and a
+ * dialog still shown up to 1,000 ms after its Enter or key is not `needs owner`.
+ * Stated limit: Cursor's real menu layout (border or not) is unproven until its live row (NEEDS MAX:
+ * install + sign-in); cursor-agent.toml and its live file are unchanged.
+ */
+describe("(SCHEMA-DIALOGS-2) bordered rows, scope words, update banners, answer grace", () => {
+  const FIX = readFileSync(join(DIALOGS, "gemini-trust-bordered-real.txt"), "utf8");
+  const GEMINI_MENU = readFileSync(join(GEMINI_SCREENS, "unknown-trust-src.txt"), "utf8");
+  const rowsOf = (n: string) => loadHarnesses({ ownerDir: "/nonexistent-r1a18b" }).harnesses.get(n)?.dialogs ?? [];
+  const names = (pane: string, rows: any[]) => ts.shownDialogs(pane, rows).map((d: any) => d.name);
+  const key = (pane: string, rows: any[]) => {
+    const seen = ts.shownDialogs(pane, rows);
+    return seen.length === 1 ? ts.dialogKey(pane, seen[0]) : `shown ${seen.length}`;
+  };
+  // The real banner (capture lines 5271-5274 boxed, 200 columns; 5383-5384 plain).
+  const NOTICE = "Gemini CLI update available! 0.38.2 → 0.68.0";
+  const HINT = 'Installed via Homebrew. Please update with "brew upgrade gemini-cli".';
+  const boxed = (rows: string[]) => [`╭${"─".repeat(198)}╮`, ...rows.map((r) => `│ ${r}`.padEnd(199) + "│"), `╰${"─".repeat(198)}╯`].join("\n") + "\n";
+  const BOXED = boxed([NOTICE, HINT]);
+  const PLAIN = `ℹ ${NOTICE}\n  ${HINT}\n`;
+  const fixRow = (t: string) => ` ${`│ ${t}`.padEnd(197)}│`;
+  const moved = (n: number) => {
+    const none = FIX.replace("│ ● 1.", "│   1.");
+    return n === 0 ? none : none.replace(`│   ${n}.`, `│ ● ${n}.`);
+  };
+
+  describe("(a) the loader", () => {
+    const dir = join(BOX, "loader-r1bsd2");
+    mkdirSync(dir);
+    let n = 0;
+    const load = (rows: Record<string, unknown>[]) => {
+      const name = `q${n++}`;
+      const own = join(dir, name);
+      mkdirSync(own);
+      writeFileSync(join(own, `${name}.toml`), `name = "${name}"\nprogram = "/bin/echo"\nhas_prompts = true\n${rows.map(rowToml).join("")}`);
+      const { harnesses, errors } = loadHarnesses({ installDir: own, ownerDir: "/nonexistent-r1a18b", path: "/usr/bin" });
+      return { errors: errors.map((e: any) => e.reason), dialogs: harnesses.get(name)?.dialogs };
+    };
+    const TRUST_ERR = "dialogs[0].answer: a trust answer trusts this folder only (never parent, all, always or every)";
+    const WIDE_ERR = "dialogs[0].answer: an answer never names a wider scope (never parent, all, always or every)";
+    const row = (kind: string, answer: string) => ({ name: "r", kind, match: ["(?i)x"], answer, highlight: "●" });
+    const refused: [string, string, string][] = [
+      ["bypass", "Yes, accept all", WIDE_ERR],
+      ["bypass", "Yes, always", WIDE_ERR],
+      ["bypass", "Bypass every folder", WIDE_ERR],
+      ["bypass", "Accept parent", WIDE_ERR],
+      ["update", "Skip all", WIDE_ERR],
+      ["update", "Later, always", WIDE_ERR],
+      ["trust", "Trust ｐａｒｅｎｔ folder", TRUST_ERR],
+      ["trust", "Trust 𝐚𝐥𝐥", TRUST_ERR],
+      ["trust", "Ｔｒｕｓｔ ＥＶＥＲＹ ｆｏｌｄｅｒ", TRUST_ERR],
+      ["update", "Skip ａｌｌ", WIDE_ERR],
+    ];
+    it.each(refused)("a %s answer %s is refused", (kind, answer, err) => {
+      expect(load([row(kind, answer)])).toEqual({ errors: [err], dialogs: undefined });
+    });
+    it.each([["trust", "Trust folder"], ["bypass", "Yes, I accept"], ["update", "Skip"], ["update", "Not now"], ["trust", "Trust overall"]])(
+      "a %s answer %s loads",
+      (kind, answer) => {
+        expect(load([row(kind, answer)])).toEqual({ errors: [], dialogs: [row(kind, answer)] });
+      },
+    );
+    it("every built-in file loads with no error", () => {
+      const built = readdirSync(fileURLToPath(new URL("../harnesses/", import.meta.url))).filter((f) => f.endsWith(".toml"));
+      const { harnesses, errors } = loadHarnesses({ ownerDir: "/nonexistent-r1a18b" });
+      expect(errors.filter((e: any) => built.some((f) => e.file.endsWith(`/${f}`)))).toEqual([]);
+      for (const f of built) expect(harnesses.has(f.replace(/\.toml$/, ""))).toBe(true);
+    });
+  });
+
+  describe("(b) bordered keys", () => {
+    const gem = () => rowsOf("gemini");
+    const cur = () => rowsOf("cursor-agent");
+    const cursorBox = (rows: string[]) => {
+      const w = Math.max(...rows.map((r) => r.length));
+      return [`╭${"─".repeat(w + 2)}╮`, ...rows.map((r) => `│ ${r.padEnd(w)} │`), `╰${"─".repeat(w + 2)}╯`].join("\n") + "\n";
+    };
+    const HEAD = ["Workspace Trust Required", "Do you trust the contents of this directory?", ""];
+    it("the real bordered fixture: shown [folder-trust], key Enter", () => {
+      expect(names(FIX, gem())).toEqual(["folder-trust"]);
+      expect(key(FIX, gem())).toBe("Enter");
+    });
+    it("● on row 2: Up; on row 3: Up; none drawn: shown, no key", () => {
+      expect(moved(2)).toContain("│ ● 2. Trust parent folder (tmp)");
+      expect(moved(2).length).toBe(FIX.length);
+      expect(key(moved(2), gem())).toBe("Up");
+      expect(moved(3)).toContain("│ ● 3. Don't trust");
+      expect(key(moved(3), gem())).toBe("Up");
+      expect(moved(0)).not.toContain("●");
+      expect(names(moved(0), gem())).toEqual(["folder-trust"]);
+      expect(ts.dialogKey(moved(0), gem()[0])).toBeUndefined();
+    });
+    it("every trailing │ removed: not shown", () => {
+      const pane = FIX.split("\n").map((l) => l.replace(/│$/, "")).join("\n");
+      expect(pane).toContain("│ ● 1. Trust folder (work)");
+      expect(names(pane, gem())).toEqual([]);
+    });
+    it("the marker outside the box: not shown", () => {
+      const pane = FIX.replace(" │ ● 1. Trust folder (work)", "● │   1. Trust folder (work)");
+      expect(pane).toContain("● │   1. Trust folder (work)");
+      expect(names(pane, gem())).toEqual([]);
+    });
+    it("a boxed Cursor menu: key a", () => {
+      const pane = cursorBox([...HEAD, "▶ [a] Trust this workspace", "  [q] Quit"]);
+      expect(pane).toMatch(/│ ▶ \[a\] Trust this workspace +│/);
+      expect(pane).toMatch(/│ {3}\[q\] Quit +│/);
+      expect(key(pane, cur())).toBe("a");
+    });
+    it("a boxed Cursor menu plus [a] Something else in the same block: no key", () => {
+      const pane = cursorBox([...HEAD, "▶ [a] Trust this workspace", "  [q] Quit", "  [a] Something else"]);
+      expect(names(pane, cur())).toEqual(["workspace-trust"]);
+      expect(ts.dialogKey(pane, cur()[0])).toBeUndefined();
+    });
+    it("the same row set off by an interior blank row: key a", () => {
+      const pane = cursorBox([...HEAD, "▶ [a] Trust this workspace", "  [q] Quit", "", "  [a] Something else"]);
+      expect(pane).toMatch(/│ +│/);
+      expect(key(pane, cur())).toBe("a");
+    });
+    it("the answer row as [b] Trust this workspace: not shown", () => {
+      expect(names(cursorBox([...HEAD, "▶ [b] Trust this workspace", "  [q] Quit"]), cur())).toEqual([]);
+    });
+    it("the answer row in end form: key a", () => {
+      const pane = cursorBox([...HEAD, "Trust this workspace   a", "Quit                   q"]);
+      expect(pane).toMatch(/│ Trust this workspace {3}a +│/);
+      expect(key(pane, cur())).toBe("a");
+    });
+  });
+
+  describe("(c) update banners", () => {
+    const strip = (pane: string) => ts.withoutUpdateBanners(pane);
+    it("the boxed capture banner + a blank line + the fixture: no update text left, every fixture line kept", () => {
+      expect(BOXED.split("\n").slice(0, 4).map((l) => [...l].length)).toEqual([200, 200, 200, 200]);
+      const out = strip(`${BOXED}\n${FIX}`);
+      expect(registry.UPDATE_TEXT.test(out)).toBe(false);
+      const kept = out.split("\n");
+      for (const l of FIX.split("\n")) expect(kept).toContain(l);
+    });
+    it("the plain ℹ form set off by blank lines: removed", () => {
+      const out = strip(`before\n\n${PLAIN}\nafter\n`);
+      expect(registry.UPDATE_TEXT.test(out)).toBe(false);
+      expect(out).toContain("before");
+      expect(out).toContain("after");
+      expect(registry.UPDATE_TEXT.test(strip(`${PLAIN}\n${FIX}`))).toBe(false);
+    });
+    const kept: [string, string][] = [
+      ["a 3-row plain banner", `\n${PLAIN}  Run it now.\n\n`],
+      ["a 3-row boxed banner", boxed([NOTICE, HINT, "Run it now."])],
+      ...["● 1. Update now", "1. Update now", "[u] Update now", "Update now? (y/n)", "Update now   u"].flatMap((r): [string, string][] => [
+        [`a plain banner with the row ${r}`, `\n${NOTICE}\n${r}\n\n`],
+        [`a boxed banner with the row ${r}`, boxed([NOTICE, r])],
+      ]),
+      ["a box whose first row is │ Please upgrade gemini-cli │", boxed(["Please upgrade gemini-cli", NOTICE])],
+      ["'Update available' directly under the menu rows", `${GEMINI_MENU}Update available\n`],
+      ["the notice as an interior row of the trust box", FIX.split("\n").map((l, i) => (i === 2 ? fixRow(NOTICE) : l)).join("\n")],
+      ["a plain update line with a non-blank line directly above it", `some text\nUpdate available\n\nafter\n`],
+    ];
+    it.each(kept)("not removed: %s", (_label, pane) => {
+      expect(registry.UPDATE_TEXT.test(pane)).toBe(true);
+      expect(registry.UPDATE_TEXT.test(strip(pane))).toBe(true);
+    });
+  });
+
+  describe("(d) warmup through a real pane", () => {
+    const RND = Math.random().toString(36).slice(2, 8).replace(/[^a-z0-9]/g, "x");
+    /** Prints a screen file; logs each key; on Enter or a letter prints `chose` then `fake>`, after
+     *  first redrawing the screen plus Gemini's restart line for <linger> ms (0: none, -1: forever). */
+    const SD2 = join(BOX, "sd2-dialog.mjs");
+    writeFileSync(
+      SD2,
+      `#!/usr/bin/env node
+import { appendFileSync, readFileSync } from 'node:fs'
+const [file, log, linger, move] = process.argv.slice(2)
+const text = readFileSync(file, 'utf8')
+const wait = Number(linger)
+let done = false
+const draw = (t) => process.stdout.write('\\x1b[2J\\x1b[H' + t)
+const chose = () => draw('chose\\nfake> ')
+draw(text)
+process.stdin.setRawMode(true)
+process.stdin.on('data', (buf) => {
+  for (const key of buf.toString('utf8').match(/\\x1b\\[[AB]|\\x1bO[AB]|[\\s\\S]/g) ?? []) {
+    const name = /^\\x1b[[O]A$/.test(key) ? 'Up' : /^\\x1b[[O]B$/.test(key) ? 'Down' : key === '\\r' || key === '\\n' ? 'Enter' : key
+    appendFileSync(log, name + '\\n')
+    if (name === '\\x03') process.exit(0)
+    if (done || !(name === 'Enter' || /^[a-z0-9]$/.test(name))) continue
+    done = true
+    if (wait === 0) { chose(); continue }
+    const again = move === '1' ? text.replace('│ ● 1.', '│   1.').replace('│   2.', '│ ● 2.') : text
+    draw(again + 'Gemini CLI is restarting to apply the trust changes\\n')
+    if (wait > 0) setTimeout(chose, wait)
+  }
+})
+`,
+      { mode: 0o755 },
+    );
+    // label, screen, linger ms, ● moved to row 2 on the redraw, dialogAnswers ("" = absent), keys typed, how the start ends
+    const starts: [string, string, number, boolean, string, string[], string][] = [
+      ["the fixture, 'safe': Enter, ready", FIX, 0, false, "safe", ["Enter"], "ready"],
+      ["boxed banner + blank + fixture, 'safe': Enter, ready", `${BOXED}\n${FIX}`, 0, false, "safe", ["Enter"], "ready"],
+      ["plain ℹ banner + blank + fixture, 'safe': Enter, ready", `${PLAIN}\n${FIX}`, 0, false, "safe", ["Enter"], "ready"],
+      ["the fixture, dialogAnswers absent: needs owner, no key", FIX, 0, false, "", [], "owner"],
+      ["fixture + blank + 'Please log in to continue': needs owner, no key", `${FIX}\nPlease log in to continue\n`, 0, false, "safe", [], "owner"],
+      ["boxed banner whose second row is 'Please log in to update' + fixture: needs owner, no key", `${boxed([NOTICE, "Please log in to update"])}\n${FIX}`, 0, false, "safe", [], "owner"],
+      ["a 3-row update block + blank + fixture: needs owner, no key", `${PLAIN}  Run it now.\n\n${FIX}`, 0, false, "safe", [], "owner"],
+      ["linger 250: Enter, ready", FIX, 250, false, "safe", ["Enter"], "ready"],
+      ["linger 900: Enter, ready", FIX, 900, false, "safe", ["Enter"], "ready"],
+      ["linger 900, ● moved to row 2: Enter only, ready", FIX, 900, true, "safe", ["Enter"], "ready"],
+      ["linger 2500: Enter, needs owner (still shown after Tandem's answer)", FIX, 2500, false, "safe", ["Enter"], "owner: still shown"],
+      ["linger forever: Enter, needs owner", FIX, -1, false, "safe", ["Enter"], "owner: still shown"],
+    ];
+    it("warmup, every row at once: the keys typed, how the start ends, no session left", async () => {
+      const got = await Promise.all(
+        starts.map(async ([label, text, linger, move, answers], i) => {
+          const h = harness(`r1bsd2-${RND}-d${i}`, screen(`r1bsd2-d${i}.txt`, text), 0, rowsOf("gemini"));
+          h.program = SD2;
+          h.programPath = SD2;
+          h.args = [h.args[0], logOf(h.name), String(linger), move ? "1" : "0"];
+          let end: string;
+          try {
+            const s = await spawn(h, answers || undefined);
+            end = s.ready ? "ready" : "not ready";
+            await s.close();
+          } catch (e) {
+            end = !(e instanceof ts.NeedsOwnerError)
+              ? String(e)
+              : (e as Error).message.includes("it is still shown after Tandem's answer") ? "owner: still shown" : "owner";
+          }
+          return [label, keys(logOf(h.name)), end, tmuxHas(h.name)];
+        }),
+      );
+      expect(got).toEqual(starts.map(([label, , , , , typed, end]) => [label, typed, end, false]));
+    }, 60_000);
   });
 });

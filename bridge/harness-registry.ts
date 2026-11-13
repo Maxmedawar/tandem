@@ -101,7 +101,7 @@ const DIALOG_FIELDS = ['name', 'kind', 'match', 'answer', 'highlight', 'key']
 const DIALOG_KINDS = ['trust', 'update', 'bypass']
 /** Select-mode markers; key mode's start form `[k] ` may follow one of them too. */
 export const HIGHLIGHTS = ['❯', '›', '>', '●', '▶']
-/** A trust answer naming a wider scope than this folder. */
+/** An answer naming a wider scope than this folder (refused on every kind). */
 const WIDE_TRUST = /parent|\ball\b|always|every/i
 const DIALOG_KEY = /^[a-z0-9]$/
 const SHELLS = new Set(('sh bash zsh dash ksh mksh yash csh tcsh fish nu xonsh elvish pwsh powershell cmd busybox env sudo doas ' +
@@ -169,7 +169,12 @@ function dialogsOf(raw: Table): Dialog[] | undefined {
     if (NEVER.test(answer)) fail(`${at}answer: a sign-in or purchase answer is never typed`)
     if (UPDATE_TEXT.test(answer)) fail(`${at}answer: an update is never started (an update dialog may only be skipped)`)
     if (kind === 'update' && !SKIPS_UPDATE.test(answer)) fail(`${at}answer: an update dialog may only be skipped (Skip, Not now, Later, No, Dismiss, Remind)`)
-    if (kind === 'trust' && WIDE_TRUST.test(answer)) fail(`${at}answer: a trust answer trusts this folder only (never parent, all, always or every)`)
+    // Every kind, after NFKC folding (fullwidth and styled letters read as plain ones).
+    if (WIDE_TRUST.test(answer.normalize('NFKC'))) {
+      fail(kind === 'trust'
+        ? `${at}answer: a trust answer trusts this folder only (never parent, all, always or every)`
+        : `${at}answer: an answer never names a wider scope (never parent, all, always or every)`)
+    }
     const highlight = str(t, 'highlight', at)
     const key = str(t, 'key', at)
     if ((highlight === undefined) === (key === undefined)) fail(`${at}highlight or ${at}key: exactly one of them`)
