@@ -1,4 +1,6 @@
 FROM docker.io/library/ubuntu:24.04
+# gitleaks (for scripts/check-tree.sh) is 8.30.1, the version mini runs; its sha256 values are
+# from the release's published gitleaks_8.30.1_checksums.txt (equal to GitHub's asset digests).
 RUN set -eu; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl git tmux strace; \
@@ -9,5 +11,11 @@ RUN set -eu; \
     curl -fsSL https://nodejs.org/dist/$V/SHASUMS256.txt | grep " $F\$" | sha256sum -c -; \
     tar -xzf $F -C /usr/local --strip-components=1; \
     rm -f $F; \
+    case "$ARCH" in arm64) GA=arm64; GS=e4a487ee7ccd7d3a7f7ec08657610aa3606637dab924210b3aee62570fb4b080;; x64) GA=x64; GS=551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb;; esac; \
+    G=gitleaks_8.30.1_linux_$GA.tar.gz; \
+    curl -fsSLO https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/$G; \
+    echo "$GS  $G" | sha256sum -c -; \
+    tar -xzf $G -C /usr/local/bin gitleaks; \
+    rm -f $G; \
     rm -rf /var/lib/apt/lists/*
 CMD ["bash"]
