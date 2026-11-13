@@ -5,7 +5,7 @@
 #
 # A real run, in this order, stopping at the first failure:
 #   1 wrangler whoami                      (you are logged in)
-#   2 wrangler deployments list --name     (must FAIL: no Worker of that name yet)
+#   2 wrangler deployments list --name     (must FAIL with "no such Worker": none of that name yet)
 #   3 wrangler kv namespace create OAUTH_KV_<name>
 #   4 the two secrets (made once, kept in the secrets folder, reused on a retry) and the
 #     generated config: hub/wrangler.jsonc with the new name, absolute paths and the KV id
@@ -39,7 +39,9 @@ bad_name="the Worker name must match ^tandem-[a-z0-9-]{1,40}\$"
 [ "$rest" != "$name" ] || refuse "$bad_name"
 case "$rest" in ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) refuse "$bad_name" ;; esac
 [ "${#rest}" -le 40 ] || refuse "$bad_name"
-[ -n "$secrets" ] || secrets="$HOME/.tandem-next/hub-deploy/$name"
+# The default is outside ~/.tandem-next: scripts/cutover.sh owns that folder and its purge deletes it.
+[ -n "$secrets" ] || secrets="$HOME/.tandem-hub/$name"
+case "$secrets" in /*) ;; *) refuse "--secrets-dir must be an absolute path (this script works from the repo top)" ;; esac
 command -v node >/dev/null 2>&1 || refuse "node is required (Node 22 or newer)"
 
 # wrangler reads no config from the folder it starts in: the repo top has none.
@@ -91,10 +93,15 @@ fail() {
 who=$("$wrangler" whoami </dev/null 2>&1) || fail 1 "wrangler whoami (log in with: $wrangler login)"
 case "$who" in *"not authenticated"*) fail 1 "wrangler whoami: not logged in (log in with: $wrangler login)" ;; esac
 
-# 2 no Worker of that name yet.
-if "$wrangler" deployments list --name "$name" </dev/null >/dev/null 2>&1; then
+# 2 no Worker of that name yet. Only wrangler's "no such Worker" answer (API code 10007) lets the
+# run go on; any other failure (network, account, login) stops here, with nothing made.
+if list_out=$("$wrangler" deployments list --name "$name" </dev/null 2>&1); then
   refuse "a Worker named $name already exists; pick a new name"
 fi
+case "$list_out" in
+  *"code: 10007"*|*"does not exist"*|*"not found"*) ;;
+  *) printf '%s\n' "$list_out" >&2; fail 2 "wrangler deployments list --name $name (could not tell whether the Worker exists)" ;;
+esac
 
 # 3 the OAuth KV namespace, and its id from wrangler's output (toml `id = "..."` or json `"id": "..."`).
 ns="OAUTH_KV_$(printf '%s' "$name" | tr '-' '_')"
@@ -108,7 +115,7 @@ mkdir -p "$secrets"
 chmod 700 "$secrets"
 # $1 file, $2 length, $3 the command that prints at least that many good characters.
 make_secret() {
-  if [ -f "$1" ]; then return 0; fi
+  if [ -f "$1" ]; then chmod 600 "$1"; return 0; fi
   part=$(mktemp "$1.XXXXXX")
   sh -c "$3" | head -c "$2" > "$part"
   [ "$(wc -c < "$part" | tr -d ' ')" = "$2" ] || { rm -f "$part"; fail 4 "making $1"; }

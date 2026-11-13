@@ -33,6 +33,7 @@ case "$1 $2" in
   "whoami "*) echo "You are logged in with an API Token, associated with the email someone@example.com." ;;
   "deployments list")
     if [ "\${STUB_EXISTS:-0}" = 1 ]; then echo "Created: 2026-11-12T00:00:00Z"; exit 0; fi
+    if [ "\${STUB_LIST_ERR:-0}" = 1 ]; then echo "fetch failed" >&2; exit 1; fi
     echo "not found" >&2; exit 1 ;;
   "kv namespace")
     if [ "\${STUB_KV_FAIL:-0}" = 1 ]; then echo "kv namespace create failed" >&2; exit 1; fi
@@ -73,7 +74,7 @@ const calls = () =>
     return { argv, bytes: Number(bytes) }
   })
 const argvs = () => calls().map((c) => c.argv)
-const secretsDir = join(HOME, '.tandem-next', 'hub-deploy', 'tandem-x')
+const secretsDir = join(HOME, '.tandem-hub', 'tandem-x')
 const generated = join(secretsDir, 'wrangler.jsonc')
 const mode = (p: string) => statSync(p).mode & 0o777
 /** JSONC to JSON: comments and trailing commas out, strings kept as they are. */
@@ -149,12 +150,14 @@ describe('(45) h: a real run against the stub', () => {
     expect(refused.status).toBe(1)
     expect(refused.all).toContain('hub-deploy: a Worker named tandem-x already exists; pick a new name')
     expect(argvs()).toEqual(['whoami', 'deployments list --name tandem-x'])
+    chmodSync(join(secretsDir, 'link-token'), 0o644)
     writeFileSync(LOG, '')
     // A retry after a run that stopped before its deploy: the Worker is still not there.
     const again = deploy(['--name', 'tandem-x'])
     expect(again.status, again.all).toBe(0)
     expect(readFileSync(join(secretsDir, 'hub-password'), 'utf8')).toBe(password)
     expect(readFileSync(join(secretsDir, 'link-token'), 'utf8')).toBe(token)
+    expect(mode(join(secretsDir, 'link-token'))).toBe(0o600)
     expect(calls()[3].bytes).toBe(password.length)
     expect(calls()[4].bytes).toBe(token.length)
   })
@@ -170,8 +173,33 @@ describe('(45) h: a real run against the stub', () => {
     expect(m![1].startsWith(`${TMP}/`)).toBe(true)
     expect(existsSync(m![1])).toBe(false)
     expect(readdirSync(TMP)).toEqual([])
-    expect(existsSync(join(HOME, '.tandem-next'))).toBe(false)
+    expect(existsSync(join(HOME, '.tandem-hub'))).toBe(false)
     expect(r.out.trimEnd().split('\n').at(-1)).toBe('hub-deploy: dry run: nothing was created')
+  })
+})
+
+describe('(45) a: audit cases', () => {
+  it('(45) a1 the default secrets folder is outside ~/.tandem-next (cutover.sh owns and purges that one)', () => {
+    const r = deploy(['--name', 'tandem-x'])
+    expect(r.status, r.all).toBe(0)
+    expect(existsSync(join(HOME, '.tandem-hub', 'tandem-x', 'link-token'))).toBe(true)
+    expect(existsSync(join(HOME, '.tandem-next'))).toBe(false)
+  })
+
+  it('(45) a2 deployments list fails for another reason than "no such Worker": step 2 failed, nothing made', () => {
+    const r = deploy(['--name', 'tandem-x'], { STUB_LIST_ERR: '1' })
+    expect(r.status, r.all).toBe(1)
+    expect(r.err).toContain('hub-deploy: step 2 failed')
+    expect(argvs()).toEqual(['whoami', 'deployments list --name tandem-x'])
+    expect(existsSync(join(HOME, '.tandem-hub'))).toBe(false)
+  })
+
+  it('(45) a3 a relative --secrets-dir is refused before any wrangler call (it would land in the repo)', () => {
+    const r = deploy(['--name', 'tandem-x', '--secrets-dir', 'r1a45-rel'])
+    expect(r.status, r.all).toBe(1)
+    expect(r.err).toContain('hub-deploy: --secrets-dir must be an absolute path')
+    expect(argvs()).toEqual([])
+    expect(existsSync(join(repo, 'r1a45-rel'))).toBe(false)
   })
 })
 
@@ -188,7 +216,7 @@ describe('(45) r: refusals', () => {
     expect(r.status).toBe(1)
     expect(r.all).toContain('hub-deploy: a Worker named tandem-x already exists; pick a new name')
     expect(argvs()).toEqual(['whoami', 'deployments list --name tandem-x'])
-    expect(existsSync(join(HOME, '.tandem-next'))).toBe(false)
+    expect(existsSync(join(HOME, '.tandem-hub'))).toBe(false)
   })
 
   it('(45) r3 names off the rule and a missing --name are refused before any wrangler call', () => {

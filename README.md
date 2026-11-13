@@ -90,7 +90,7 @@ program = "$(node -p 'require("node:fs").realpathSync(process.argv[1])' "$(comma
 LIMITS
 TANDEM_HOME="$HOME/tandem-try/home" TANDEM_PORT=0 TANDEM_PUBLIC_URL=https://localhost/mcp TANDEM_OWNER_PASSWORD_FILE="$HOME/tandem-try/owner-password" TANDEM_ENABLED_ENGINES=shell TANDEM_CWD_ALLOWLIST="$HOME/tandem-try/work" TANDEM_HUB_LINK_URL=ws://127.0.0.1:8799 TANDEM_HUB_LINK_TOKEN="$(cat "$HOME/tandem-try/link-token")" TANDEM_HUB_LINK_ID=first-computer nohup node --experimental-strip-types src/server.ts > "$HOME/tandem-try/runtime.log" 2>&1 &
 echo "$!" > "$HOME/tandem-try/runtime.pid"
-i=0; until grep -q 'hub link: connected' "$HOME/tandem-try/runtime.log"; do i=$((i + 1)); if [ "$i" -gt 60 ]; then cat "$HOME/tandem-try/runtime.log"; exit 1; fi; sleep 1; done
+i=0; until grep -q 'hub link: connected' "$HOME/tandem-try/runtime.log" 2>/dev/null; do i=$((i + 1)); if [ "$i" -gt 60 ]; then cat "$HOME/tandem-try/runtime.log"; exit 1; fi; sleep 1; done
 TANDEM_HOME="$HOME/tandem-try/home" TANDEM_ENABLED_ENGINES=shell TANDEM_CWD_ALLOWLIST="$HOME/tandem-try/work" node --input-type=module -e 'import { Client } from "@modelcontextprotocol/sdk/client/index.js"; import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"; const c = new Client({ name: "first-commands", version: "1" }); await c.connect(new StdioClientTransport({ command: process.execPath, args: ["--experimental-strip-types", "src/stdio-server.ts"], env: process.env })); const r = await c.callTool({ name: "open_session", arguments: { name: "first", engine: "shell", cwd: process.env.TANDEM_CWD_ALLOWLIST } }); console.log(r.content[0].text); await c.close(); process.exit(r.isError ? 1 : 0)'
 node -e 'fetch("http://127.0.0.1:8799/").then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))' && TANDEM_HOME="$HOME/tandem-try/home" node --experimental-strip-types bridge/status.ts --json | node -e 'const d = JSON.parse(require("node:fs").readFileSync(0, "utf8")); const n = d.computers.filter((c) => c.self).flatMap((c) => c.sessions).filter((s) => s.name === "first").length; console.log(n === 1 ? "tandem: the hub answers and status lists 1 session" : "tandem: the session is not listed"); process.exit(n === 1 ? 0 : 1)'
 ```
@@ -119,8 +119,8 @@ It checks that wrangler is logged in, refuses a name that already has a Worker, 
 
 - `hub-deploy: deployed tandem-<something>` and the Worker's URL;
 - `hub-deploy: connector URL <Worker URL>/mcp`: add this URL as a connector in your AI client, and sign in with the text of the password file;
-- `hub-deploy: owner password file ~/.tandem-next/hub-deploy/tandem-<something>/hub-password`;
-- `hub-deploy: link token file ~/.tandem-next/hub-deploy/tandem-<something>/link-token`: each computer needs it to link to the hub.
+- `hub-deploy: owner password file ~/.tandem-hub/tandem-<something>/hub-password`;
+- `hub-deploy: link token file ~/.tandem-hub/tandem-<something>/link-token`: each computer needs it to link to the hub.
 
 Nothing secret is printed. A second run with the same name reuses the same password and token files. `./setup.sh r1a --name tandem-<something> --dry-run` only builds the hub and creates nothing.
 

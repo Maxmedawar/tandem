@@ -20,7 +20,7 @@ npm ci && (cd hub && npm ci)
 1. checks that wrangler is logged in (`wrangler whoami`);
 2. refuses the name when a Worker of that name already exists (`wrangler deployments list --name`);
 3. creates the OAuth KV namespace `OAUTH_KV_<name>`;
-4. makes the hub password (32 characters) and link token (48 hex characters) once, in `~/.tandem-next/hub-deploy/<name>/` (folder 0700, files 0600), and writes the generated config there: `hub/wrangler.jsonc` with the new name and the KV id (`hub/wrangler.jsonc` itself is never changed);
+4. makes the hub password (32 characters) and link token (48 hex characters) once, in `~/.tandem-hub/<name>/` (folder 0700, files 0600; `--secrets-dir` takes another absolute folder), and writes the generated config there: `hub/wrangler.jsonc` with the new name and the KV id (`hub/wrangler.jsonc` itself is never changed);
 5. puts both as Worker secrets, each value on stdin;
 6. deploys; the Durable Object setup (migrations `v1` and `v2`) is applied on this first deploy.
 
