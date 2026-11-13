@@ -22,6 +22,9 @@ order; the next one starts only after the checks of the one before pass.
   token (mode 0600, 16 to 512 characters); `<FOLDER>` and `<AGENT>` are the folders and agents
   this computer allows (repeat `--folder` and `--agent` as needed); `<PUBLIC URL>` and
   `<PASSWORD FILE>` are the owner settings above.
+- Always run the new launcher with `TANDEM_HOME=~/.tandem-next` in front, exactly as written
+  below. Without it the launcher takes `~/.tandem` as its home, and its `start`, `stop` and
+  `restart` act on the old service.
 - Each step can be undone with the commands under "Roll back".
 
 ## mini
@@ -34,8 +37,8 @@ shell can never point it at the old store). `<OLD STORE>` is the old runtime's s
 subject.
 
 ```sh
-sh scripts/cutover.sh install --dry-run --hub-url <NEW HUB URL> --hub-token-file <TOKEN FILE> --folder <FOLDER> --agent <AGENT>
-sh scripts/cutover.sh install --no-start --hub-url <NEW HUB URL> --hub-token-file <TOKEN FILE> --folder <FOLDER> --agent <AGENT>
+sh scripts/cutover.sh install --dry-run --name mini-next --hub-url <NEW HUB URL> --hub-token-file <TOKEN FILE> --folder <FOLDER> --agent <AGENT>
+sh scripts/cutover.sh install --no-start --name mini-next --hub-url <NEW HUB URL> --hub-token-file <TOKEN FILE> --folder <FOLDER> --agent <AGENT>
 printf "TANDEM_PUBLIC_URL='%s'\nTANDEM_OWNER_PASSWORD_FILE='%s'\nCCM_FABRIC_ENABLED='1'\n" '<PUBLIC URL>' '<PASSWORD FILE>' >> ~/.tandem-next/tandem.env
 mkdir -m 700 <COPY DIR>
 sqlite3 <OLD STORE> ".backup <COPY DIR>/old-store.sqlite3"
@@ -47,9 +50,9 @@ sh scripts/cutover.sh status
 ### Checks
 
 - Both computers are listed on the new hub: the old one under its own name and this one as
-  `<host>-next`.
+  `mini-next` (set with `--name mini-next`).
 - `TANDEM_HOME=~/.tandem-next ~/.tandem-next/current/bin/tandem status --json` lists this
-  computer as `<host>-next`.
+  computer as `mini-next`.
 - The old runtime's pid is unchanged (`launchctl list | grep -F com.tandem.runtime` before and
   after).
 - A5.2, the real-fleet compare: the menu bar list against `tandem status --json` (the new one,
