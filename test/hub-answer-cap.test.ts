@@ -251,9 +251,11 @@ describe('(33B-4H) (c) readHubAnswer', () => {
     let cancelled = false
     let pulls = 0
     const sizes = [400, 400, 225]
-    // A stream that never ends on its own: chunks of 400, 400, 225, then 1,000 for ever.
+    // A finite stream (33B-4 h2): chunks of 400, 400, 225, then 64 of 1,000, then the end; a reader
+    // without the cap reads it all and this row fails instead of hanging.
     const endless = new ReadableStream<Uint8Array>({
       pull(c) {
+        if (pulls >= sizes.length + 64) return c.close()
         c.enqueue(new Uint8Array(sizes[pulls++] ?? 1000))
       },
       cancel() {
@@ -334,7 +336,7 @@ describe('(33B-4H) (s) the five readers against a fake hub answering 64 MiB', ()
       expect(await mail.pullOnce()).toBe(0)
       expect(await mail.pullOnce()).toBe(0)
       expect(fake.seen.map((s) => s.path)).toEqual(['/__tunnel/mail/put', '/__tunnel/mail/take', '/__tunnel/mail/take'])
-      expect(fake.seen[2].body).toBe('{"ack":0}')
+      expect(fake.seen[2].body).toBe('{"ack":0,"epoch":""}')
     } finally {
       box.close()
       await fake.close()
@@ -574,6 +576,65 @@ describe('(33B-4H) (p) the cap is above every legal hub answer', () => {
       } finally {
         box.close()
       }
+    } finally {
+      await fake.close()
+    }
+  })
+})
+
+describe('(33B-4) (h) the reader\'s own time bound; presence refusals at most once per peer per hour', () => {
+  it('(33B-4) h1 a caller with no signal ends: a body that stalls is cancelled at the reader\'s own bound (default 120 s); a caller\'s shorter signal still wins', async () => {
+    expect((hl as Json).HUB_ANSWER_TIMEOUT_MS).toBe(120_000)
+    const read = (hl as Json).readHubAnswer as (answer: Response, maxBytes?: number, timeoutMs?: number) => Promise<Buffer | undefined>
+    // A fake hub that sends its headers and the start of a page, then nothing, for ever.
+    const server: Server = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.write('{"copies":[')
+    })
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/stall`
+    try {
+      const answer = await fetch(url)
+      await expect(read(answer, CAP, 200)).rejects.toMatchObject({ name: 'TimeoutError' })
+      const caller = new AbortController()
+      const second = await fetch(url, { signal: caller.signal })
+      setTimeout(() => caller.abort(new Error('r1a33b4 caller stop')), 50)
+      await expect(read(second)).rejects.toThrow('r1a33b4 caller stop')
+    } finally {
+      server.closeAllConnections()
+      await new Promise((resolve) => server.close(resolve))
+    }
+  })
+
+  it('(33B-4) h4 presence.refused is written at most once per peer per hour; the next line counts the refusals since the last', async () => {
+    const reading = (at: number) => JSON.stringify({ v: 1, kind: 'presence', at, sessions: [], more: 0 })
+    // beta on an older release: each push is a new envelope under the mail tag (refused signature).
+    const oldBeta = () => ({ from: 'beta', envelope: JSON.stringify(signEnvelope(B, { from: 'beta', to: 'alpha', body: reading(clock) }, clock)) })
+    let rows: { from: string; envelope: string }[] = []
+    const fake = await fakeHub(() => ({ kind: 'json', status: 200, body: JSON.stringify({ presence: rows, connected: ['alpha', 'beta'] }) }))
+    try {
+      const carrier = hubPresence(cfgOf(fake), { presence: quietPresence(), key: A, now, path: dbPath() })
+      const n = mark()
+      for (let k = 0; k < 5; k++) {
+        clock = T + k * 10_000
+        rows = [oldBeta()]
+        await carrier.syncOnce()
+      }
+      expect(refusedSince(n)).toEqual([{ event: 'presence.refused', from: 'beta', denied: 'signature' }])
+      // Another peer has its own line.
+      clock = T + 50_000
+      rows = [{ from: 'gamma', envelope: '{}' }]
+      await carrier.syncOnce()
+      expect(refusedSince(n)).toHaveLength(2)
+      expect(refusedSince(n)[1]).toEqual({ event: 'presence.refused', from: 'gamma', denied: 'unknown_sender' })
+      clock = T + 3_600_000 - 1
+      rows = [oldBeta()]
+      await carrier.syncOnce()
+      expect(refusedSince(n)).toHaveLength(2)
+      clock = T + 3_600_000
+      rows = [oldBeta()]
+      await carrier.syncOnce()
+      expect(refusedSince(n).slice(2)).toEqual([{ event: 'presence.refused', from: 'beta', denied: 'signature', refusals: 6 }])
     } finally {
       await fake.close()
     }

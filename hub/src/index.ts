@@ -46,6 +46,7 @@ import { handleAuthorize, timingSafeEqual, createRegistrationGuardedFetch, SINGL
 import { WS_MAX_FRAME_BYTES } from './frame-size'
 import { fabricCallerFor } from '../../src/fabric/mcp-tools.ts'
 import { EMPTY_SHA256, PROOF_HEADER, sha256Hex, type ProofContext } from './devices'
+import { takeRequest } from './queue'
 
 /** Env as seen by the default handler: the provider injects OAUTH_PROVIDER. */
 type HandlerEnv = Env & { OAUTH_PROVIDER: OAuthHelpers }
@@ -344,10 +345,15 @@ async function handleMail(request: Request, env: HandlerEnv, url: URL, route: Ma
     if (text.length === 0 || !text.isWellFormed()) return invalid
     answer = await stub.mailPut(id, key, { id: body.id as string, to: body.to, body: text })
   } else if (route.kind === 'take') {
-    const body = bodyOf(bytes, { ack: 'number' })
-    const ack = body?.ack as number
-    if (!body || !Number.isSafeInteger(ack) || ack < 0) return invalid
-    answer = await stub.mailTake(id, key, ack)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(bytes))
+    } catch {
+      parsed = undefined
+    }
+    const take = takeRequest(parsed)
+    if (!take) return invalid
+    answer = await stub.mailTake(id, key, take.ack, take.epoch)
   } else {
     const body = bodyOf(bytes, { presence: 'object' })
     const raw = body?.presence

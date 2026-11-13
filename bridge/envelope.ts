@@ -9,8 +9,8 @@
  *
  * The first line is the kind's tag (U-R1A-36E): mail `tandem-envelope-v1` (the default; byte for
  * byte the text before kinds, so every queued mail envelope still verifies), commands
- * `tandem-command-v1` (bridge/remote-command.ts) and presence `tandem-presence-v1` (defined here;
- * bridge/hub-presence.ts starts using it in U-R1A-33B-4H and stays on the default until then). An
+ * `tandem-command-v1` (bridge/remote-command.ts) and presence `tandem-presence-v1`
+ * (bridge/hub-presence.ts signs and opens every presence envelope under it since U-R1A-33B-4H). An
  * envelope opens only under the kind it was signed for, so a command can never pass as mail.
  *
  * The sender's public key is passed in (the roster, U-R1A-31, comes later). Nonces are kept in

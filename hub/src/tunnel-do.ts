@@ -183,11 +183,10 @@ export class TunnelDO extends DurableObject<Env> {
     }
   }
 
-  /** Delete the caller's copies up to `ack`, then hand it the next page after `ack`. */
-  async mailTake(id: string, key: string, ack: number): Promise<{ status: number; body: unknown }> {
+  /** Delete the caller's copies up to `ack`, then hand it the next page after `ack` (an `epoch` as HubQueue.takeFor says). */
+  async mailTake(id: string, key: string, ack: number, epoch?: string): Promise<{ status: number; body: unknown }> {
     if (!(await this.inRoster(id, key, []))) return { status: 403, body: { error: 'not_in_roster' } }
-    this.hubQueue().ack(id, ack)
-    return { status: 200, body: { copies: this.hubQueue().take(id, ack) } }
+    return { status: 200, body: this.hubQueue().takeFor(id, ack, epoch) }
   }
 
   /** Keep the caller's envelopes for roster members; answer the ones addressed to it and the connected ids. */
