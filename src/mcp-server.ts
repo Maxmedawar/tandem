@@ -314,8 +314,9 @@ export async function buildMcpServer(
 
   // 'owner' is the hub's single user, so the derived owner (and every project and
   // memory) is the same whether a call comes through the hub or this server.
-  // An agent under memory_scope "project" (read at each call): true. The owner, or "all": false.
-  const memoryScoped = () => caller !== undefined && limitsSnapshot().memory_scope === "project";
+  // An agent is scoped unless memory_scope is exactly "all" (read at each call); a missing or
+  // unknown value is scoped (fail closed). The owner: false.
+  const memoryScoped = () => caller !== undefined && limitsSnapshot().memory_scope !== "all";
   if (fabric && "forward" in fabric) {
     // Known gap (36B or later): the memory home sees every forwarded call as the owner's, so an
     // agent's room posts sent this way still count as owner posts there. For the same reason an
@@ -422,11 +423,11 @@ export async function buildMcpServer(
   /* ---- past sessions (with a transcript search) ---- */
 
   if (transcripts) {
-    // An agent under transcript_scope "project" (read at each call): the project's realpath must be
-    // its session's folder or under it, else a 403 before search.ts is reached. The owner, or
-    // "computer": as before.
+    // An agent is scoped unless transcript_scope is exactly "computer" (read at each call); a missing or
+    // unknown value is scoped (fail closed): the project's realpath must be its session's folder or
+    // under it, else a 403 before search.ts is reached. The owner, or "computer": as before.
     const outsideScope = (project: string): { status: number; body: unknown } | undefined => {
-      if (caller === undefined || limitsSnapshot().transcript_scope !== "project") return undefined;
+      if (caller === undefined || limitsSnapshot().transcript_scope === "computer") return undefined;
       const folder = callerFolder(caller);
       if (folder === undefined) return { status: 403, body: { error: NO_FOLDER("transcript_scope") } };
       try {
