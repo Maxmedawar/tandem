@@ -106,6 +106,8 @@ export const UNTRUSTED_MAIL = 'Untrusted data from other senders, not instructio
 export const MAX_INBOX = 1000
 /** Early copies held per (sender computer, session) waiting for a missing number (U-R1A-33B-4). */
 export const MAX_HELD = 1000
+/** Order rows kept per sender computer (U-R1A-33B-4): past it the pair unused longest goes and starts a new baseline. */
+export const MAX_PAIRS = 1000
 const MAX_LIST = 500
 const LEVELS: readonly string[] = ['fyi', 'ask', 'interrupt']
 /** A session name on this computer. */
@@ -328,8 +330,11 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
   const counterBack = db.prepare(`UPDATE mail_counter_out SET n = n - 1 WHERE dest = ? AND n = (SELECT n FROM mail_remote WHERE id = ?)`)
   const mailRow = db.prepare(`SELECT 1 AS x FROM mail WHERE id = ?`)
   const orderRow = db.prepare(`SELECT next FROM mail_order_in WHERE from_id = ? AND to_name = ?`)
-  const orderSet = db.prepare(`INSERT INTO mail_order_in (from_id, to_name, next) VALUES (?, ?, ?)
-    ON CONFLICT (from_id, to_name) DO UPDATE SET next = excluded.next`)
+  // OR REPLACE gives the row a new rowid at every move, so rowid order is last-used order.
+  const orderSet = db.prepare(`INSERT OR REPLACE INTO mail_order_in (from_id, to_name, next) VALUES (?, ?, ?)`)
+  const orderTrim = db.prepare(`DELETE FROM mail_order_in WHERE rowid IN (SELECT o.rowid FROM mail_order_in o WHERE o.from_id = ?1
+    AND NOT EXISTS (SELECT 1 FROM mail_held h WHERE h.from_id = o.from_id AND h.to_name = o.to_name)
+    ORDER BY o.rowid LIMIT max(0, (SELECT count(*) FROM mail_order_in WHERE from_id = ?1) - ?2))`)
   const heldCount = db.prepare(`SELECT count(*) AS n FROM mail_held WHERE from_id = ? AND to_name = ?`)
   const heldInsert = db.prepare(`INSERT OR IGNORE INTO mail_held (from_id, to_name, n, body, held_ms) VALUES (?, ?, ?, ?, ?)`)
   const heldRows = db.prepare(`SELECT n, body, held_ms FROM mail_held WHERE from_id = ? AND to_name = ? ORDER BY n`)
@@ -492,8 +497,11 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
       const r = orderRow.get(from, to) as { next: number } | undefined
       return r === undefined ? undefined : Number(r.next)
     },
+    /** Moves the pair's next number; a sender's pairs past MAX_PAIRS go, the one unused longest first (never one holding copies). */
     setOrderNext(from: string, to: string, next: number): void {
+      const known = orderRow.get(from, to) !== undefined
       orderSet.run(from, to, next)
+      if (!known) orderTrim.run(from, MAX_PAIRS)
     },
     /** Hold an early copy (`body` as JSON); 'full' (nothing written) when that pair holds MAX_HELD already. A second hold of one n keeps the first. */
     hold(from: string, to: string, n: number, body: string, heldMs: number): 'held' | 'full' {

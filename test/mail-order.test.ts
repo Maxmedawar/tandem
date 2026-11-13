@@ -14,7 +14,7 @@
  * store) and the state.db files. TMUX is deleted. The clock is fake and is the carriers' only
  * clock; no case asserts a wall-clock bound.
  */
-import { randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import { tmpdir, userInfo } from 'node:os'
@@ -700,5 +700,175 @@ describe('(33B-4) (b) a number the hub never stored goes back (director ruling, 
     expect(putNs()).toEqual([3])
     expect(rows(alpha.path, 'SELECT dest, n FROM mail_counter_out')).toEqual([{ dest: 'beta:bob', n: 3 }])
     alpha.box.close()
+  })
+})
+
+describe('(33B-4) (a) audit: a number in use is never given twice; the order table is bounded', () => {
+  const putNs = () => putBodies().map((p) => JSON.parse(JSON.parse(p.body).body).n)
+  const sender = () => {
+    const path = dbPath()
+    const box: Json = boxAt(path)
+    return { path, box, mail: hubMail(cfg('alpha'), { box, key: A, now }) }
+  }
+  const sendBob = (box: Json, text: string, from = 'owner') => box.send({ from, to: 'beta:bob', level: 'fyi', text }).id as string
+  /** The n of every copy in beta's hub queue, by message id (a resent row counts once). */
+  const queuedNs = () => [...new Map(queueOf('beta').map((c) => [c.id, JSON.parse(JSON.parse(c.body).body).n as number])).values()]
+
+  it('(33B-4) a1 a put the hub stored but whose answer was lost, then queue_full on the resend: the number stays used, the next row gets the one after, beta stores both', async () => {
+    const alpha = sender()
+    const beta = receiver()
+    sendBob(alpha.box, 'one')
+    expect(await alpha.mail.pushOnce()).toBe(1)
+    const ghost = sendBob(alpha.box, 'ghost')
+    // The hub stores the copy; its answer never arrives.
+    hub.onPut = (put) => {
+      hubPut('beta', { id: put.id, from: 'alpha', kind: 'message', body: put.body })
+      return 'drop'
+    }
+    expect(await alpha.mail.pushOnce()).toBe(0)
+    hub.onPut = () => ({ status: 200, body: { results: [{ to: 'beta', error: 'queue_full' }] } })
+    expect(await alpha.mail.pushOnce()).toBe(1)
+    expect(alpha.box.sent('owner', 10).find((m: Json) => m.id === ghost).state).toBe('queue_full')
+    hub.onPut = undefined
+    sendBob(alpha.box, 'after')
+    seen.length = 0
+    expect(await alpha.mail.pushOnce()).toBe(1)
+    expect(putNs()).toEqual([3])
+    expect(queuedNs()).toEqual([1, 2, 3])
+    const n = mark()
+    await beta.mail.pullOnce()
+    expect(carrierLines(n)).toEqual([])
+    expect(inbox(beta.box)).toEqual(['one', 'ghost', 'after'])
+    alpha.box.close()
+    beta.box.close()
+  })
+
+  it('(33B-4) a2 a mixed run (full, lost answer then refused, stored, refused behind a numbered row): no two messages at the hub share a number; beta stores each once, in order, and never writes mail.late', async () => {
+    const alpha = sender()
+    const beta = receiver()
+    beta.box.setOrderNext('alpha', 'bob', 1)
+    const full = { status: 200, body: { results: [{ to: 'beta', error: 'queue_full' }] } }
+    const store = (put: Json) => void hubPut('beta', { id: put.id, from: 'alpha', kind: 'message', body: put.body })
+    const texts: string[] = []
+    for (let round = 0; round < 6; round++) {
+      const t = (k: string) => `r${round} ${k}`
+      // first put answered queue_full: the number goes back
+      sendBob(alpha.box, t('full'))
+      hub.onPut = () => full
+      await alpha.mail.pushOnce()
+      // stored, answer lost, the resend refused: the number stays
+      sendBob(alpha.box, t('ghost'))
+      hub.onPut = (put) => (store(put), 'drop')
+      await alpha.mail.pushOnce()
+      hub.onPut = () => ({ status: 403, body: { error: 'not_in_roster' } })
+      await alpha.mail.pushOnce()
+      hub.onPut = undefined
+      sendBob(alpha.box, t('ok'))
+      await alpha.mail.pushOnce()
+      // two rows numbered back to back; the first is refused after the second has its number
+      const first = sendBob(alpha.box, t('first'))
+      const later = alpha.box.send({ from: 'owner', to: 'beta:bob', level: 'fyi', text: t('later') })
+      hub.onPut = () => 'drop'
+      await alpha.mail.pushOnce()
+      const body = (n: number) => JSON.stringify({ v: 2, kind: 'mail', id: later.id, from: 'owner', to: 'bob', level: 'fyi', text: t('later'), sentAt: later.sentAt, n })
+      alpha.box.keepNumbered(later.id, 'beta:bob', (n: number) => JSON.stringify(signEnvelope(A, { from: 'alpha', to: 'beta', body: body(n) }, clock)))
+      hub.onPut = (put) => (put.id === first ? { status: 400, body: { error: 'mail_invalid' } } : undefined)
+      await alpha.mail.pushOnce()
+      hub.onPut = undefined
+      texts.push(t('ghost'), t('ok'), t('later'))
+    }
+    const ns = queuedNs()
+    expect(new Set(ns).size).toBe(ns.length)
+    expect(ns).toEqual([...ns].sort((a, b) => a - b))
+    const n = mark()
+    await beta.mail.pullOnce()
+    clock = T + GAP
+    await beta.mail.pullOnce()
+    expect(carrierLines(n).filter((l) => l.event !== 'mail.gap')).toEqual([])
+    const got = inbox(beta.box).filter((x: string) => !x.startsWith('mail '))
+    expect(got).toEqual(texts)
+    alpha.box.close()
+    beta.box.close()
+  })
+
+  it('(33B-4) a3 returnNumber is one statement: it gives the number back once, only while it is the last of its destination', () => {
+    const alpha = sender()
+    const one = `mail-${randomUUID()}`
+    const two = `mail-${randomUUID()}`
+    alpha.box.keepNumbered(one, 'beta:bob', (n: number) => `e${n}`)
+    alpha.box.keepNumbered(two, 'beta:bob', (n: number) => `e${n}`)
+    expect(alpha.box.returnNumber(one, 'beta:bob')).toBe(false)
+    expect(alpha.box.returnNumber(two, 'beta:carol')).toBe(false)
+    expect(alpha.box.returnNumber(`mail-${randomUUID()}`, 'beta:bob')).toBe(false)
+    expect(alpha.box.returnNumber(two, 'beta:bob')).toBe(true)
+    expect(alpha.box.returnNumber(two, 'beta:bob')).toBe(false)
+    expect(rows(alpha.path, 'SELECT dest, n FROM mail_counter_out')).toEqual([{ dest: 'beta:bob', n: 1 }])
+    expect(readFileSync(new URL('../bridge/mailbox.ts', import.meta.url), 'utf8')).toContain('UPDATE mail_counter_out SET n = n - 1 WHERE dest = ? AND n = (SELECT n FROM mail_remote WHERE id = ?)')
+    alpha.box.close()
+  })
+
+  it('(33B-4) a4 two sessions on alpha writing to beta:bob share one counter in send order; beta:carol has its own', async () => {
+    const alpha = sender()
+    const beta = receiver()
+    sendBob(alpha.box, 'owner 1')
+    sendBob(alpha.box, 'alice 1', 'session:alice')
+    alpha.box.send({ from: 'session:alice', to: 'beta:carol', level: 'fyi', text: 'carol 1' })
+    sendBob(alpha.box, 'owner 2')
+    expect(await alpha.mail.pushOnce()).toBe(4)
+    expect(putNs()).toEqual([1, 2, 1, 3])
+    await beta.mail.pullOnce()
+    expect(beta.box.read('bob', 500).map((m: Json) => [m.from, m.text])).toEqual([
+      ['machine:alpha/owner', 'owner 1'], ['machine:alpha/session:alice', 'alice 1'], ['machine:alpha/owner', 'owner 2'],
+    ])
+    expect(orderRows(beta.path).sort((x: Json, y: Json) => x.to_name.localeCompare(y.to_name))).toEqual([{ from_id: 'alpha', to_name: 'bob', next: 4 }, { from_id: 'alpha', to_name: 'carol', next: 2 }])
+    alpha.box.close()
+    beta.box.close()
+  })
+
+  it('(33B-4) a6 the number is inside the signed body: a hub that rewrites n (with or without the body hash) is refused, nothing stored or held; the untouched copy is then held as n 2', async () => {
+    const { path, box, mail } = receiver()
+    box.setOrderNext('alpha', 'bob', 1)
+    const body = v2(2)
+    const id = JSON.parse(body).id
+    const signed = JSON.stringify(signEnvelope(A, { from: 'alpha', to: 'beta', body }, clock))
+    const forged = JSON.parse(signed)
+    forged.body = forged.body.replace('"n":2', '"n":1')
+    expect(JSON.parse(forged.body).n).toBe(1)
+    hubPut('beta', { id, from: 'alpha', kind: 'message', body: JSON.stringify(forged) })
+    forged.body_sha256 = createHash('sha256').update(forged.body).digest('hex')
+    hubPut('beta', { id, from: 'alpha', kind: 'message', body: JSON.stringify(forged) })
+    const n = mark()
+    expect(await mail.pullOnce()).toBe(2)
+    expect(carrierLines(n).map((l) => [l.event, l.denied])).toEqual([['mail.refused', 'body'], ['mail.refused', 'signature']])
+    expect(inbox(box)).toEqual([])
+    expect(rows(path, 'SELECT n FROM mail_held')).toEqual([])
+    expect(box.orderNext('alpha', 'bob')).toBe(1)
+    hubPut('beta', { id, from: 'alpha', kind: 'message', body: signed })
+    expect(await mail.pullOnce()).toBe(1)
+    expect(rows(path, 'SELECT n FROM mail_held')).toEqual([{ n: 2 }])
+    box.close()
+  })
+
+  it('(33B-4) a5 MAX_PAIRS: one sender computer keeps at most 1,000 order rows; the one unused longest goes, never one with held copies, never another sender\'s', () => {
+    const { path, box } = receiver()
+    expect(mailbox.MAX_PAIRS).toBe(1000)
+    box.setOrderNext('gamma', 'bob', 7)
+    box.setOrderNext('alpha', 'held', 1)
+    expect(box.hold('alpha', 'held', 3, '{}', clock)).toBe('held')
+    for (let k = 0; k < 999; k++) box.setOrderNext('alpha', `s${k}`, 2)
+    expect(orderRows(path).filter((r: Json) => r.from_id === 'alpha')).toHaveLength(1000)
+    // s0 is used again: it is now the newest; s1 is the one unused longest without held copies.
+    box.setOrderNext('alpha', 's0', 3)
+    box.setOrderNext('alpha', 'new', 2)
+    const names = orderRows(path).filter((r: Json) => r.from_id === 'alpha').map((r: Json) => r.to_name)
+    expect(names).toHaveLength(1000)
+    expect(names).toContain('held')
+    expect(names).toContain('s0')
+    expect(names).toContain('new')
+    expect(names).not.toContain('s1')
+    expect(box.orderNext('alpha', 's0')).toBe(3)
+    expect(box.orderNext('alpha', 's1')).toBeUndefined()
+    expect(box.orderNext('gamma', 'bob')).toBe(7)
+    box.close()
   })
 })

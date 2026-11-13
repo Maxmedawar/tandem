@@ -26,8 +26,10 @@
  * Order (U-R1A-33B-4): every new mail body is v:2 and carries `n`, the next number of its
  * destination `<computer>:<session>`, taken in the transaction that keeps the envelope
  * (mailbox.keepNumbered), so a re-signed envelope keeps its n. A row the hub answers queue_full
- * or refused (nothing stored there) gives its number back when no later row of that destination
- * has one yet (mailbox.returnNumber); an expired row keeps it, as the receiver really missed it. The receiver stores one sender
+ * or refused at its FIRST put (nothing stored there) gives its number back when no later row of
+ * that destination has one yet (mailbox.returnNumber); a row put before with no answer keeps it
+ * (the hub may hold that copy), and an expired row keeps it, as the receiver really missed it.
+ * One carrier per state.db is assumed there. The receiver stores one sender
  * computer's mail to one session in n order only: an early copy is held (mail_held, at most
  * MAX_HELD per pair) for up to GAP_HOLD_MS, then one `mail.gap` audit line and one inbox notice
  * from `machine:<computer>/gap` name the missing numbers and the held copies follow; a copy whose
@@ -46,7 +48,10 @@
  * all of one owner's computers run one release (an older receiver refuses v:2 bodies as `shape`;
  * a v:1 body from an older sender is stored with no order rule); the epoch protects only against a
  * hub that answers with it; order is per (sender computer, recipient session), not across sessions
- * or senders.
+ * or senders; a hub that answers a first put queue_full or refused yet hands that copy on makes
+ * the next row share its number, and the receiver then drops that next row as `mail.late` with no
+ * gap notice (the audit line is the only trace). The receiver keeps at most mailbox.MAX_PAIRS
+ * order rows per sender computer; the pair unused longest starts a new baseline.
  *
  * `now` is the only clock: the replay store, every openEnvelope and every signEnvelope run on it.
  */
@@ -223,6 +228,9 @@ export function hubMail(
       }
       const at = m.to.indexOf(':')
       const computer = m.to.slice(0, at)
+      // Only a row's first put can give its number back: an earlier put with no answer may be
+      // stored at the hub, and a number the receiver may see is never given to another row.
+      const back = box.envelopeOf(m.id) === undefined ? m.to : undefined
       const body = envelopeFor(m, computer, m.to.slice(at + 1))
       const { status, data } = await call(PUT, JSON.stringify({ id: m.id, to: [computer], body }))
       if (status === 200) {
@@ -233,11 +241,11 @@ export function hubMail(
           continue
         }
         if (r?.error === 'queue_full') {
-          move(m.id, 'queue_full', undefined, m.to)
+          move(m.id, 'queue_full', undefined, back)
           continue
         }
       } else if (status === 400 || status === 403) {
-        move(m.id, 'refused', undefined, m.to)
+        move(m.id, 'refused', undefined, back)
         continue
       }
       // 429, 401, 5xx, an answer this carrier cannot read, or none: the row stays queued for the next pass.
