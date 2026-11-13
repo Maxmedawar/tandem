@@ -79,7 +79,7 @@ export class TandemMcp extends McpAgent<Env, unknown, FabricOAuthProps> {
           `${BLAST_RADIUS}\n\n` +
           'List terminal sessions on the owner\'s Mac: ALL LIVE tmux panes (each tagged ' +
           'with its detected engine — claude, codex, or shell — plus its real tmux ' +
-          'name and a "tmux attach -t <tmuxName>" hint) first, then recent local ' +
+          'name and a "tmux -S <socket> attach -t <target>" hint on Tandem\'s own tmux socket) first, then recent local ' +
           'Claude Code AND Codex history. Read-only; does not start or send ' +
           'anything. Sorted most-recent first. Use the returned id as the name for ' +
           'send_to_session / read_session / interrupt_session / close_session. ' +

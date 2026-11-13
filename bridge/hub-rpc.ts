@@ -9,6 +9,11 @@
  * link cap is answered 413 `payload_too_large` instead of being sent. The agent filter and
  * the read log lines live in route(), so hub calls and local MCP calls get the same ones.
  *
+ * The limits file's `hub_commands` and `hub_reads` (U-R1A-17B) are checked here, first, for every
+ * frame: hubRight() names the field a request needs and limitsGate().hub() answers 403 with its text
+ * when that field is off, before anything is typed, read or opened. Local MCP calls go to route()
+ * and routeFabricRpc() directly and never pass here; `/usage` and `/remote/command` are not gated.
+ *
  * A path starting `/fabric/` goes to the fabric router instead, with the frame's
  * `trusted_surface` marker (only the hub's /__fabric-rpc route sets it; without it the
  * answer is 403) and this process's fabric store, if one is open (none: 503).
@@ -46,6 +51,9 @@ import { deriveBridgeId, hubProofHeader, MAX_FRAME_BYTES } from './hub-link.ts'
 import { handleRemoteCommand } from './remote-command.ts'
 import { readRoster } from './roster.ts'
 import { route } from './router.ts'
+import { limitsGate, type HubRight } from './limits.ts'
+import { FABRIC_BRIDGE_READY_PATH } from '../src/fabric/rpc-contract.ts'
+import { audit } from './audit.ts'
 import type { TranscriptSearch } from './transcripts/search.ts'
 import type { UsageReport } from './usage/report.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame, type CcmHttpResponseFrame } from '../hub/src/protocol.ts'
@@ -300,10 +308,52 @@ async function usageRequest(frame: CcmHttpRequestFrame): Promise<CcmHttpResponse
 }
 
 /**
+ * The limits field a hub request needs, by its path as the branches below and router.ts read it;
+ * undefined for one that is not gated. Anything not known as a read or the list is a command.
+ */
+function hubRight(frame: CcmHttpRequestFrame, body: unknown): HubRight | undefined {
+  if (frame.path.startsWith('/transcripts/')) return 'transcripts'
+  if (frame.path === '/usage' || frame.path === '/remote/command') return undefined
+  // A readiness answer holds no memory; gating it would make a home with memory off read as offline.
+  if (frame.path === FABRIC_BRIDGE_READY_PATH) return undefined
+  if (frame.path.startsWith('/fabric/')) return 'memory'
+  const parts = frame.path.split('/').filter(Boolean)
+  const m = frame.method.toUpperCase()
+  if (m === 'GET' && parts.length === 1 && parts[0] === 'sessions') return undefined
+  if (m === 'GET' && parts.length === 3 && (parts[0] === 'sessions' || parts[0] === 'relay') && parts[2] === 'read') return 'screens'
+  const text = typeof body === 'object' && body !== null && !Array.isArray(body) ? (body as { text?: unknown }).text : undefined
+  if (m === 'POST' && parts.length === 3 && parts[0] === 'sessions' && parts[2] === 'send' && !String(text ?? '')) return 'screens'
+  return 'commands'
+}
+
+/** A `/fabric/` call forwarded from another computer carries exactly one challenge: its answer is signed over it. */
+function forwardedSigner(frame: CcmHttpRequestFrame, body: unknown, home: MemoryHomeSigner | undefined) {
+  if (!frame.path.startsWith('/fabric/')) return undefined
+  const challenges = frame.headers?.[MEMORY_CHALLENGE_HEADER]
+  const challenge = challenges?.length === 1 && CHALLENGE.test(challenges[0]) ? challenges[0] : undefined
+  // A copy taken before the router runs: the signed input is the one the caller sent.
+  return challenge === undefined ? undefined : signAnswer(frame, challenge, structuredClone(inputOf(body)), home)
+}
+
+const DENIED: Record<HubRight, string> = {
+  commands: 'hub_commands', screens: 'hub_reads.screens', transcripts: 'hub_reads.transcripts', memory: 'hub_reads.memory',
+}
+
+/**
  * `home`: who signs a `/fabric/` answer whose request carries a challenge (tests); default this
  * computer's link id and device key, opened at signing time.
  */
 export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: LocalFabricHost, home?: MemoryHomeSigner): Promise<CcmHttpResponseFrame> {
+  const asked = parseBody(frame.body_base64)
+  const right = hubRight(frame, asked)
+  const refused = right && limitsGate().hub(right)
+  if (right && refused) {
+    const sign = forwardedSigner(frame, asked, home)
+    // The method and path are the hub's own text: logged cut, so a refused frame cannot grow the log by its size.
+    const line = `${frame.method.toUpperCase()} ${frame.path}`
+    audit({ route: line.length > 200 ? `${line.slice(0, 200)}…` : line, denied: DENIED[right], hub: true, ...(sign ? { forwarded: true } : {}) })
+    return response(frame.request_id, 403, { error: refused }, sign)
+  }
   if (frame.path.startsWith('/transcripts/')) return transcriptRequest(frame)
   if (frame.path === '/usage') return usageRequest(frame)
   if (frame.path === '/remote/command') {
@@ -318,10 +368,7 @@ export async function handleHubRequest(frame: CcmHttpRequestFrame, fabric?: Loca
   }
   if (frame.path.startsWith('/fabric/')) {
     const body = parseBody(frame.body_base64)
-    const challenges = frame.headers?.[MEMORY_CHALLENGE_HEADER]
-    const challenge = challenges?.length === 1 && CHALLENGE.test(challenges[0]) ? challenges[0] : undefined
-    // A copy taken before the router runs: the signed input is the one the caller sent.
-    const sign = challenge === undefined ? undefined : signAnswer(frame, challenge, structuredClone(inputOf(body)), home)
+    const sign = forwardedSigner(frame, body, home)
     try {
       const result = await routeFabricRpc({
         trust: frame.trusted_surface,

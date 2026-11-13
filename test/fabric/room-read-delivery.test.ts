@@ -20,6 +20,8 @@ import {
 import { FABRIC_MCP_TRUST, type FabricRpcBody } from '../../src/fabric/rpc-contract.ts'
 import { MAX_ROOM_EVENT_BODY_BYTES } from '../../src/fabric/types.ts'
 import { CCM_FRAME_TYPES, type CcmHttpRequestFrame } from '../../hub/src/protocol.ts'
+import { hubFieldsOn } from '../helpers/limits-fixture.ts'
+hubFieldsOn()
 
 /** The hub's limit (hub/src/frame-size.ts WS_MAX_FRAME_BYTES), counted at 4 bytes a character. */
 const HUB_FRAME_BYTES = 1_048_576
