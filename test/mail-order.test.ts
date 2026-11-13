@@ -1100,3 +1100,90 @@ describe('(33B-5) (l) a late copy whose id was never stored leaves an inbox noti
     box.close()
   })
 })
+
+describe('(33B-6) (g) every system notice shares one cap and never blocks real mail', () => {
+  const noticeRows = (path: string, to = 'bob') =>
+    rows(path, `SELECT count(*) AS n FROM mail WHERE to_name = ? AND state = 'queued' AND from_id GLOB 'machine:*/gap'`, to)[0].n
+  const fillReal = (path: string, to: string, count: number) => {
+    const db = new DatabaseSync(path)
+    try {
+      db.exec('BEGIN')
+      const add = db.prepare(`INSERT INTO mail (id, from_id, to_name, level, text, sent_at_ms, reply_by_ms, state, state_at_ms) VALUES (?, 'owner', ?, 'fyi', 'fill', ?, NULL, 'queued', ?)`)
+      for (let k = 0; k < count; k++) add.run(`mail-${randomUUID()}`, to, T, T)
+      db.exec('COMMIT')
+    } finally {
+      db.close()
+    }
+  }
+
+  it('(33B-6) g9 (RED at BASE) a hub forcing 1,000 gaps: one gap notice (never above MAX_NOTICES), every real copy stored, the last one after all the gaps too', async () => {
+    const { path, box, mail } = receiver()
+    box.setOrderNext('alpha', 'bob', 1)
+    hub.pageSize = 2000
+    for (let k = 1; k <= 1000; k++) toBeta(v2(2 * k))
+    await mail.pullOnce()
+    expect(box.heldFor('alpha', 'bob')).toHaveLength(1000)
+    clock = T + GAP
+    const n = mark()
+    await mail.pullOnce()
+    const lines = carrierLines(n)
+    expect(lines.filter((l) => l.event === 'mail.gap')).toHaveLength(1000)
+    expect(lines.filter((l) => l.event !== 'mail.gap')).toEqual([])
+    expect(mailbox.MAX_NOTICES).toBeGreaterThan(0)
+    expect(noticeRows(path)).toBeLessThanOrEqual(mailbox.MAX_NOTICES)
+    expect(rows(path, `SELECT text FROM mail WHERE from_id = 'machine:alpha/gap'`)).toEqual([{ text: notice('alpha', 1, 1) }])
+    expect(rows(path, `SELECT count(*) AS n FROM mail WHERE from_id = 'machine:alpha/owner' AND state = 'queued'`)[0].n).toBe(1000)
+    expect(rows(path, `SELECT count(*) AS n FROM mail WHERE text = 'msg 2000'`)[0].n).toBe(1)
+    expect(box.orderNext('alpha', 'bob')).toBe(2001)
+    box.close()
+  })
+
+  it('(33B-6) g10 (RED at BASE) a mixed late and gap flood from 300 computers: notices stop at MAX_NOTICES, each kind kept apart per sender, real mail still stored up to MAX_INBOX', () => {
+    const path = dbPath()
+    const box: Json = boxAt(path)
+    expect(mailbox.MAX_NOTICES).toBe(mailbox.MAX_INBOX / 10)
+    // One sender, one session: one notice of each kind while it waits unread.
+    box.closeGap('alpha', 'carol', 1, 1)
+    box.lateNotice('alpha', 'carol')
+    box.closeGap('alpha', 'carol', 3, 3)
+    box.lateNotice('alpha', 'carol')
+    expect(box.read('carol', 500).map((m: Json) => [m.from, m.text])).toEqual([
+      ['machine:alpha/gap', notice('alpha', 1, 1)],
+      ['machine:alpha/gap', 'a message from alpha arrived out of order and was dropped'],
+    ])
+    for (let k = 1; k <= 300; k++) {
+      box.closeGap(`c${k}`, 'bob', 1, 1)
+      box.lateNotice(`c${k}`, 'bob')
+      box.closeGap(`c${k}`, 'bob', 3, 3)
+    }
+    expect(noticeRows(path)).toBe(mailbox.MAX_NOTICES)
+    fillReal(path, 'bob', mailbox.MAX_INBOX - 1)
+    expect(box.send({ from: 'owner', to: 'bob', level: 'fyi', text: 'real' }).state).toBe('queued')
+    expect(() => box.send({ from: 'owner', to: 'bob', level: 'fyi', text: 'one more' })).toThrow(/inbox full/)
+    // Real mail at MAX_INBOX: no notice of any kind is written above it.
+    fillReal(path, 'dave', mailbox.MAX_INBOX)
+    box.closeGap('c1', 'dave', 1, 1)
+    box.lateNotice('c1', 'dave')
+    expect(noticeRows(path, 'dave')).toBe(0)
+    box.close()
+  })
+
+  it('(33B-6) g11 a single gap still writes exactly one notice before its held copy; a later gap, once that notice is read and a minute passed, writes its own', async () => {
+    const { path, box, mail } = receiver()
+    toBeta(v2(1))
+    toBeta(v2(3))
+    await mail.pullOnce()
+    clock = T + GAP
+    await mail.pullOnce()
+    expect(rows(path, `SELECT text FROM mail WHERE from_id = 'machine:alpha/gap'`)).toEqual([{ text: notice('alpha', 2, 2) }])
+    expect(inbox(box)).toEqual(['msg 1', notice('alpha', 2, 2), 'msg 3'])
+    clock = T + GAP + 61_000
+    toBeta(v2(5))
+    await mail.pullOnce()
+    clock = T + 2 * GAP + 61_000
+    await mail.pullOnce()
+    expect(inbox(box)).toEqual([notice('alpha', 4, 4), 'msg 5'])
+    expect(rows(path, `SELECT count(*) AS n FROM mail WHERE from_id = 'machine:alpha/gap'`)[0].n).toBe(2)
+    box.close()
+  })
+})
