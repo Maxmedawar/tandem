@@ -588,3 +588,200 @@ describe('(v) the redact version', () => {
     expect(REDACT_VERSION).toBe(1)
   })
 })
+
+/* ---------------- (47I) room post correlationId, artifactRefs and sessionId ---------------- */
+
+/** The three room-post fields as stored. */
+const FIELDS_SQL = 'SELECT correlation_id, artifact_refs_json, provenance_session_id FROM room_events'
+/** A post whose correlationId, each artifactRefs entry and sessionId hold a value; `list` is every value planted. */
+function fieldPost() {
+  const s = secrets()
+  const t = secrets()
+  return {
+    fields: { correlationId: `corr-${s.key}`, artifactRefs: [`ref ${s.gh}`, s.pem], sessionId: `sess-${t.key}` },
+    list: [s.key, s.gh, s.pemBody, t.key],
+  }
+}
+const none = (list: string[]) => list.map(() => false)
+
+/**
+ * A store as a writer before 47I left it: three events posted with placeholder fields, then e1's three
+ * fields rewritten raw and e2's artifact_refs_json rewritten to a raw value that is not a JSON array;
+ * e3 holds no value anywhere. fabric_mask is dropped unless `keepVersion`.
+ */
+async function rawFieldStore(name: string, keepVersion = false) {
+  const s = secrets()
+  const t = secrets()
+  const path = storeAt(name)
+  const client = new SQLiteFabricClient({ databasePath: path })
+  const ids: string[] = []
+  try {
+    const pid = await ownerProject(client)
+    for (const n of [1, 2, 3]) {
+      ids.push((await client.postRoomEvent(owner(pid), {
+        room: 'r47i', type: 'message', body: `r1a47i placeholder ${n}`, idempotencyKey: `${name}-post-${n}`,
+        correlationId: `r1a47i-corr-${n}`, artifactRefs: [`docs/r1a47i-${n}.md`], sessionId: `r1a47i-session-${n}`,
+      })).id)
+    }
+  } finally {
+    client.close()
+  }
+  // An open of a store holding rows records the version (nothing to mask yet).
+  if (keepVersion) new SQLiteFabricClient({ databasePath: path }).close()
+  const db = new DatabaseSync(path)
+  try {
+    db.prepare('UPDATE room_events SET correlation_id = ?, artifact_refs_json = ?, provenance_session_id = ? WHERE id = ?')
+      .run(`corr-${s.key}`, JSON.stringify([`ref ${s.gh}`, s.pem]), `sess-${t.key}`, ids[0]!)
+    db.prepare('UPDATE room_events SET artifact_refs_json = ? WHERE id = ?').run(`not an array ${t.gh}`, ids[1]!)
+    if (!keepVersion) db.exec('DROP TABLE IF EXISTS fabric_mask')
+  } finally {
+    db.close()
+  }
+  return { path, ids, list: [s.key, s.gh, s.pemBody, t.key, t.gh] }
+}
+
+describe('(47I) room post correlationId, artifactRefs and sessionId are masked', () => {
+  it('(47I) i1 no bus: the read event, the stored row and the idempotency fingerprint hold none of the values; the closed file neither', async () => {
+    const { fields, list } = fieldPost()
+    const path = storeAt('i1')
+    const client = new SQLiteFabricClient({ databasePath: path })
+    try {
+      const pid = await ownerProject(client)
+      const posted = await client.postRoomEvent(owner(pid), { room: 'r47i', type: 'message', body: 'r1a47i i1', idempotencyKey: 'i1-post', ...fields })
+      const read = await client.readRoom(owner(pid), { room: 'r47i' })
+      expect(read.events.length).toBe(1)
+      expect(holds([posted, read.events], list)).toEqual(none(list))
+      expect(read.events[0]!.correlationId === 'corr-[secret:aws-key]').toBe(true)
+      expect(read.events[0]!.provenance.sessionId === 'sess-[secret:aws-key]').toBe(true)
+      expect(JSON.stringify(read.events[0]!.artifactRefs) === JSON.stringify(['ref [secret:github-token]', '[secret:private-key]'])).toBe(true)
+    } finally {
+      client.close()
+    }
+    expect(holds(query(path, FIELDS_SQL), list)).toEqual(none(list))
+    expect(holds(query(path, 'SELECT fingerprint FROM idempotency'), list)).toEqual(none(list))
+    expect(atRest(path, list)).toEqual(none(list))
+  })
+
+  it('(47I) i2 bus: no payload the bus received holds a value; the stored row is masked', async () => {
+    const { fields, list } = fieldPost()
+    const payloads: string[] = []
+    const bus = new FakeRoomBus({ beforeVisible: (input) => { payloads.push(input.payload) } })
+    const path = storeAt('i2')
+    const client = new SQLiteFabricClient({ databasePath: path, bus })
+    try {
+      const pid = await ownerProject(client)
+      const event = await client.postRoomEvent(owner(pid), { room: 'r47i', type: 'message', body: 'r1a47i i2', idempotencyKey: 'i2-post', ...fields })
+      expect(holds([event], list)).toEqual(none(list))
+      expect(payloads.length > 0).toBe(true)
+      const decoded = payloads.map((p) => Buffer.from(p, 'base64').toString('utf8'))
+      expect(holds([payloads, decoded], list)).toEqual(none(list))
+    } finally {
+      client.close()
+    }
+    const rows = query(path, FIELDS_SQL)
+    expect(rows.length).toBe(1)
+    expect(holds(rows, list)).toEqual(none(list))
+    expect(holds(rows, ['[secret:aws-key]', '[secret:github-token]', '[secret:private-key]'])).toEqual([true, true, true])
+    expect(holds(query(path, 'SELECT fingerprint FROM idempotency'), list)).toEqual(none(list))
+  })
+
+  it('(47I) i3 bus log: a payload an older writer left raw in the three fields is stored and read masked', async () => {
+    const { fields, list } = fieldPost()
+    const bus = new FakeRoomBus()
+    const path = storeAt('i3')
+    const client = new SQLiteFabricClient({ databasePath: path, bus })
+    try {
+      const pid = await ownerProject(client)
+      const now = Date.now()
+      const record = {
+        id: 'event-r1a47i-i3', ownerId: 'owner-a', projectId: pid, room: 'r47i', type: 'message', fromAgentId: 'agent-old',
+        body: 'r1a47i i3 old writer', createdAt: new Date(now).toISOString(), createdAtMs: now,
+        expiresAtMs: now + 86_400_000, ttlHops: 8, deviceId: 'device-old', ...fields,
+      }
+      bus.injectRaw('owner-a', pid, 'r47i', Buffer.from(JSON.stringify(record)).toString('base64'))
+      const read = await client.readRoom(owner(pid), { room: 'r47i' })
+      expect(read.events.length).toBe(1)
+      expect(holds(read.events as unknown[], list)).toEqual(none(list))
+      expect(read.events[0]!.correlationId === 'corr-[secret:aws-key]').toBe(true)
+      expect(read.events[0]!.provenance.sessionId === 'sess-[secret:aws-key]').toBe(true)
+      expect(JSON.stringify(read.events[0]!.artifactRefs) === JSON.stringify(['ref [secret:github-token]', '[secret:private-key]'])).toBe(true)
+    } finally {
+      client.close()
+    }
+    expect(holds(query(path, FIELDS_SQL), list)).toEqual(none(list))
+    expect(atRest(path, list)).toEqual(none(list))
+  })
+
+  it('(47I) i4 open-time: raw values in the three columns open masked; version recorded, no rebuild pending, rows without a value byte-identical', async () => {
+    const { path, ids, list } = await rawFieldStore('i4')
+    const clean = (): string => JSON.stringify(query(path, 'SELECT * FROM room_events WHERE id = ?', ids[2]!))
+    const cleanBefore = clean()
+    expect(holds(query(path, FIELDS_SQL), list)).toEqual(list.map(() => true))
+    new SQLiteFabricClient({ databasePath: path }).close()
+    expect(holds(query(path, FIELDS_SQL), list)).toEqual(none(list))
+    const [e1] = query(path, `${FIELDS_SQL} WHERE id = ?`, ids[0]!)
+    expect(e1.correlation_id === 'corr-[secret:aws-key]').toBe(true)
+    expect(e1.provenance_session_id === 'sess-[secret:aws-key]').toBe(true)
+    expect(e1.artifact_refs_json === JSON.stringify(['ref [secret:github-token]', '[secret:private-key]'])).toBe(true)
+    const [e2] = query(path, 'SELECT artifact_refs_json FROM room_events WHERE id = ?', ids[1]!)
+    expect(e2.artifact_refs_json === 'not an array [secret:github-token]').toBe(true)
+    expect(clean() === cleanBefore).toBe(true)
+    expect(query(path, 'SELECT mask_version FROM fabric_mask')).toEqual([{ mask_version: REDACT_VERSION }])
+    expect(hasTable(path, 'fabric_mask_vacuum')).toBe(false)
+    expect(atRest(path, list)).toEqual(none(list))
+  })
+
+  it('(47I) i5 a retry with the same key and the same raw fields is the same event (pin)', async () => {
+    const { fields } = fieldPost()
+    const client = new SQLiteFabricClient({ databasePath: storeAt('i5') })
+    try {
+      const pid = await ownerProject(client)
+      const input = { room: 'r47i', type: 'message' as const, body: 'r1a47i i5', idempotencyKey: 'i5-post', ...fields }
+      const first = await client.postRoomEvent(owner(pid), input)
+      const again = await client.postRoomEvent(owner(pid), input)
+      expect(again.id).toBe(first.id)
+      expect((await client.readRoom(owner(pid), { room: 'r47i' })).events.length).toBe(1)
+    } finally {
+      client.close()
+    }
+  })
+
+  it('(47I) i6 a correlationId, sessionId or artifact ref whose masked form is over its limit is refused and nothing is stored', async () => {
+    const short = pick('bcdfghjkmnpqrstvwxz', 6)
+    process.env.R1A47I_SHORT_PASSWORD = short
+    const path = storeAt('i6')
+    const client = new SQLiteFabricClient({ databasePath: path })
+    const id = `${short} `.repeat(30).trim()
+    const ref = `${short} `.repeat(250).trim()
+    expect([Buffer.byteLength(id) <= 256, Buffer.byteLength(ref) <= 2_048]).toEqual([true, true])
+    const refusals: boolean[] = []
+    try {
+      const pid = await ownerProject(client)
+      const cases = [{ correlationId: id }, { sessionId: id }, { artifactRefs: ['docs/ok.md', ref] }]
+      for (const [n, extra] of cases.entries()) {
+        try {
+          await client.postRoomEvent(owner(pid), { room: 'r47i', type: 'message', body: 'r1a47i i6', idempotencyKey: `i6-post-${n}`, ...extra })
+          refusals.push(false)
+        } catch (error) {
+          refusals.push(error instanceof FabricValidationError)
+        }
+      }
+    } finally {
+      client.close()
+      delete process.env.R1A47I_SHORT_PASSWORD
+    }
+    expect(refusals).toEqual([true, true, true])
+    expect(query(path, 'SELECT count(*) AS n FROM room_events')).toEqual([{ n: 0 }])
+    expect(query(path, `SELECT count(*) AS n FROM idempotency WHERE operation = 'room.post'`)).toEqual([{ n: 0 }])
+  })
+
+  it('(47I) i7 a store whose mask_version is already REDACT_VERSION keeps a raw value in the three columns (pin of the marker rule)', async () => {
+    const { path, ids, list } = await rawFieldStore('i7', true)
+    expect(query(path, 'SELECT mask_version FROM fabric_mask')).toEqual([{ mask_version: REDACT_VERSION }])
+    const before = JSON.stringify(query(path, 'SELECT * FROM room_events WHERE id = ?', ids[0]!))
+    new SQLiteFabricClient({ databasePath: path }).close()
+    // Stated limit: a store that records the version is not looked at again.
+    expect(JSON.stringify(query(path, 'SELECT * FROM room_events WHERE id = ?', ids[0]!)) === before).toBe(true)
+    expect(holds(query(path, FIELDS_SQL), list)).toEqual(list.map(() => true))
+  })
+})
