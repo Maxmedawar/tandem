@@ -15,6 +15,13 @@ repo_root=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 out_dir=${1:-"$repo_root/dist/release"}
 version=$(node -e "process.stdout.write(require('$repo_root/package.json').version)")
 
+# Apache-2.0 section 4(d): a work under it ships its NOTICE. A tree whose licence is Apache and
+# that has no NOTICE file is not released.
+if grep -q "Apache License" "$repo_root/LICENSE" 2>/dev/null && [ ! -f "$repo_root/NOTICE" ]; then
+  echo "release blocked: NOTICE missing for an Apache-2.0 LICENSE" >&2
+  exit 1
+fi
+
 # The machine being built for, which is this one unless told otherwise.
 # Cross-building matters because an owner's machines are not all the same:
 # a Mac, another Mac, and a Linux box under WSL is an ordinary set. Linux calls
@@ -213,6 +220,10 @@ chmod 0755 "$stage/uninstall.sh"
 # licence, read from the package itself so the list cannot drift from what ships.
 echo "  notices"
 cp "$repo_root/LICENSE" "$stage/LICENSE.txt"
+# The project's own NOTICE and third-party notices, under their own names, when the tree has them.
+for notice in NOTICE THIRD-PARTY-NOTICES; do
+  if [ -f "$repo_root/$notice" ]; then cp "$repo_root/$notice" "$stage/$notice"; fi
+done
 node - "$stage/runtime/node_modules" "$bundled_node_version" <<'NODE' > "$stage/THIRD_PARTY_NOTICES.md"
 const [, , modules, nodeVersion] = process.argv
 const { existsSync, readdirSync, readFileSync } = require('node:fs')

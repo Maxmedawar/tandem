@@ -41,7 +41,9 @@
     "setup.sh",
     "SECURITY.md",
     "SETUP.md",
-    "SETUP-PROMPT.md"
+    "SETUP-PROMPT.md",
+    "NOTICE",
+    "THIRD-PARTY-NOTICES"
   ],
   "engines": {
     "node": ">=22.13"

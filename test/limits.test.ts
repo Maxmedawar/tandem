@@ -230,6 +230,31 @@ describe("limits file: start and parsing", () => {
     });
   });
 
+  // U-R1A-44 F1 (HOLES Q-21): an applied file that leaves out a hub field reads it OFF, as a missing file does.
+  const ALL_READS = "hub_reads = { screens = true, transcripts = true, memory = true }\n";
+  const hubSnap = () => limits.limitsSnapshot() as unknown as { problem?: string; hub_commands: boolean; hub_reads: Record<string, boolean> };
+  it("applied file without hub_commands reads OFF", async () => {
+    writeFileSync(LIMITS, `folders = ["${WORK}"]\n${ALL_READS}`, { mode: 0o600 });
+    chmodSync(LIMITS, 0o600);
+    expect((await apply()).lines).toEqual([]);
+    const snap = hubSnap();
+    expect(snap.problem).toBeUndefined();
+    expect(snap.hub_commands).toBe(false);
+    expect(snap.hub_reads).toEqual({ screens: true, transcripts: true, memory: true });
+    rmSync(LIMITS, { force: true });
+  });
+  it.each(["screens", "transcripts", "memory"])("applied file without hub_reads.%s reads OFF", async (key) => {
+    const others = ["screens", "transcripts", "memory"].filter((k) => k !== key).map((k) => `${k} = true`).join(", ");
+    writeFileSync(LIMITS, `folders = ["${WORK}"]\nhub_commands = true\nhub_reads = { ${others} }\n`, { mode: 0o600 });
+    chmodSync(LIMITS, 0o600);
+    expect((await apply()).lines).toEqual([]);
+    const snap = hubSnap();
+    expect(snap.problem).toBeUndefined();
+    expect(snap.hub_commands).toBe(true);
+    expect(snap.hub_reads).toEqual({ screens: key !== "screens", transcripts: key !== "transcripts", memory: key !== "memory" });
+    rmSync(LIMITS, { force: true });
+  });
+
   const refusals: [string, string | (() => void), RegExp][] = [
     ["an unknown field", 'extra = true\n', /unknown field extra/],
     ["an unknown key in an agent", '[agents]\nfake-a = { program = "/bin/sh", args = [] }\n', /unknown field agents\.fake-a\.args/],

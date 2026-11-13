@@ -1,12 +1,13 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/check-tree.sh", import.meta.url));
-const REAL_ICONS = join(homedir(), "design-assets/icons/uxercon-free/SVG");
+// The real account home, not $HOME: test runs point HOME at a temp folder, which hid this case (read only; never written).
+const REAL_ICONS = join(userInfo().homedir, "design-assets/icons/uxercon-free/SVG");
 
 // Made-up private words. Line numbers in the list: word #3 and word #4.
 const WORD_A = "zorblaxium";
@@ -344,7 +345,8 @@ describe("scripts/check-tree.sh", { timeout: 60_000 }, () => {
     writeFileSync(join(dir, "assets", "glyph-2.svg"), reformatted);
     git(dir, ["add", "-A"]);
     git(dir, ["commit", "-q", "-m", "add glyph"]);
-    const r = run(dir, ["--words", wordsFile]);
+    // The library folder named outright: the script's default reads $HOME, which a test run points elsewhere.
+    const r = run(dir, ["--words", wordsFile, "--icons", REAL_ICONS]);
     expect(r.status).toBe(1);
     expect(r.lines).toContain("ICON assets/glyph.svg library icon path data");
     expect(r.lines).toContain("ICON assets/glyph-2.svg library icon path data");

@@ -8,8 +8,23 @@ import { join } from 'node:path'
 import { stringify } from 'smol-toml'
 import type { Harness } from '../../bridge/harness-registry.ts'
 
-/** Writes `<dir>/limits.toml` from `fields` (folder 0700, file 0600); returns the file's path. */
+/**
+ * Writes `<dir>/limits.toml` from `fields`, with `hub_commands` and each `hub_reads` key on unless
+ * `fields` sets them (an absent hub field reads off, U-R1A-44 F1); returns the file's path.
+ */
 export function writeLimits(dir: string, fields: Record<string, unknown>): string {
+  const reads = fields.hub_reads
+  const hub = {
+    hub_commands: true,
+    hub_reads: reads === undefined || (typeof reads === 'object' && reads !== null && !Array.isArray(reads))
+      ? { screens: true, transcripts: true, memory: true, ...(reads as object | undefined) }
+      : reads,
+  }
+  return writeLimitsAsGiven(dir, { ...hub, ...fields, hub_reads: hub.hub_reads })
+}
+
+/** Writes `<dir>/limits.toml` from exactly `fields` (folder 0700, file 0600); returns the file's path. */
+export function writeLimitsAsGiven(dir: string, fields: Record<string, unknown>): string {
   mkdirSync(dir, { recursive: true, mode: 0o700 })
   chmodSync(dir, 0o700)
   const file = join(dir, 'limits.toml')
