@@ -70,6 +70,9 @@ async function waitFor(check: () => boolean, ms: number, what: string): Promise<
 /** `folderPrefix`: every folder this module makes starts with it (the hub's store, each bridge's). */
 export async function startHub(folderPrefix: string): Promise<void> {
   prefix = folderPrefix
+  // A second hub in one file waits for its own "Ready on", not the first hub's (else it returns
+  // before wrangler listens and the next connect is refused).
+  hubLog = ''
   port = await freePort()
   const inspectorPort = await freePort()
   persist = mkdtempSync(`${prefix}wrangler-`)
