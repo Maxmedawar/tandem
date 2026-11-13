@@ -132,24 +132,23 @@ describe("(a) redact", () => {
     }
   });
 
-  it("the env value is masked anywhere, and a 1 MB hostile string takes at most 5x plain ASCII of its length + 250 ms, under 10 s", () => {
+  it("the env value is masked anywhere, and a 1 MB hostile string takes at most 2x plain ASCII of its length + 250 ms (median of 3 each), under 10 s", () => {
     const v = process.env.R1A39_API_KEY!;
     expect(redact(`x${v}y`).text).toBe("x[secret:env]y");
     const unit = "xoxb- sk-ant- AKIA eyJa.eyJb. ghp_ github_pat_ password= Authorization: Bearer ://u:@ AIza sk_live_ " + ["-----BEGIN", "PRIVATE", "KEY-----"].join(" ") + " ";
+    const median3 = (s: string) => {
+      redact(s); // untimed warm-up; the next three calls are timed, the middle one counts
+      const t = [0, 0, 0].map(() => { const t0 = performance.now(); redact(s); return performance.now() - t0; });
+      return t.sort((x, y) => x - y)[1]!;
+    };
+    const plain = "password=abcdefgh sk-ant-".repeat(40_000);
+    const plainMs = median3(plain);
+    console.log(`r1a39 redact of ${plain.length} plain ASCII characters: ${plainMs.toFixed(1)} ms`);
     for (const hostile of [unit.repeat(Math.ceil(1_000_000 / unit.length)), "a".repeat(1_000_000), "=".repeat(1_000_000)]) {
-      redact(hostile); // untimed warm-up; only the next call is timed
-      const t0 = performance.now();
-      const r = redact(hostile);
-      const ms = performance.now() - t0;
-      expect(typeof r.text).toBe("string");
+      expect(typeof redact(hostile).text).toBe("string");
+      const ms = median3(hostile);
       console.log(`r1a39 redact of ${hostile.length} hostile characters: ${ms.toFixed(1)} ms`);
-      const plain = "password=abcdefgh sk-ant-".repeat(Math.ceil(hostile.length / 25)).slice(0, hostile.length);
-      redact(plain); // untimed warm-up; only the next call is timed
-      const p0 = performance.now();
-      redact(plain);
-      const plainMs = performance.now() - p0;
-      console.log(`r1a39 redact of ${plain.length} plain ASCII characters: ${plainMs.toFixed(1)} ms`);
-      expect(ms, `against ${plainMs.toFixed(1)} ms for plain ASCII of the same length`).toBeLessThanOrEqual(5 * plainMs + 250);
+      expect(ms, `against ${plainMs.toFixed(1)} ms for plain ASCII of the same length`).toBeLessThanOrEqual(2 * plainMs + 250);
       expect(ms).toBeLessThan(10_000);
     }
   }, 30_000);
