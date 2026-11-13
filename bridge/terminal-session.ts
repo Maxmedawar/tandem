@@ -169,6 +169,12 @@ export interface SpawnOptions {
    *  trust and update, `safe-and-bypass` = those and bypass. Absent = `none`. The router sets it from
    *  the limits gate it already ran; reuse and adoption never run warmup, so never answer. */
   dialogAnswers?: DialogAnswers
+  /** The start appends the harness file's skip_prompts_args (the router sets it only for a
+   *  permission_skip folder); recorded in the session's start-flag tag. */
+  skipPrompts?: boolean
+  /** The binding folder re-check run right before new-session on the real start folder: a refusal
+   *  text, or undefined. The router passes the limits file's folder (and permission_skip) checks. */
+  folderCheck?: (realCwd: string) => string | undefined
   /** Which engine's tmux lifecycle to run. Defaults to CLAUDE_DESCRIPTOR; relay.ts
    *  passes the built-in claude harness file's descriptor. */
   descriptor?: EngineDescriptor
@@ -181,6 +187,9 @@ export type DialogAnswers = 'none' | 'safe' | 'safe-and-bypass'
 
 /** Warmup met a first-run dialog it may not answer: the spawn killed its own tmux session. */
 export class NeedsOwnerError extends Error {}
+
+/** The folder re-check right before new-session refused the start: no session exists. */
+export class FolderRefusedError extends Error {}
 
 export interface SendResult {
   report: string
@@ -566,13 +575,13 @@ function isUnder(real: string, root: string): boolean {
 function isCwdAllowedLocal(cwd: string, allowlist: string[]): boolean {
   let real: string
   try {
-    real = realpathSync(cwd)
+    real = realpathSync.native(cwd)
   } catch {
     return false
   }
   return allowlist.some((root) => {
     try {
-      return isUnder(real, realpathSync(root))
+      return isUnder(real, realpathSync.native(root))
     } catch {
       return false
     }
@@ -834,6 +843,8 @@ export class TerminalSession {
   private readonly logPath: string
   private readonly descriptor: EngineDescriptor
   private readonly dialogAnswers: DialogAnswers
+  /** The start-flag tag: '1' started with its prompts off, '0' not, undefined untagged (adopted without a valid tag). */
+  private readonly _skipTag: '1' | '0' | undefined
   /** Set by warmup(): did the TUI reach its prompt? */
   private _ready = false
   /** Set by warmup() when NOT ready: an actionable reason (load/blank/attach). */
@@ -842,12 +853,20 @@ export class TerminalSession {
   // Explicit field assignment (NOT TS "parameter properties") — the bridge runs
   // under `node --experimental-strip-types`, whose strip-only mode rejects the
   // `private x: T` constructor-parameter shorthand.
-  private constructor(name: string, cwd: string, logPath: string, descriptor: EngineDescriptor, dialogAnswers: DialogAnswers = 'none') {
+  private constructor(
+    name: string,
+    cwd: string,
+    logPath: string,
+    descriptor: EngineDescriptor,
+    dialogAnswers: DialogAnswers = 'none',
+    skipTag?: '1' | '0',
+  ) {
     this._name = name
     this._cwd = cwd
     this.logPath = logPath
     this.descriptor = descriptor
     this.dialogAnswers = dialogAnswers
+    this._skipTag = skipTag
   }
 
   get name(): string {
@@ -860,6 +879,11 @@ export class TerminalSession {
 
   get engine(): EngineDescriptor['id'] {
     return this.descriptor.id
+  }
+
+  /** The start-flag tag: the router re-checks a reused or adopted session by it. */
+  get skipTag(): '1' | '0' | undefined {
+    return this._skipTag
   }
 
   /** True once the TUI has shown its prompt (warmup saw its ready condition). */
@@ -905,7 +929,7 @@ export class TerminalSession {
     if (!existsSync(requestedCwd) || !statSync(requestedCwd).isDirectory()) {
       throw new Error(`cwd does not exist or is not a directory: ${requestedCwd}`)
     }
-    const cwd = realpathSync(requestedCwd)
+    const cwd = realpathSync.native(requestedCwd)
     if (!isCwdAllowedLocal(cwd, allowlist)) {
       throw new Error(`cwd not allowed: ${requestedCwd}`)
     }
@@ -935,9 +959,25 @@ export class TerminalSession {
     // binary (or login shell) runs INSIDE the pane; the cwd is set via -c.
     const startedAtMs = Date.now()
     await scrubServerSecrets()
+    // The binding folder check, right before new-session: this realpath is the -c folder.
+    // Remaining window: (1) between this realpath and the tmux server's chdir for -c (one tmux call)
+    // a parent folder swapped for a symlink still moves the start; (2) the program file at the checked
+    // real path can be replaced in place between the limits gate's sha256 read and the exec; (3) the
+    // relay's start runs harnessDescriptor(claude) on the found path, not on a checked real path
+    // (relay.ts). Closing (1) and (2) needs a start by file descriptor, which tmux does not offer.
+    let startCwd: string
+    try {
+      startCwd = realpathSync.native(requestedCwd)
+    } catch {
+      throw new FolderRefusedError(`cwd not allowed: ${requestedCwd}`)
+    }
+    if (!isCwdAllowedLocal(startCwd, allowlist)) throw new FolderRefusedError(`cwd not allowed: ${requestedCwd}`)
+    const refused = opts.folderCheck?.(startCwd)
+    if (refused !== undefined) throw new FolderRefusedError(refused)
+    const skip = opts.skipPrompts === true || opts.allowBypass === true
     // This session's own caller token, for its pane's process only (never the server's global
     // environment, never this process's env); a spawn that fails from here on revokes it.
-    const callerToken = mintCallerToken(name, cwd)
+    const callerToken = mintCallerToken(name, startCwd)
     let created = false
     try {
       await tmux([
@@ -952,7 +992,7 @@ export class TerminalSession {
         '-y',
         String(PANE_HEIGHT),
         '-c',
-        cwd,
+        startCwd,
         ...engineArgv,
         // In the same tmux call: the pane's process has the token by now, so it leaves the session
         // environment, where `tmux show-environment -t` would hand it to any process of this user.
@@ -962,6 +1002,14 @@ export class TerminalSession {
         sessionTarget(name),
         '-u',
         'TANDEM_CALLER_TOKEN',
+        // The start-flag tag, in the same call: no session Tandem made lives untagged. Never written
+        // anywhere else; a failure here leaves the session untagged (never reused outside permission_skip).
+        ';',
+        'set-option',
+        '-t',
+        paneTarget(name),
+        '@tandem_skip',
+        skip ? '1' : '0',
       ])
       created = true
       // The switch turned on since the check above: engage() may have listed the sessions before this
@@ -970,7 +1018,7 @@ export class TerminalSession {
         await tmux(['kill-session', '-t', sessionTarget(name)]).catch(() => {})
         throw new KillSwitchError()
       }
-      noteSessionStart({ name, agent: descriptor.id, cwd, startedAtMs })
+      noteSessionStart({ name, agent: descriptor.id, cwd: startCwd, startedAtMs })
 
       // Provenance tags (binding — Phase 2 correction A): required before a later
       // restart may ever consider this session adoptable. Set right after create,
@@ -985,7 +1033,7 @@ export class TerminalSession {
       const safeLog = logPath.replace(/'/g, `'\\''`)
       await tmux(['pipe-pane', '-o', '-t', paneTarget(name), `cat >> '${safeLog}'`])
 
-      const session = new TerminalSession(name, cwd, logPath, descriptor, opts.dialogAnswers ?? 'none')
+      const session = new TerminalSession(name, startCwd, logPath, descriptor, opts.dialogAnswers ?? 'none', skip ? '1' : '0')
       try {
         await session.warmup()
       } catch (e) {
@@ -1038,19 +1086,29 @@ export class TerminalSession {
     const expectedOwner = await ownerIdProvider()
 
     const logPath = join(TRANSCRIPTS_DIR, `${name}.log`)
-    // Read the cwd tmux recorded for the session (the session's actual pane cwd).
-    let cwd = HOME
+    // Read the cwd tmux recorded for the session (the session's actual pane cwd): one trailing
+    // newline removed, nothing trimmed; an empty or failed read adopts nothing (no HOME default).
+    let cwd: string
     try {
-      cwd = (await tmux(['display-message', '-p', '-t', paneTarget(name), '#{pane_current_path}'])).trim() || HOME
+      cwd = (await tmux(['display-message', '-p', '-t', paneTarget(name), '#{pane_current_path}'])).replace(/\n$/, '')
     } catch {
-      /* keep default */
+      return undefined
     }
+    if (cwd === '') return undefined
     // Re-validate the ADOPTED cwd against the allowlist — do not drive a session
     // whose real cwd is outside the boundary.
     if (!canAdoptTerminalSession(provenance, descriptor.id, expectedOwner, cwd, allowlist)) {
       return undefined
     }
-    return new TerminalSession(name, cwd, logPath, descriptor)
+    // The start-flag tag: exactly `1` or `0`, anything else is untagged; a failed read adopts nothing.
+    let skipTag: '1' | '0' | undefined
+    try {
+      const raw = (await tmux(['display-message', '-p', '-t', paneTarget(name), '#{@tandem_skip}'])).replace(/\n$/, '')
+      skipTag = raw === '1' || raw === '0' ? raw : undefined
+    } catch {
+      return undefined
+    }
+    return new TerminalSession(name, cwd, logPath, descriptor, 'none', skipTag)
   }
 
   /** Public: does a ccm-<name> tmux session exist? (name is the bare name.) */
@@ -1148,7 +1206,8 @@ export class TerminalSession {
    * Throws NeedsOwnerError, sending no key, when `dialogAnswers` does not allow the dialog's kind,
    * when NEVER matches the screen, when the screen shows update text and the dialog is not an `update`
    * one that skips, or when a dialog is still shown after its Enter or key. Two
-   * dialogs at once get no key.
+   * dialogs at once get no key. The screen is read again right before the key: the key goes only when
+   * that read shows the same one dialog with the same key, else nothing is sent and the next poll decides.
    */
   private async answerDialog(pane: string, watch: DialogWatch): Promise<boolean> {
     const shown = shownDialogs(pane, this.descriptor.dialogs)
@@ -1164,15 +1223,17 @@ export class TerminalSession {
     }
     const key = dialogKey(pane, d)
     if (key === undefined) return true
-    if (key === 'Down' || key === 'Up') {
-      const arrows = watch.arrows.get(d.name) ?? 0
-      if (arrows >= MAX_DIALOG_ARROWS) return true
-      watch.arrows.set(d.name, arrows + 1)
-    } else {
-      watch.answered.add(d.name)
-    }
+    const arrow = key === 'Down' || key === 'Up'
+    const arrows = watch.arrows.get(d.name) ?? 0
+    if (arrow && arrows >= MAX_DIALOG_ARROWS) return true
     // No dialog is answered while the kill switch is on: the start fails and spawn ends the session.
     if (killSwitchOn()) throw new KillSwitchError()
+    // Read again: a dialog that has gone (or changed) gets no key. The window left is one tmux call.
+    const again = await this.capture()
+    const still = shownDialogs(again, this.descriptor.dialogs)
+    if (still.length !== 1 || still[0]!.name !== d.name || dialogKey(again, d) !== key) return true
+    if (arrow) watch.arrows.set(d.name, arrows + 1)
+    else watch.answered.add(d.name)
     await sendKeys(['-t', this.tmuxTarget, key])
     watch.movedOn = pane
     return true

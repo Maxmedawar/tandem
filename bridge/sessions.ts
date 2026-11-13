@@ -18,6 +18,8 @@
  * consumed by bridge/index.ts and bridge/relay.ts. Rules (SECURITY):
  *   - realpath-canonicalize candidate + roots before comparing (defeats symlink
  *     and `..` escapes).
+ *   - compare by the volume's own spelling (volumePath, realpath(3)): on a case-insensitive volume
+ *     a case variant is the same folder, on a case-sensitive one a different one; nothing lower-cases.
  *   - no implicit roots: CCM_CWD_ALLOWLIST must explicitly name every allowed
  *     root and an unset/blank value fails closed.
  *   - prefix match uses a TRAILING SEPARATOR so "/srv/code" does not match
@@ -85,6 +87,26 @@ export function safeResolve(p: string, home = HOME): string {
   }
 }
 
+/**
+ * safeResolve, then the spelling the volume itself holds for the part that exists (realpath(3)), the
+ * rest re-appended: the same algorithm as bridge/limits.ts `real()` (copied: limits.ts imports this
+ * file). So the volume's case rules decide whether two spellings are one folder.
+ */
+export function volumePath(p: string, home = HOME): string {
+  let abs = safeResolve(p, home)
+  const tail: string[] = []
+  for (;;) {
+    try {
+      return join(realpathSync.native(abs), ...tail.reverse())
+    } catch {
+      const parent = dirname(abs)
+      if (parent === abs) return join(abs, ...tail.reverse())
+      tail.push(basename(abs))
+      abs = parent
+    }
+  }
+}
+
 /** Build only explicit allowlist roots. Missing or blank configuration fails closed. */
 export function buildAllowlist(
   envValue = process.env.CCM_CWD_ALLOWLIST,
@@ -95,7 +117,7 @@ export function buildAllowlist(
     .split(':')
     .map((p) => p.trim())
     .filter(Boolean)
-    .map((p) => safeResolve(p, home))
+    .map((p) => volumePath(p, home))
 }
 
 /** True if `candidate` resolves to an allowlisted root or a descendant of one.
@@ -104,7 +126,7 @@ export function buildAllowlist(
 export function isCwdAllowed(candidate: string, allowlist: string[]): boolean {
   let real: string
   try {
-    real = safeResolve(candidate)
+    real = volumePath(candidate)
   } catch {
     return false
   }

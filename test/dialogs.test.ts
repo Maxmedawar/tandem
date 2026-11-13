@@ -405,6 +405,7 @@ describe("(d) through route() with a limits file", () => {
     tmux("new-session", "-d", "-s", `ccm-${name}`, "-x", "200", "-y", "50", "-c", WORK, "/usr/bin/env", "--", FAKE, TRUST, "0", logOf("radopt"));
     tmux("set-option", "-t", `=ccm-${name}:`, "@tandem_engine", name);
     tmux("set-option", "-t", `=ccm-${name}:`, "@tandem_owner", await makeOwnerIdProvider()());
+    tmux("set-option", "-t", `=ccm-${name}:`, "@tandem_skip", "0");
     await sleep(1500);
     const res = await rq("POST", "/sessions/open", { engine: name, name, cwd: WORK });
     try {
