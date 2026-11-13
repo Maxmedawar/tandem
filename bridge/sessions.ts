@@ -295,8 +295,9 @@ export async function listSessions(
       attachHint: session.attachHint(),
     }))
 
-  // Compared as tmux keeps the name: a registered `a.b` is the tmux session `ccm-a_b`, listed once.
-  const registeredIds = new Set(registered.map((s) => tmuxSessionName(s.id)))
+  // Compared as tmux keeps the name: a registered tmux-hosted `a.b` is the tmux session `ccm-a_b`,
+  // listed once. An adapter agent's id is no tmux name: its `a.b` never hides the tmux session `a_b`.
+  const registeredIds = new Set(registered.map((s) => (isTmuxEngineTag(s.engine) ? tmuxSessionName(s.id) : s.id)))
   const adoptedCandidates: SessionInfo[] = live
     .filter(
       (s) =>

@@ -305,6 +305,13 @@ function literal(arg: string): string {
   return arg.endsWith(';') ? `${arg.slice(0, -1)}\\;` : arg
 }
 
+/** new-session's `-c` is a tmux format: each `#` doubled (`##` reads back `#`), except a run of `#`
+ *  right before `[`, which the format pass leaves as is. So a start folder holding `#`, `#{...}` or
+ *  `#(...)` is the folder started in, never a format (unescaped, `##` started in the home folder). */
+function noFormat(arg: string): string {
+  return arg.replace(/(#+)(\[?)/g, (_m, hashes: string, bracket: string) => (bracket ? hashes + bracket : hashes + hashes))
+}
+
 /** new-session's command: a one-element argv would go to `sh -c` as shell text, so it is run as
  *  `sh -c 'exec "$0"' <program>` (the program name is data); every element through literal(). */
 function commandArgv(argv: readonly string[]): string[] {
@@ -1015,7 +1022,7 @@ export class TerminalSession {
         '-y',
         String(PANE_HEIGHT),
         '-c',
-        literal(startCwd),
+        literal(noFormat(startCwd)),
         '--',
         ...commandArgv(engineArgv),
         // In the same tmux call: the pane's process has the token by now, so it leaves the session

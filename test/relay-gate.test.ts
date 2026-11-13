@@ -366,6 +366,23 @@ describe('(k) tmux arguments: a trailing ";" stays text; a one-element argv is a
     }
   })
 
+  it('(18C2) k6 (audit, U-R1B-16 GAP-2) a start folder holding "#" forms is the folder started in, never a tmux format', async () => {
+    // Unescaped, tmux's -c format pass read `##` as `#` (no such folder: the start fell to the home folder).
+    const dir = join(WORK, 'r1a18c2 ## #{session_name} #(true) #[y] ###[z] #H #')
+    mkdirSync(dir)
+    const s = await TerminalSession.spawn({
+      name: 'r1a18c2-k6', cwd: dir, allowlist: [WORK], ownerIdProvider: owner,
+      descriptor: { id: 'shell', argv: ['sh', '-c', 'printf "pwd=%s|\\n" "$(pwd)"; exec cat'], minStableMs: 0 } as Json,
+    })
+    try {
+      await until(() => pane('r1a18c2-k6').includes('pwd='))
+      expect(s.cwd.endsWith('r1a18c2 ## #{session_name} #(true) #[y] ###[z] #H #')).toBe(true)
+      expect(pane('r1a18c2-k6')).toContain(`pwd=${s.cwd}|`)
+    } finally {
+      await s.close()
+    }
+  })
+
   it('(18C2) k3 RED AT BASE: a one-element argv is run as a program name, never shell text (a path with a space)', async () => {
     const prog = join(BIN, 'r1a18c2 prog')
     writeFileSync(prog, '#!/bin/sh\nprintf "r1a18c2-ran\\n"\nexec cat\n', { mode: 0o755 })
@@ -419,6 +436,47 @@ describe('(k) tmux arguments: a trailing ";" stays text; a one-element argv is a
       }
     } finally {
       tx('kill-session', '-t', '=ccm-r1a18c2-k5_b')
+    }
+  })
+
+  it('(18C2) k7 (audit) an adapter agent registered as "a.b" does not hide the tmux session "a_b" from the list', async () => {
+    const name = 'r1a18c2-k7.b'
+    registerLive({ id: name, engine: 'hermes', cwd: '', isAlive: async () => true, attachHint: () => 'r1a18c2' } as Json)
+    try {
+      const { sessions } = await listSessions({
+        allowlist: [WORK], enabledEngines: new Set(['shell', 'hermes']) as Json,
+        listingDependencies: {
+          ownerIdProvider: owner,
+          provenanceReader: async () => ({ engine: 'shell', owner: 'r1a18c2-owner' }),
+          tmuxFn: async () => `ccm-r1a18c2-k7_b|:|1|:|${WORK}\n`,
+        } as Json,
+      })
+      expect(sessions.filter((x) => x.id.startsWith('r1a18c2-k7')).map((x) => x.id).sort()).toEqual(['r1a18c2-k7.b', 'r1a18c2-k7_b'])
+    } finally {
+      unregisterLive(name)
+    }
+  })
+
+  it('(18C2) k8 (audit) an adapter open of "a.b" is not refused as the live tmux session "a_b" (it goes on to its own answer check)', async () => {
+    const { routeForTest } = await import('../bridge/router.ts')
+    mkdirSync(join(TH, 'tmux'), { recursive: true, mode: 0o700 })
+    chmodSync(join(TH, 'tmux'), 0o700)
+    expect(tx('new-session', '-d', '-s', 'ccm-r1a18c2-k8_b', 'sleep', '600').status).toBe(0)
+    const vars: Record<string, string> = {
+      TANDEM_ENABLED_ENGINES: 'hermes', TANDEM_HERMES_BASE_URL: 'http://127.0.0.1:9',
+      TANDEM_HERMES_WRITABLE_AGENTS: 'r1a18c2-k8.b,r1a18c2-k8_b', TANDEM_HERMES_DISABLE_LIVE: '1',
+    }
+    const prev = Object.fromEntries(Object.keys(vars).map((k) => [k, process.env[k]]))
+    Object.assign(process.env, vars)
+    try {
+      const dotted = await routeForTest('POST', '/sessions/open', { name: 'r1a18c2-k8.b', engine: 'hermes' })
+      expect([dotted.status, (dotted.body as { error?: string }).error]).toEqual([503, 'Hermes agent "r1a18c2-k8.b" did not answer'])
+      // The same name as the tmux session is still the conflict it was.
+      const same = await routeForTest('POST', '/sessions/open', { name: 'r1a18c2-k8_b', engine: 'hermes' })
+      expect(same.status).toBe(409)
+    } finally {
+      for (const [k, v] of Object.entries(prev)) if (v === undefined) delete process.env[k]; else process.env[k] = v
+      tx('kill-session', '-t', '=ccm-r1a18c2-k8_b')
     }
   })
 })

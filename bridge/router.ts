@@ -411,8 +411,9 @@ async function handleOpenAdapter(engine: EngineId, name: string, req: RpcRequest
   // A tmux-hosted session may have survived a bridge restart without yet being
   // re-adopted into the in-memory registry. Never let an adapter attachment claim
   // that live session's name and hide/misroute it. Any ccm-<name> collision is a
-  // conflict, including an untagged one.
-  if (await TerminalSession.exists(name)) {
+  // conflict, including an untagged one. An id with '.' is no tmux session's name (tmux keeps none,
+  // and TerminalSession reads `a.b` as the legacy session `ccm-a_b`): it never meets the session `a_b`.
+  if (!name.includes('.') && (await TerminalSession.exists(name))) {
     const existingEngine = await TerminalSession.engineTagOf(name)
     audit({
       route: 'POST /sessions/open',
