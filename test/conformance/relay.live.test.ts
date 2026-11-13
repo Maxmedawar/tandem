@@ -87,7 +87,12 @@ function rowFolder(row: string): string {
 async function openChecked(agent: 'claude' | 'codex', name: string, cwd: string) {
   const h = mods.loadedHarnesses().get(agent)
   if (!h) throw new Error(`${agent}: harness file not loaded`)
-  const s = await mods.TerminalSession.spawn({ name, cwd, allowlist: [BOX], descriptor: mods.harnessDescriptor(h, { skipPrompts: true }), allowBypass: true })
+  // Claude starts as the relay starts it (allowBypass); bypass is a Claude-only option, so Codex gets its
+  // prompts off from its harness file's skip_prompts_args. The fresh folder's first-run dialogs (folder
+  // trust, the bypass notice) are answered as the router's relay start answers them.
+  const s = await mods.TerminalSession.spawn(agent === 'claude'
+    ? { name, cwd, allowlist: [BOX], descriptor: mods.harnessDescriptor(h), allowBypass: true, dialogAnswers: 'safe-and-bypass' }
+    : { name, cwd, allowlist: [BOX], descriptor: mods.harnessDescriptor(h, { skipPrompts: true }), dialogAnswers: 'safe-and-bypass' })
   opened.push(s)
   const end = Date.now() + 60_000
   let screen = ''
@@ -100,11 +105,49 @@ async function openChecked(agent: 'claude' | 'codex', name: string, cwd: string)
     if (!(await s.isCurrentlyWorking()) && screen.trim() !== '') break
     await sleep(1000)
   }
+  // The agent takes text only once its start screen has settled (Codex draws its box before it reads keys):
+  // two equal reads 1.5 s apart, at most 30 s more.
+  for (let i = 0; i < 20; i++) {
+    await sleep(1500)
+    const next = await s.screen()
+    if (next === screen) break
+    screen = next
+  }
   return s
 }
 
 const notesRight = (work: string) =>
   existsSync(join(work, 'NOTES.txt')) && readFileSync(join(work, 'NOTES.txt'), 'utf8').trim().split(/\r?\n/).map((l) => l.trim()).join('|') === 'alpha|beta'
+
+/**
+ * Codex's last answer in a send's report (the pane text): the lines after the echo of the text just
+ * sent (the last `› ` line but one; the last is the empty input box), from the first `• ` line, without
+ * the `Worked for` line. The whole report when the pane does not have that shape.
+ */
+function codexAnswer(report: string): string {
+  const lines = report.split(/\r?\n/)
+  const prompts = lines.flatMap((l, i) => (l.startsWith('› ') ? [i] : []))
+  if (prompts.length < 2) return report.trim()
+  const block = lines.slice(prompts.at(-2)! + 1, prompts.at(-1)!)
+  const first = block.findIndex((l) => l.startsWith('• '))
+  if (first < 0) return report.trim()
+  return block.slice(first).filter((l) => !/^\s*Worked for /.test(l)).map((l) => l.replace(/^(• | {2})/, '')).join('\n').trim()
+}
+
+/**
+ * One Codex turn: send, and when the send's own wait (about 25 s) ends first, wait for the turn's end
+ * (at most 3 min) and read the pane. `running` is left only for a turn that never ended.
+ */
+async function codexTurn(s: Awaited<ReturnType<typeof openChecked>>, text: string): Promise<{ status: string; answer: string }> {
+  const sent = await s.send(text)
+  if (sent.status !== 'running') return { status: sent.status, answer: codexAnswer(sent.report) }
+  const end = Date.now() + 3 * 60_000
+  while (Date.now() < end) {
+    await sleep(2000)
+    if (!(await s.isCurrentlyWorking())) return { status: 'done', answer: codexAnswer(await s.screen()) }
+  }
+  return { status: 'running', answer: '' }
+}
 
 afterAll(async () => {
   for (const s of opened) await s.close().catch(() => {})
@@ -116,7 +159,7 @@ describe.skipIf(!LIVE)('(44) A1.14 builder and reviewer relay, live', () => {
     // The sign-in check, before the relay types anything.
     const probe = await openChecked('claude', `r1a44-probe-c-${tag}`, work)
     await probe.close()
-    const { loopId } = await mods.relay.startRelay({ goal: TASK, context: REVIEW, cwd: work, maxTurns: MAX_TURNS, allowlist: [BOX] })
+    const { loopId } = await mods.relay.startRelay({ goal: TASK, context: REVIEW, cwd: work, maxTurns: MAX_TURNS, allowlist: [BOX], dialogAnswers: 'safe-and-bypass' })
     const end = Date.now() + ROW_MS
     let log = ''
     while (Date.now() < end) {
@@ -128,6 +171,8 @@ describe.skipIf(!LIVE)('(44) A1.14 builder and reviewer relay, live', () => {
     }
     const turns = (log.match(/^\[WORKER\]/gm) ?? []).length
     mods.relay.stop(loopId)
+    // Claude Code draws its prompt box while signed out and says so only after a send: name it for what it is.
+    if (/not logged in|please run \/login/i.test(log)) throw new Error('claude: needs sign-in')
     expect(turns, log.slice(-4000)).toBeLessThanOrEqual(MAX_TURNS)
     const lead = log.split(/^\[(?:LEAD|WORKER|SYS)\]/m)
     expect(lead.some((block) => QUIET_LINE.test(block)), log.slice(-4000)).toBe(true)
@@ -141,23 +186,27 @@ describe.skipIf(!LIVE)('(44) A1.14 builder and reviewer relay, live', () => {
     let ask = `${REVIEW}\n\nGOAL: ${TASK}\n\nReply now with your first instruction for the builder.`
     const statuses: string[] = []
     let finished = false
+    let lastReview = ''
     for (let turn = 1; turn <= MAX_TURNS && !finished; turn++) {
-      const review = await reviewer.send(ask)
+      const review = await codexTurn(reviewer, ask)
       statuses.push(`reviewer:${review.status}`)
-      if (QUIET_LINE.test(review.report)) {
+      lastReview = review.answer
+      if (QUIET_LINE.test(lastReview)) {
         finished = true
         break
       }
-      const built = await builder.send(review.report.trim())
+      // Only the answers travel: a whole pane holds the echo of the question (which names `quiet`) and the agent's menus.
+      const built = await codexTurn(builder, lastReview)
       statuses.push(`builder:${built.status}`)
-      ask = `The builder ran your instruction and reported:\n"""\n${built.report.trim()}\n"""\nReview it against the GOAL (${TASK}). Reply with the next single instruction, or quiet on its own line when the goal is met.`
+      ask = `The builder ran your instruction and reported:\n"""\n${built.answer}\n"""\nReview it against the GOAL (${TASK}). Reply with the next single instruction, or quiet on its own line when the goal is met.`
     }
     if (!finished) {
-      const last = await reviewer.send(ask)
+      const last = await codexTurn(reviewer, ask)
       statuses.push(`reviewer:${last.status}`)
-      finished = QUIET_LINE.test(last.report)
+      lastReview = last.answer
+      finished = QUIET_LINE.test(lastReview)
     }
-    expect(finished, statuses.join(' ')).toBe(true)
+    expect(finished, `${statuses.join(' ')}\nlast review:\n${lastReview.slice(-2000)}`).toBe(true)
     // Every turn ended by itself: a send that came back `running` hit the wait cap, not the end of the turn.
     expect(statuses.filter((s) => s.endsWith(':running')), statuses.join(' ')).toEqual([])
     expect(notesRight(work)).toBe(true)
