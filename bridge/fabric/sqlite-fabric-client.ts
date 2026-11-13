@@ -1179,7 +1179,14 @@ export class SQLiteFabricClient implements FabricClient {
       validatePostRoomEventInput(input)
       // U-R1A-47H: the body is masked before either storage path, so the stored row, the idempotency
       // fingerprint and the bus payload all hold the masked body (a masked body over the limit is refused).
-      const masked: PostRoomEventInput = { ...input, body: redact(input.body).text }
+      // U-R1A-47I: so are the correlation id, each artifact ref and the session id (same refusal rule).
+      const masked: PostRoomEventInput = {
+        ...input,
+        body: redact(input.body).text,
+        ...(input.correlationId === undefined ? {} : { correlationId: redact(input.correlationId).text }),
+        ...(input.sessionId === undefined ? {} : { sessionId: redact(input.sessionId).text }),
+        ...(input.artifactRefs === undefined ? {} : { artifactRefs: input.artifactRefs.map((r) => redact(r).text) }),
+      }
       validatePostRoomEventInput(masked)
       if (!this.#bus) {
         return this.storage(() => this.transaction(() => {
@@ -1685,6 +1692,10 @@ export class SQLiteFabricClient implements FabricClient {
     // U-R1A-47H: a payload this build published is already masked (redact() leaves it as it is); one
     // an older writer left in the log is masked here, before it is stored, whatever its length.
     const body = redact(record.body).text
+    // U-R1A-47I: the same for the correlation id, the session id and each artifact ref.
+    const correlationId = record.correlationId === undefined ? undefined : redact(record.correlationId).text
+    const sessionId = record.sessionId === undefined ? undefined : redact(record.sessionId).text
+    const artifactRefs = record.artifactRefs?.map((r) => redact(r).text)
 
     this.#database.prepare(`
       INSERT OR IGNORE INTO room_events (
@@ -1694,9 +1705,9 @@ export class SQLiteFabricClient implements FabricClient {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.id, ownerId, projectId, room, record.type, record.fromAgentId,
-      optional(record.toAgentId), optional(record.replyTo), optional(record.correlationId), body,
-      record.artifactRefs === undefined ? null : JSON.stringify(record.artifactRefs), record.createdAt,
-      record.createdAtMs, record.expiresAtMs, record.ttlHops, record.deviceId, optional(record.sessionId),
+      optional(record.toAgentId), optional(record.replyTo), optional(correlationId), body,
+      artifactRefs === undefined ? null : JSON.stringify(artifactRefs), record.createdAt,
+      record.createdAtMs, record.expiresAtMs, record.ttlHops, record.deviceId, optional(sessionId),
       sequence,
     )
   }
@@ -2553,7 +2564,7 @@ export class SQLiteFabricClient implements FabricClient {
    * rewritten masked by redact(), once, in one transaction: every memory (forgotten ones too) with its
    * FTS row deleted and re-inserted and its vector removed (backfillDefaultEmbeddings rebuilds it from
    * the masked text with the deterministic provider; with another provider that memory has no vector
-   * until it is written again), every room body, every project's display_name and repo_ref
+   * until it is written again), every room body, correlation id, artifact ref and session id, every project's display_name and repo_ref
    * (workspace_ref never: the scope check matches it as a path), and every idempotency row whose
    * fingerprint holds a raw body is deleted (a retry of that post after the upgrade posts once more).
    * secure_delete, an FTS optimize and one VACUUM keep the raw bytes out of the file. The version is
@@ -2618,11 +2629,30 @@ export class SQLiteFabricClient implements FabricClient {
         this.#vectorStore.remove(id)
         changed++
       }
-      for (const row of db.prepare('SELECT sequence, body FROM room_events').all() as SqlRow[]) {
+      // U-R1A-47I: artifact_refs_json is masked per entry; a value that is not a JSON array of strings is masked whole.
+      const maskRefs = (json: string): string => {
+        try {
+          const refs: unknown = JSON.parse(json)
+          if (Array.isArray(refs) && refs.every((r) => typeof r === 'string')) {
+            const masked = refs.map((r: string) => redact(r).text)
+            // Unchanged entries keep the stored text as it is (byte for byte).
+            return masked.every((r, i) => r === refs[i]) ? json : JSON.stringify(masked)
+          }
+        } catch { /* masked whole below */ }
+        return redact(json).text
+      }
+      const setEvent = db.prepare('UPDATE room_events SET body = ?, correlation_id = ?, artifact_refs_json = ?, provenance_session_id = ? WHERE sequence = ?')
+      for (const row of db.prepare('SELECT sequence, body, correlation_id, artifact_refs_json, provenance_session_id FROM room_events').all() as SqlRow[]) {
         const body = requiredString(row, 'body')
+        const correlation = optionalString(row, 'correlation_id')
+        const refs = optionalString(row, 'artifact_refs_json')
+        const session = optionalString(row, 'provenance_session_id')
         const masked = redact(body).text
-        if (masked === body) continue
-        db.prepare('UPDATE room_events SET body = ? WHERE sequence = ?').run(masked, requiredNumber(row, 'sequence'))
+        const maskedCorrelation = correlation === undefined ? undefined : redact(correlation).text
+        const maskedRefs = refs === undefined ? undefined : maskRefs(refs)
+        const maskedSession = session === undefined ? undefined : redact(session).text
+        if (masked === body && maskedCorrelation === correlation && maskedRefs === refs && maskedSession === session) continue
+        setEvent.run(masked, maskedCorrelation ?? null, maskedRefs ?? null, maskedSession ?? null, requiredNumber(row, 'sequence'))
         changed++
       }
       for (const row of db.prepare('SELECT project_id, display_name, repo_ref FROM projects').all() as SqlRow[]) {
