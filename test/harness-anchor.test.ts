@@ -14,6 +14,29 @@
  * show the marker, then the frame); the table puts one reply line and one blank line between. An
  * approval quote is always told apart (the real menu replaces the frame).
  *
+ * U-R1B-ANCHOR-3 (the `(ANCHOR-3 a-f)` cases below): the two new layouts, for the fleet's live
+ * agents. (c) a quoted EMPTY prompt above a real dialog (approval, unknown, sign-in, trust, first-run) reads as the dialog, never idle with
+ * an empty prompt (an agent's text would be typed into the dialog); (d) a quoted approval above a
+ * real working screen reads working (the owner is not refused). (e)/(f) claude's spinner and token
+ * rules: a quoted spinner or token line above the real prompt reads as the prompt, while the real
+ * spinner and token layouts (built from the recorded claude-working-1/-3 layouts and the real box of
+ * claude-idle-real.txt: not live-captured, a real spinner screen needs a model turn) still read
+ * working. The idle rules of claude, codex and antigravity end at the screen end (ANCHOR-1 G8); the
+ * claude spinner and token rules are anchored on recorded fixtures only (not live-captured; ANCHOR-1
+ * G1). Only codex's first-run sign-in screen is a live capture (anchor/codex-firstrun-real.txt).
+ *
+ * Stated limits (LIMITS): a quoted approval above a real working screen still reads
+ * waiting_for_approval for each LIMITS row: agents are held and the owner is refused while the quote
+ * is in the 40-line window, because no real approval screen of that agent has been captured (the
+ * claude and codex approval fixtures are ccmanager samples, ANCHOR-1 audit G10), so the approval
+ * rules are not anchored (not live-captured). antigravity has no approval source, so it has no (d)
+ * row; its approval rules stay unanchored (ANCHOR-1 G2).
+ * Stated limit (director 2026-11-13, G-A of the U-R1B-ANCHOR-3 audit): a quoted spinner anywhere above holds
+ * agents. claude's spinner and token rules have no upper bound between the marker and the prompt box (a
+ * busy screen with a long todo list never reads idle), so a quoted spinner or token line anywhere above
+ * the real prompt box, with no border line between, reads working (E_LIMITS: agents held, the owner
+ * still types); only an indented spinner-glyph line (the rule starts at the line start) reads as the prompt.
+ *
  * Pure: no session, no tmux, no network. Built-ins only; the owner folder is a missing folder.
  */
 import { describe, it, expect, afterAll } from "vitest";
@@ -403,4 +426,219 @@ describe("(layout) copilot: quoted markers above the real composers (U-R1B-COPIL
       }
     },
   );
+});
+
+// U-R1B-ANCHOR-3: layouts (c) and (d), and claude's (e)/(f); see the header comment for the stated limits.
+const LAYOUT_COVERED = ["claude", "codex", "antigravity"];
+// U-R1B-ANCHOR-4 moves the first eight; grok: no unit owns its layouts yet (director); grok: approval layout not recorded.
+const LAYOUT_PENDING = ["opencode", "pi", "gemini", "cursor-agent", "copilot", "cline", "droid", "goose", "grok"];
+const LAYOUT_NA = ["hermes", "shell"];
+// Stated limits, `<agent>|<block file>|<bottom file>|<variant>`: exactly the (d) rows red at the U-R1B-ANCHOR-3 BASE.
+// Reason for each: not live-captured: no real <agent> approval screen; the approval rule is not anchored.
+const LIMITS = new Set<string>([
+  "claude|screens/claude-waiting_for_approval-1.txt|screens/claude-working-1.txt|indented",
+  "claude|screens/claude-waiting_for_approval-1.txt|screens/claude-working-2.txt|indented",
+  "claude|screens/claude-waiting_for_approval-1.txt|screens/claude-working-3.txt|indented",
+  "claude|screens/claude-waiting_for_approval-1.txt|screens/claude-working-real.txt|indented",
+  "claude|screens/claude-waiting_for_approval-2.txt|screens/claude-working-1.txt|verbatim",
+  "claude|screens/claude-waiting_for_approval-2.txt|screens/claude-working-1.txt|indented",
+  "claude|screens/claude-waiting_for_approval-2.txt|screens/claude-working-2.txt|verbatim",
+  "claude|screens/claude-waiting_for_approval-2.txt|screens/claude-working-2.txt|indented",
+  "claude|screens/claude-waiting_for_approval-2.txt|screens/claude-working-3.txt|verbatim",
+  "claude|screens/claude-waiting_for_approval-2.txt|screens/claude-working-3.txt|indented",
+  "claude|screens/claude-waiting_for_approval-2.txt|screens/claude-working-real.txt|verbatim",
+  "claude|screens/claude-waiting_for_approval-2.txt|screens/claude-working-real.txt|indented",
+  "claude|screens/claude-waiting_for_approval-3.txt|screens/claude-working-1.txt|indented",
+  "claude|screens/claude-waiting_for_approval-3.txt|screens/claude-working-2.txt|indented",
+  "claude|screens/claude-waiting_for_approval-3.txt|screens/claude-working-3.txt|indented",
+  "claude|screens/claude-waiting_for_approval-3.txt|screens/claude-working-real.txt|indented",
+  "codex|screens/codex-waiting_for_approval-1.txt|screens/codex-working-1.txt|verbatim",
+  "codex|screens/codex-waiting_for_approval-1.txt|screens/codex-working-1.txt|indented",
+  "codex|screens/codex-waiting_for_approval-1.txt|screens/codex-working-2.txt|verbatim",
+  "codex|screens/codex-waiting_for_approval-1.txt|screens/codex-working-2.txt|indented",
+  "codex|screens/codex-waiting_for_approval-2.txt|screens/codex-working-1.txt|verbatim",
+  "codex|screens/codex-waiting_for_approval-2.txt|screens/codex-working-1.txt|indented",
+  "codex|screens/codex-waiting_for_approval-2.txt|screens/codex-working-2.txt|verbatim",
+  "codex|screens/codex-waiting_for_approval-2.txt|screens/codex-working-2.txt|indented",
+  "codex|screens/codex-waiting_for_approval-3.txt|screens/codex-working-1.txt|verbatim",
+  "codex|screens/codex-waiting_for_approval-3.txt|screens/codex-working-1.txt|indented",
+  "codex|screens/codex-waiting_for_approval-3.txt|screens/codex-working-2.txt|verbatim",
+  "codex|screens/codex-waiting_for_approval-3.txt|screens/codex-working-2.txt|indented",
+]);
+
+/** Where each agent's own state screens live: `<folder>/<file prefix>` (the SOURCES folders). */
+const LAYOUT_FOLDERS: Record<string, string[]> = {
+  claude: ["screens/claude-"],
+  codex: ["screens/codex-"],
+  grok: ["screens/grok-"],
+  opencode: ["screens/opencode-"],
+  gemini: ["gemini-screens/", "screens/gemini-"],
+  antigravity: ["agy-screens/"],
+  goose: ["goose-screens/"],
+  pi: ["pi-screens/"],
+  "cursor-agent": ["cursor-screens/"],
+  copilot: ["copilot-screens/"],
+  cline: ["cline-screens/"],
+  droid: ["droid-screens/"],
+};
+const listed = (dir: string) => (existsSync(join(F, dir)) ? readdirSync(join(F, dir)).sort() : []);
+const hasText = (p: string) => read(p).trim() !== "";
+function layoutFiles(name: string, states: string): string[] {
+  return (LAYOUT_FOLDERS[name] ?? []).flatMap((p) => {
+    const [dir, base] = [p.slice(0, p.indexOf("/")), p.slice(p.indexOf("/") + 1)];
+    const re = new RegExp(`^${base}(?:${states})-.*\\.txt$`);
+    return listed(dir).filter((f) => re.test(f)).map((f) => `${dir}/${f}`);
+  });
+}
+/** Real dialogs: the agent's approval and unknown screens, its dialogs/ screens (not the `-strings.txt` string lists), its anchor/ captures. */
+function DIALOGS(name: string): string[] {
+  return [
+    ...layoutFiles(name, "waiting_for_approval|unknown"),
+    ...listed("dialogs").filter((f) => f.startsWith(`${name}-`) && f.endsWith(".txt") && !f.endsWith("-strings.txt")).map((f) => `dialogs/${f}`),
+    ...listed("anchor").filter((f) => f.startsWith(`${name}-`) && f.endsWith("-real.txt")).map((f) => `anchor/${f}`),
+  ].filter(hasText);
+}
+const WORKS = (name: string) => layoutFiles(name, "working").filter(hasText);
+
+/** One quoted row on a real non-prompt bottom: Q, the trimmed bottom B', and what each reads. */
+function onBottom(name: string, src: string, state: StateName, bottom: string, variant: "verbatim" | "indented") {
+  const h = harnesses.get(name)!;
+  const block = blockOf(h, read(src), state);
+  expect(readScreen(h, block.join("\n")), "BLOCK alone reads the source state").toBe(state);
+  const whole = read(bottom);
+  const lines = linesOf(whole).slice(-(38 - block.length));
+  const trimmed = lines.join("\n");
+  expect(readScreen(h, trimmed), "the trimmed bottom reads as the bottom").toBe(readScreen(h, whole));
+  expect(isPromptEmpty(h, trimmed), "the trimmed bottom's prompt is as empty as the bottom's").toBe(isPromptEmpty(h, whole));
+  const q = quoted(block, variant, lines);
+  expect(q.split("\n").length).toBeLessThanOrEqual(40);
+  return { h, q, trimmed, st: readScreen(h, q) };
+}
+const VARIANTS = ["verbatim", "indented"] as const;
+const sourcesOf = (name: string, s: StateName) => SOURCES[name]!().filter(([, st]) => st === s).map(([f]) => f);
+const C_ROWS = LAYOUT_COVERED.flatMap((name) =>
+  sourcesOf(name, "idle").flatMap((src) => DIALOGS(name).flatMap((bottom) => VARIANTS.map((variant) => {
+    const want = readScreen(harnesses.get(name)!, read(bottom));
+    return [`${name} ${src} above ${bottom} (${variant}): reads ${want}`, name, src, bottom, variant] as const;
+  }))),
+);
+const D_ROWS = LAYOUT_COVERED.flatMap((name) =>
+  sourcesOf(name, "waiting_for_approval").flatMap((src) => WORKS(name).flatMap((bottom) => VARIANTS.map((variant) => {
+    const key = `${name}|${src}|${bottom}|${variant}`;
+    return [`${name} ${src} above ${bottom} (${variant}): reads ${LIMITS.has(key) ? "waiting_for_approval (stated limit)" : "working"}`, name, src, bottom, variant, key] as const;
+  }))),
+);
+
+describe("(ANCHOR-3 a) layout coverage: every harness file is covered, pending or not applicable", () => {
+  it("a1 LAYOUT_COVERED, LAYOUT_PENDING and LAYOUT_NA do not overlap and together are every harness file", () => {
+    const all = [...LAYOUT_COVERED, ...LAYOUT_PENDING, ...LAYOUT_NA];
+    expect(new Set(all).size).toBe(all.length);
+    expect(all.sort()).toEqual(NAMES);
+    expect(NAMES).toHaveLength(14);
+  });
+  it("a2 every covered agent has state rules; claude, codex and antigravity each have a real dialog and a working screen", () => {
+    for (const name of LAYOUT_COVERED) expect(agentsWithRules, name).toContain(name);
+    for (const name of ["claude", "codex", "antigravity"]) {
+      expect(DIALOGS(name).length, `${name} DIALOGS`).toBeGreaterThan(0);
+      expect(WORKS(name).length, `${name} WORKS`).toBeGreaterThan(0);
+    }
+  });
+  it("a3 every LIMITS key names an existing (d) row of a covered agent", () => {
+    const keys = new Set(D_ROWS.map((r) => r[5]));
+    for (const k of LIMITS) {
+      expect(keys.has(k), k).toBe(true);
+      expect(LAYOUT_COVERED, k).toContain(k.split("|")[0]);
+    }
+  });
+});
+
+describe("(ANCHOR-3 b) the real dialogs and working screens read their own state alone", () => {
+  it.each(LAYOUT_COVERED.flatMap((name) => DIALOGS(name).map((f) => [`b1 ${name} ${f} reads waiting_for_approval or unknown`, name, f] as const)))("%s", (_t, name, f) => {
+    expect(["waiting_for_approval", "unknown"]).toContain(readScreen(harnesses.get(name)!, read(f)));
+  });
+  it.each(LAYOUT_COVERED.flatMap((name) => WORKS(name).map((f) => [`b2 ${name} ${f} reads working`, name, f] as const)))("%s", (_t, name, f) => {
+    expect(readScreen(harnesses.get(name)!, read(f))).toBe("working");
+  });
+});
+
+describe("(ANCHOR-3 c) a quoted empty prompt above a real dialog reads as the dialog", () => {
+  it.each(C_ROWS)("%s", (_t, name, src, bottom, variant) => {
+    const { h, q, trimmed, st } = onBottom(name, src, "idle", bottom, variant);
+    expect(st).toBe(readScreen(h, trimmed));
+    expect(st === "idle" && isPromptEmpty(h, q)).toBe(false);
+    expect(decideInput("agent", "type", st)).toBe("held");
+  });
+});
+
+describe("(ANCHOR-3 d) a quoted approval above a real working screen reads working (LIMITS: stated limits)", () => {
+  it.each(D_ROWS)("%s", (_t, name, src, bottom, variant, key) => {
+    const { trimmed, h, st } = onBottom(name, src, "waiting_for_approval", bottom, variant);
+    if (LIMITS.has(key)) {
+      expect(st).toBe("waiting_for_approval");
+      expect(decideInput("agent", "type", st)).toBe("held");
+    } else {
+      expect(st).toBe(readScreen(h, trimmed));
+      expect(st).toBe("working");
+      expect(decideInput("owner", "type", st)).toBe("enter");
+    }
+  });
+});
+
+// Stated limit: a quoted spinner anywhere above holds agents (header comment). `<quote>|<bottom>|<variant>`: these rows read working.
+const E_LIMITS = new Set<string>(
+  ["✻ Cogitating… (12s)|verbatim", "⏺ Fixing the tests… done|verbatim", "(12k tokens)|verbatim", "(12k tokens)|indented", "⎿  Done (3 tool uses · 20s · 12k tokens)|verbatim", "⎿  Done (3 tool uses · 20s · 12k tokens)|indented"]
+    .flatMap((k) => ["EMPTY", "TYPED"].map((b) => k.replace("|", `|${b}|`))),
+);
+describe("(ANCHOR-3 e) claude: a quoted spinner or token line above the real prompt reads as the prompt (E_LIMITS: stated limit, reads working)", () => {
+  const QUOTES = ["✻ Cogitating… (12s)", "⏺ Fixing the tests… done", "(12k tokens)", "  ⎿  Done (3 tool uses · 20s · 12k tokens)"];
+  const rows = QUOTES.flatMap((line) => (["EMPTY", "TYPED"] as const).flatMap((bottom) => VARIANTS.map((variant) => {
+    const limit = E_LIMITS.has(`${line.trim()}|${bottom}|${variant}`);
+    return [`claude "${line.trim()}" above ${bottom} (${variant}): reads ${limit ? "working (stated limit)" : "idle"}`, line, bottom, variant, limit] as const;
+  })));
+  it("e0 every E_LIMITS key names an (e) row", () => {
+    const keys = new Set(rows.map((r) => `${r[1].trim()}|${r[2]}|${r[3]}`));
+    for (const k of E_LIMITS) expect(keys.has(k), k).toBe(true);
+    expect(E_LIMITS.size).toBe(12);
+  });
+  it.each(rows)("%s", (_t, line, bottom, variant, limit) => {
+    const h = harnesses.get("claude")!;
+    const whole = bottomOf("claude", bottom);
+    const lines = linesOf(whole).slice(-37);
+    const trimmed = lines.join("\n");
+    expect(readScreen(h, trimmed), "the trimmed bottom reads as the bottom").toBe(readScreen(h, whole));
+    expect(isPromptEmpty(h, trimmed)).toBe(isPromptEmpty(h, whole));
+    const q = quoted([line], variant, lines);
+    expect(q.split("\n").length).toBeLessThanOrEqual(40);
+    expect(readScreen(h, q)).toBe(limit ? "working" : readScreen(h, trimmed));
+    expect(readScreen(h, q)).toBe(limit ? "working" : "idle");
+    expect(isPromptEmpty(h, q)).toBe(isPromptEmpty(h, trimmed));
+    expect(decideInput("owner", "type", readScreen(h, q))).toBe("enter");
+    if (limit) expect(decideInput("agent", "type", readScreen(h, q))).toBe("held");
+  });
+});
+
+describe("(ANCHOR-3 f) claude: the spinner and token layouts still read working (built from the recorded layouts; not live-captured)", () => {
+  const BOX = linesOf(read("screens/claude-idle-real.txt")).slice(-5);
+  const SPIN = "✻ Cogitating… (12s · ↓ 1.2k tokens)";
+  const typed = BOX.map((l) => (l.startsWith("❯") ? "❯ " + T : l));
+  const steps = Array.from({ length: 8 }, (_, i) => `  ⎿  ☐ step ${i + 1}`);
+  const many = (n: number) => Array.from({ length: n }, (_, i) => `  ⎿  ☐ step ${i + 1}`);
+  const idleWhole = linesOf(read("screens/claude-idle-real.txt"));
+  it.each([
+    ["f1 the spinner, a blank line, the prompt box and its footer", [SPIN, "", ...BOX]],
+    ["f2 the spinner, 8 todo lines, a blank line, the prompt box and its footer", [SPIN, ...steps, "", ...BOX]],
+    ["f3 the spinner and a running line, no box", [SPIN, "  ⎿  Running…"]],
+    ["f4 the spinner, a blank line, typed text in the prompt box", [SPIN, "", ...typed]],
+    ["f5 the token line alone, a blank line, the prompt box", ["  ⎿  Waiting… (3s · ↑ 120 tokens)", "", ...BOX]],
+    ["f6 the spinner 13 lines above the prompt box, no esc to interrupt footer", [SPIN, ...many(12), "", ...BOX]],
+    ["f7 the spinner 20 lines above the prompt box, no esc to interrupt footer", [SPIN, ...many(19), "", ...BOX]],
+    ["f8 the spinner 30 lines above the prompt box, no esc to interrupt footer", [SPIN, ...many(29), "", ...BOX]],
+    ["f9 a quoted spinner far above the real idle box (stated limit: a quoted spinner anywhere above holds agents)", ["✻ Cogitating… (12s)", "  That is the screen I saw.", "", ...idleWhole.slice(-37)]],
+  ] as const)("%s reads working", (_t, lines) => {
+    expect(BOX[1]!.replace(/\u00a0/g, " ")).toBe('❯ Try "refactor <filepath>"');
+    expect(BOX.join("\n")).not.toMatch(/interrupt/i);
+    const st = readScreen(harnesses.get("claude")!, lines.join("\n"));
+    expect(st).toBe("working");
+    expect(decideInput("agent", "type", st)).toBe("held");
+  });
 });

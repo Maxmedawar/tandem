@@ -22,7 +22,8 @@ working = [
   # U-R1B-ANCHOR: the footer marker, then no line that starts a rule or the > prompt (no prompt box after it), to \z.
   '(?i)esc to cancel[^\n]*(?:\n(?:[^─>\n][^\n]*)?)*\z',
 ]
-idle = ['\? for shortcuts']
+# U-R1B-ANCHOR-3: the `? for shortcuts` line starts the line, then at most 1 more line that starts neither a rule nor >, then \z; proven by agy-screens/idle-real.txt, idle-reply-real.txt, idle-interrupted-real.txt (under the > frame) and the fake agy of the engine test (no frame).
+idle = ['^\? for shortcuts[^\n]*(?:\n[^─>\n][^\n]*)?\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (a bare > row between the two rules above `? for shortcuts`).
 empty_prompt = ['^─{20,}[ \t]*\n>[ \t]*\n─{20,}[ \t]*\n\? for shortcuts[^\n]*(?:\n(?:[^─>\n][^\n]*)?)*\z']
 
