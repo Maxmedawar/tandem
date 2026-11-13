@@ -51,7 +51,7 @@ import {
 import { DeterministicEmbeddingProvider, type EmbeddingProvider } from './memory/embedding.ts'
 import { hybridScore, normalizeMemoryText } from './memory/ranker.ts'
 import { createLocalVectorStore, type LocalVectorStore, type VectorBackend } from './memory/vector-store.ts'
-import { redact } from '../transcripts/redact.ts'
+import { REDACT_VERSION, redact } from '../transcripts/redact.ts'
 
 export const CURRENT_FABRIC_SCHEMA_VERSION = 13
 /** The 5th agent post in a row in one room wakes nobody; an owner post starts the count again. */
@@ -816,7 +816,7 @@ function memoryDigest(text: string): string {
 /**
  * U-R1A-47: every memory text is masked by ../transcripts/redact.ts (remember and promote call it)
  * before it is embedded, indexed, hashed or written, for every caller; a masked text over the limit
- * is refused here (400). Memories stored before this are not rewritten.
+ * is refused here (400). Rows stored before this are masked once when the store opens (maskOnce).
  */
 function withinMemoryLimit(masked: string): string {
   if (Buffer.byteLength(masked, 'utf8') > MAX_MEMORY_TEXT_BYTES) throw new FabricValidationError('text')
@@ -1027,6 +1027,7 @@ export class SQLiteFabricClient implements FabricClient {
       this.migrate()
       this.ensureEmbeddingConfiguration()
       this.#vectorStore = createLocalVectorStore(this.#database, this.#embeddingProvider.dimensions, { backend: options.vectorBackend })
+      this.maskOnce()
       this.backfillDefaultEmbeddings()
       // Startup precedes any public operation, so it may drain multiple batches - bounded, so a
       // pathological backlog cannot hang initialization - instead of leaving overflow rows with
@@ -1085,6 +1086,14 @@ export class SQLiteFabricClient implements FabricClient {
     return this.audited(ctx, 'project.create', () => {
       assertCapability(ctx, 'project:create')
       validateCreateProjectInput(input)
+      // U-R1A-47H: displayName and repoRef are masked before they are stored (a masked form over its
+      // limit is refused). workspaceRef is not: the scope check matches it as a path.
+      const named: CreateProjectInput = {
+        ...input,
+        displayName: redact(input.displayName).text,
+        ...(input.repoRef === undefined ? {} : { repoRef: redact(input.repoRef).text }),
+      }
+      validateCreateProjectInput(named)
       if (ctx.folder !== undefined && !underFolder(input.workspaceRef, ctx.folder)) throw new FabricValidationError('workspaceRef')
       const addsOtherMember = (input.memberAgentIds ?? []).some(agentId => agentId !== ctx.agentId)
       if (addsOtherMember) {
@@ -1101,7 +1110,7 @@ export class SQLiteFabricClient implements FabricClient {
             memory_namespace, room_namespace, retention_ttl_hops, retention_days, created_at
           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(
-          projectId, ctx.ownerId, input.displayName, optional(input.repoRef), optional(input.workspaceRef),
+          projectId, ctx.ownerId, named.displayName, optional(named.repoRef), optional(input.workspaceRef),
           `project:${projectId}:memory`, `project:${projectId}:room`,
           optional(input.retention?.roomEventTtlHops), optional(input.retention?.roomRetentionDays), createdAt,
         )
@@ -1168,16 +1177,20 @@ export class SQLiteFabricClient implements FabricClient {
       assertCapability(ctx, 'room:post')
       const project = this.currentActiveProject(ctx)
       validatePostRoomEventInput(input)
+      // U-R1A-47H: the body is masked before either storage path, so the stored row, the idempotency
+      // fingerprint and the bus payload all hold the masked body (a masked body over the limit is refused).
+      const masked: PostRoomEventInput = { ...input, body: redact(input.body).text }
+      validatePostRoomEventInput(masked)
       if (!this.#bus) {
         return this.storage(() => this.transaction(() => {
-          const prepared = this.prepareRoomPost(ctx, project, input)
+          const prepared = this.prepareRoomPost(ctx, project, masked)
           if (prepared.kind === 'duplicate') return prepared.event
           const stored = this.commitRoomPost(ctx, prepared)
           wake = this.advanceAgentRun(ctx, stored)
           return stored
         }))
       }
-      return this.postRoomEventThroughBus(ctx, project, input, names => { wake = names })
+      return this.postRoomEventThroughBus(ctx, project, masked, names => { wake = names })
     }, event => ({
       projectId: event.projectId,
       targetId: event.id,
@@ -2530,6 +2543,79 @@ export class SQLiteFabricClient implements FabricClient {
       this.#database.prepare('INSERT INTO memory_embedding_config(singleton, provider_id, dimensions) VALUES (1, ?, ?)')
         .run(this.#embeddingProvider.id, this.#embeddingProvider.dimensions)
     })
+  }
+
+  /**
+   * U-R1A-47H: rows stored below the recorded mask_version (fabric_mask; none recorded reads as 0) are
+   * rewritten masked by redact(), once, in one transaction: every memory (forgotten ones too) with its
+   * FTS row deleted and re-inserted and its vector removed (backfillDefaultEmbeddings rebuilds it from
+   * the masked text with the deterministic provider; with another provider that memory has no vector
+   * until it is written again), every room body, every project's display_name and repo_ref
+   * (workspace_ref never: the scope check matches it as a path), and every idempotency row whose
+   * fingerprint holds a raw body is deleted (a retry of that post after the upgrade posts once more).
+   * secure_delete, an FTS optimize and one VACUUM keep the raw bytes out of the file. The version is
+   * recorded only on a store holding a row, so the migration's second open
+   * (scripts/migrate-from-synergy.ts) masks the rows it copied into its empty store. Rows a raw writer adds after the version is recorded are
+   * not looked at; a REDACT_VERSION rise masks everything again once.
+   */
+  private maskOnce(): void {
+    const recorded = (): number => {
+      try {
+        const row = this.#database.prepare('SELECT mask_version FROM fabric_mask WHERE singleton = 1').get() as SqlRow | undefined
+        return row === undefined ? 0 : requiredNumber(row, 'mask_version')
+      } catch {
+        return 0
+      }
+    }
+    if (recorded() >= REDACT_VERSION) return
+    this.#database.exec('PRAGMA secure_delete = ON')
+    const changed = this.transaction((): number => {
+      this.#database.exec('CREATE TABLE IF NOT EXISTS fabric_mask (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), mask_version INTEGER NOT NULL)')
+      if (recorded() >= REDACT_VERSION) return 0
+      const db = this.#database
+      let changed = 0
+      const memories = db.prepare('SELECT id, text, deleted_at FROM memories').all() as SqlRow[]
+      for (const row of memories) {
+        const id = requiredString(row, 'id')
+        const text = requiredString(row, 'text')
+        const masked = redact(text).text
+        if (masked === text) continue
+        db.prepare('UPDATE memories SET text = ?, normalized_digest = ? WHERE id = ?').run(masked, memoryDigest(masked), id)
+        db.prepare('DELETE FROM memory_fts WHERE memory_id = ?').run(id)
+        if (optionalString(row, 'deleted_at') === undefined) db.prepare('INSERT INTO memory_fts(memory_id, text) VALUES (?, ?)').run(id, masked)
+        this.#vectorStore.remove(id)
+        changed++
+      }
+      for (const row of db.prepare('SELECT sequence, body FROM room_events').all() as SqlRow[]) {
+        const body = requiredString(row, 'body')
+        const masked = redact(body).text
+        if (masked === body) continue
+        db.prepare('UPDATE room_events SET body = ? WHERE sequence = ?').run(masked, requiredNumber(row, 'sequence'))
+        changed++
+      }
+      for (const row of db.prepare('SELECT project_id, display_name, repo_ref FROM projects').all() as SqlRow[]) {
+        const name = requiredString(row, 'display_name')
+        const repo = optionalString(row, 'repo_ref')
+        const maskedName = redact(name).text
+        const maskedRepo = repo === undefined ? undefined : redact(repo).text
+        if (maskedName === name && maskedRepo === repo) continue
+        db.prepare('UPDATE projects SET display_name = ?, repo_ref = ? WHERE project_id = ?').run(maskedName, maskedRepo ?? null, requiredString(row, 'project_id'))
+        changed++
+      }
+      for (const row of db.prepare('SELECT rowid AS id, fingerprint FROM idempotency').all() as SqlRow[]) {
+        const fingerprint = requiredString(row, 'fingerprint')
+        if (redact(fingerprint).text === fingerprint) continue
+        db.prepare('DELETE FROM idempotency WHERE rowid = ?').run(requiredNumber(row, 'id'))
+        changed++
+      }
+      if (changed > 0) db.exec(`INSERT INTO memory_fts(memory_fts) VALUES('optimize')`)
+      const rows = db.prepare('SELECT (SELECT count(*) FROM memories) + (SELECT count(*) FROM room_events) + (SELECT count(*) FROM projects) AS n').get() as SqlRow
+      if (requiredNumber(rows, 'n') > 0) db.prepare('INSERT OR REPLACE INTO fabric_mask (singleton, mask_version) VALUES (1, ?)').run(REDACT_VERSION)
+      return changed
+    })
+    // A writer without secure_delete (an older bridge, the migration's raw copy) leaves stale copies of
+    // rows in the unused space of pages it rebuilt; only a rebuild of the file drops them.
+    if (changed > 0) this.#database.exec('VACUUM')
   }
 
   private backfillDefaultEmbeddings(): void {
