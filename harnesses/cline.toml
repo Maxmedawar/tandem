@@ -52,7 +52,12 @@ working = ['(?m)^[ │]*[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Thinking\.\.\. \(esc to
 debounce_ms = 5000
 # U-R1B-ANCHOR: the placeholder row counts only when no later row starts with `❯` (after spaces or `│`)
 # to the screen end.
-idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[^\n]*(?:\n[ \t│]*(?:[^ \t│❯\n][^\n]*)?)*\z']
+# U-R1B-ANCHOR-4: the placeholder row, the bar's bottom rule (input-bar.tsx border top/bottom), then the 3.0.74 status bar
+# (components/status-bar.tsx 232-280; a blank row first in the home view, views/home-view.tsx 138): its first row always ends
+# `Plan`, `Act`, `(Tab)`; then nothing, or at most 2 rows (context, path) and its last row `Auto-approve all enabled|disabled
+# (Shift+Tab)`; then \z (the rule alone may also end the screen). No `❯` row after the placeholder row. Any other line under the
+# bar reads unknown (agents held).
+idle = ['❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[^\n]*\n[ \t│]*─{20,}[^\n]*(?:(?:\n[ \t│]*)*\n[^\n❯]*[●○] Plan +[●○] Act +\(Tab\)[^\n]*(?:(?:\n[ \t│]*[^ \t│❯\n][^\n]*){0,2}\n[^\n❯]*Auto-approve all (?:enabled|disabled) \(Shift\+Tab\)[^\n]*)?)?(?:\n[ \t│]*)*\z']
 # U-R1A-18D: an agent's text enters only an empty prompt (the ❯ row shows only its placeholder, the rule right under it).
 empty_prompt = ['^[ \t]*❯ +(?:What can I do for you\?|Ask anything\.\.\.|Plan something\.\.\.)[ \t]*\n[ \t]*─{20,}[ \t]*(?:\n[ \t]*(?:[^ \t─❯\n][^\n]*)?)*\z']
 

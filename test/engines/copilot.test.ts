@@ -140,7 +140,7 @@ describe("copilot: the built-in harness file", () => {
       "Exit to Interactive execution mode without running the plan[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z",
     ]);
     expect(h.states?.working).toEqual(["ctrl\\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?){0,4}\\z", "esc (?:interrupt|stop agents|edit prompt)[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?){0,4}\\z", "esc again to [^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)?(?:\\n[ \\t]*┃[^\\n]*)?(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?){0,4}\\z"]);
-    expect(h.states?.idle).toEqual(["/ commands[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?)*\\z"]);
+    expect(h.states?.idle).toEqual(["/ commands[^\\n]*(?:\\n[ \\t]*(?:[^ \\t┃╻╹─\\n][^\\n]*)?){0,3}(?:\\n[ \\t]*)*\\z"]);
     expect(h.states?.debounce_ms).toBe(1500);
     expect(h.states?.precedence).toEqual(["waiting_for_approval", "working", "idle"]);
     expect(h.hook).toBeUndefined();
