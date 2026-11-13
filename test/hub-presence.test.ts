@@ -136,12 +136,12 @@ const reading = (over: Json = {}) => JSON.stringify({
   ],
   more: 0, ...over,
 })
-const envelope = (k: Json, from: string, to: string, body: string, ts = clock) => JSON.stringify(signEnvelope(k, { from, to, body }, ts))
+const envelope = (k: Json, from: string, to: string, body: string, ts = clock) => JSON.stringify(signEnvelope(k, { from, to, body }, ts, 'presence'))
 const answer = (rows: { from: string; envelope: string }[], connected = ['alpha', 'beta']): Answer =>
   ({ status: 200, body: { presence: rows.map((r) => ({ ...r, at: clock })), connected } })
 const pushed = (s: Seen) => JSON.parse(s.body).presence as { to: string; envelope: string }[]
 const openFor = (text: string, self = 'beta') =>
-  openEnvelope(text, { sender: { id: 'alpha', publicKey: A.publicKey }, self, seen: { remember: () => true }, now: clock, maxAgeMs: 60_000 })
+  openEnvelope(text, { sender: { id: 'alpha', publicKey: A.publicKey }, self, seen: { remember: () => true }, now: clock, maxAgeMs: 60_000, kind: 'presence' })
 const remote = (path: string, extra: Json = {}) => readRemotePresence({ now, path, self: 'alpha', ...extra })
 
 describe('(33B-3) (h1) push: one signed envelope per other roster member, on a change or every 10 s', () => {
@@ -380,7 +380,7 @@ describe('(33B-3) (h4) size', () => {
     expect(body.sessions.map((s: Json) => s.name)).toEqual(names.slice(0, kept))
     expect(body.more).toBe(300 - kept)
     // one more row would not have fit
-    const bigger = JSON.stringify(signEnvelope(A, { from: 'alpha', to: 'beta', body: JSON.stringify({ ...body, sessions: [...body.sessions, { ...body.sessions[0], name: names[kept] }], more: body.more - 1 }) }, clock))
+    const bigger = JSON.stringify(signEnvelope(A, { from: 'alpha', to: 'beta', body: JSON.stringify({ ...body, sessions: [...body.sessions, { ...body.sessions[0], name: names[kept] }], more: body.more - 1 }) }, clock, 'presence'))
     expect(Buffer.byteLength(bigger, 'utf8')).toBeGreaterThan(16_384)
   })
 })

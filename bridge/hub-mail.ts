@@ -28,7 +28,7 @@
 import { audit } from './audit.ts'
 import { openDeviceKey, type DeviceKey } from './device-keys.ts'
 import { EnvelopeError, MAX_AGE_CAP_MS, openEnvelope, openReplayStore, signEnvelope, type ReplayStore } from './envelope.ts'
-import { hubProofHeader, type HubLinkConfig } from './hub-link.ts'
+import { hubProofHeader, readHubAnswer, type HubLinkConfig } from './hub-link.ts'
 import { isMailSender } from './limits.ts'
 import { MailError, type Mailbox, type Message } from './mailbox.ts'
 import { trustedKey } from './roster.ts'
@@ -116,10 +116,11 @@ export function hubMail(
         body,
         signal: AbortSignal.timeout(TIMEOUT_MS),
       })
-      const text = await answer.text()
+      const bytes = await readHubAnswer(answer)
       let data: Json | undefined
       try {
-        const parsed: unknown = JSON.parse(text)
+        // Over the cap: as an answer that does not parse.
+        const parsed: unknown = bytes === undefined ? undefined : JSON.parse(bytes.toString('utf8'))
         if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) data = parsed as Json
       } catch {
         data = undefined

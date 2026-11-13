@@ -42,7 +42,7 @@ import { hostname } from 'node:os'
 import { openDeviceKey, verifySignature, type DeviceKey } from './device-keys.ts'
 import { routeFabricRpc } from './fabric/rpc-router.ts'
 import type { LocalFabricHost } from './fabric/local-fabric-host.ts'
-import { deriveBridgeId, hubProofHeader, MAX_FRAME_BYTES } from './hub-link.ts'
+import { deriveBridgeId, hubProofHeader, MAX_FRAME_BYTES, readHubAnswer } from './hub-link.ts'
 import { handleRemoteCommand } from './remote-command.ts'
 import { readRoster } from './roster.ts'
 import { route } from './router.ts'
@@ -197,7 +197,10 @@ export function fabricForward(config: {
         })
         status = answer.status
         answerHeader = answer.headers.get(MEMORY_ANSWER_HEADER)
-        bytes = Buffer.from(await answer.arrayBuffer())
+        const read = await readHubAnswer(answer)
+        // Over the cap: never checked against its signature, so never taken.
+        if (read === undefined) return { ...UNVERIFIED }
+        bytes = read
       } catch {
         return { ...HUB_UNREACHABLE }
       }

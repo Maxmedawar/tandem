@@ -26,6 +26,10 @@
  * (`shape`), so an honest sender's body is never refused. readRemoteUsage reads them back.
  * Every call carries the link bearer and a `tandem-proof` over the exact bytes; no token, key,
  * proof or reading is ever logged. `now` is the only clock.
+ *
+ * Presence is signed and opened under `tandem-presence-v1` (U-R1A-33B-4H): all of one owner's
+ * computers run one release, and a computer on an older release has its presence refused
+ * (`signature`) until it updates (presence is advisory; mail and commands are unaffected).
  */
 import { chmodSync, mkdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -33,7 +37,7 @@ import { tandemHome } from './tandem-home.ts'
 import { audit } from './audit.ts'
 import { openDeviceKey, type DeviceKey } from './device-keys.ts'
 import { EnvelopeError, openEnvelope, signEnvelope } from './envelope.ts'
-import { hubProofHeader, type HubLinkConfig } from './hub-link.ts'
+import { hubProofHeader, readHubAnswer, type HubLinkConfig } from './hub-link.ts'
 import type { Presence } from './presence.ts'
 import { readRoster, thisId, trustedKey } from './roster.ts'
 import { DatabaseSync, type DatabaseSync as NodeDatabaseSync, ensureDbFile } from './sqlite-file.ts'
@@ -208,7 +212,7 @@ export function hubPresence(
   function envelopeTo(to: string, at: number, rows: Row[], usage: UsageWire[]): string {
     for (let n = rows.length; ; n--) {
       const body = JSON.stringify({ v: 1, kind: 'presence', at, sessions: rows.slice(0, n), more: rows.length - n, ...(usage.length > 0 ? { usage } : {}) })
-      const text = JSON.stringify(signEnvelope(signer(), { from: self, to, body }, now()))
+      const text = JSON.stringify(signEnvelope(signer(), { from: self, to, body }, now(), 'presence'))
       if (Buffer.byteLength(text, 'utf8') <= MAX_READING_BYTES || n === 0) return text
     }
   }
@@ -232,7 +236,7 @@ export function hubPresence(
     if (Buffer.byteLength(text, 'utf8') > MAX_READING_BYTES) return refuse('shape')
     let opened: { body: string; ts: number }
     try {
-      opened = openEnvelope(text, { sender: { id: from, publicKey }, self, seen: fresh, now: now(), maxAgeMs: PRESENCE_MAX_AGE_MS })
+      opened = openEnvelope(text, { sender: { id: from, publicKey }, self, seen: fresh, now: now(), maxAgeMs: PRESENCE_MAX_AGE_MS, kind: 'presence' })
     } catch (e) {
       if (!(e instanceof EnvelopeError)) throw e
       return refuse(e.reason)
@@ -284,7 +288,9 @@ export function hubPresence(
       })
       status = answer.status
       try {
-        const parsed: unknown = JSON.parse(await answer.text())
+        const bytes = await readHubAnswer(answer)
+        // Over the cap: as an answer that does not parse.
+        const parsed: unknown = bytes === undefined ? undefined : JSON.parse(bytes.toString('utf8'))
         if (isObject(parsed)) data = parsed
       } catch {
         data = undefined

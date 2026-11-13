@@ -216,7 +216,7 @@ function fakePresence(names: string[]) {
 }
 const pushedBody = (s: Seen) => {
   const items = JSON.parse(s.body).presence as { to: string; envelope: string }[];
-  const opened = openEnvelope(items[0].envelope, { sender: { id: "alpha", publicKey: A.publicKey }, self: "beta", seen: { remember: () => true }, now: clock, maxAgeMs: 60_000 });
+  const opened = openEnvelope(items[0].envelope, { sender: { id: "alpha", publicKey: A.publicKey }, self: "beta", seen: { remember: () => true }, now: clock, maxAgeMs: 60_000, kind: "presence" });
   return { body: JSON.parse(opened.body), envelope: items[0].envelope };
 };
 const AUDIT = () => join(process.env.TANDEM_HOME!, "bridge.log");
@@ -226,7 +226,7 @@ const reading = (over: Json = {}) => ({
   sessions: [{ name: "b-one", engine: "shell", project: "work", state: "idle", stateAt: clock }],
   more: 0, ...over,
 });
-const envelope = (body: Json, ts = clock) => JSON.stringify(signEnvelope(B, { from: "beta", to: "alpha", body: JSON.stringify(body) }, ts));
+const envelope = (body: Json, ts = clock) => JSON.stringify(signEnvelope(B, { from: "beta", to: "alpha", body: JSON.stringify(body) }, ts, "presence"));
 const answerWith = (env: string) => ({ status: 200, body: { presence: [{ from: "beta", envelope: env, at: clock }], connected: ["alpha", "beta"] } });
 
 describe("(52) usage report", () => {

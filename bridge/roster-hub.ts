@@ -14,7 +14,7 @@ import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { fingerprintOf, openDeviceKey, type DeviceKey } from './device-keys.ts'
-import { hubLinkConfigFromEnv, hubProofHeader, type HubLinkConfig } from './hub-link.ts'
+import { hubLinkConfigFromEnv, hubProofHeader, readHubAnswer, type HubLinkConfig } from './hub-link.ts'
 import {
   joinRoster,
   main as localMain,
@@ -63,7 +63,8 @@ export function rosterHub(config: Pick<HubLinkConfig, 'url' | 'token' | 'bridgeI
         signal: AbortSignal.timeout(TIMEOUT_MS),
       })
       status = answer.status
-      text = await answer.text()
+      const bytes = await readHubAnswer(answer)
+      text = bytes === undefined ? '' : bytes.toString('utf8')
     } catch {
       throw new RosterError('hub: unreachable')
     }
