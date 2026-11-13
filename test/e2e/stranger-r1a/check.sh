@@ -150,11 +150,12 @@ judge() {
   seconds=$(($(date +%s) - $(cat "$dir/start")))
   [ "$seconds" -lt 900 ] || failed="$failed iv"
   commands=$(grep -c '^=== ' "$dir/log.txt" || true)
-  # Outside the run: a command naming a path outside the run folder, or one the sandbox refused.
+  # Outside the run: a command naming an absolute path outside the run folder (a path that starts
+  # the word, so "$HOME/tandem-try/home" is not one), or one the sandbox refused.
   # Never a README step, so it fails the run (the sandbox already kept the content out).
   outside=$(awk -v d="$dir" '
     /^\$ / { cmd = $0; c = cmd; while ((i = index(c, d)) > 0) c = substr(c, 1, i - 1) substr(c, i + length(d))
-             if (c ~ /(\/Users|\/Volumes|\/private|\/tmp|\/var\/folders|\/home|\/root)([\/[:space:]"'\'';&|)]|$)/) print cmd; next }
+             if (c ~ /(^|[[:space:]"'\''=(:;&|<>])(\/Users|\/Volumes|\/private|\/tmp|\/var\/folders|\/home|\/root)([\/[:space:]"'\'';&|)]|$)/) print cmd; next }
     /Operation not permitted/ && cmd != "" { print cmd; cmd = "" }' "$dir/log.txt" | uniq)
   [ -z "$outside" ] || failed="$failed outside"
   if [ -z "$failed" ]; then
