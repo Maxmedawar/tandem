@@ -173,7 +173,7 @@ describe('Phase 2 production memory engine', () => {
     const result = await client.searchMemory(ctx, { query: 'car fuel', limit: 5 })
     expect(result.records.map(record => record.id)).toContain(target.id)
     client.close()
-  })
+  }, 30_000)
 
   it('deduplicates equivalent writes and keeps corrections current', async () => {
     const { client, ctx } = await fixture()

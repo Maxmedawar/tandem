@@ -236,7 +236,7 @@ describe("(e) a real session on a private tmux socket", () => {
 
   it("opens idle, an owner send of ask reads waiting_for_approval on refresh, closed is gone; no screen text in any row", async () => {
     const name = "r1a29-rules";
-    const presence = createPresence();
+    const presence = createPresence({ now: () => T });
     const seen: string[] = [];
     const row = async () => {
       const answer = await presence.whoIsUp({ refresh: true });

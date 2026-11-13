@@ -462,7 +462,7 @@ describe("the setup removes what it made (TANDEM-B-TESTHOME-T2)", () => {
     expect(gone(r.out.HOME), "HOME left after exit").toBe(true);
   });
 
-  it("(o) a folder it cannot remove gives one stderr line naming the variable, never the path", () => {
+  it.skipIf(process.getuid?.() === 0)("(o) a folder it cannot remove gives one stderr line naming the variable, never the path (skipped as root: root ignores chmod 0500)", () => {
     const b = box();
     const r = probe({ TMPDIR: b }, 'fs.chmodSync((await import("node:path")).dirname(H), 0o500);');
     chmodSync(b, 0o700);

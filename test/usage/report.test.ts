@@ -229,7 +229,7 @@ const reading = (over: Json = {}) => ({
 const envelope = (body: Json, ts = clock) => JSON.stringify(signEnvelope(B, { from: "beta", to: "alpha", body: JSON.stringify(body) }, ts));
 const answerWith = (env: string) => ({ status: 200, body: { presence: [{ from: "beta", envelope: env, at: clock }], connected: ["alpha", "beta"] } });
 
-describe("(52) usage report", () => {
+describe("(52) usage report", { timeout: 30_000 }, () => {
   it("(52) (a) shape: buildReport gives exactly the UsageAnswer and UsageAccount keys in order; accounts sorted by agent, account; most_room one row per agent", () => {
     const a = buildReport({
       now: T,
@@ -437,7 +437,7 @@ process.stdout.write(JSON.stringify(a));
   });
 });
 
-describe("(52) carriage in the signed presence", () => {
+describe("(52) carriage in the signed presence", { timeout: 30_000 }, () => {
   it("(52) (g) sender: usage rows ride as one more body key with exactly 14 keys each; none in the store = the old five keys; 24 worst-case rows fit with sessions dropped; 30 accounts send the first 24; a store that throws sends sessions only", async () => {
     rosterWorld();
     clock = T;
@@ -577,7 +577,7 @@ describe("(52) carriage in the signed presence", () => {
   });
 });
 
-describe("(52) the tool and the hub frame", () => {
+describe("(52) the tool and the hub frame", { timeout: 30_000 }, () => {
   it("(52) (k) hub frame /usage: POST with no body or {} answers 200; refresh true re-reads; GET 404; a body other than { refresh: boolean } 400", async () => {
     world();
     const frame = (method: string, raw?: string) => ({

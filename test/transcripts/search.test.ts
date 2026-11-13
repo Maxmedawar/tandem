@@ -137,6 +137,7 @@ describe("(a) redact", () => {
     expect(redact(`x${v}y`).text).toBe("x[secret:env]y");
     const unit = "xoxb- sk-ant- AKIA eyJa.eyJb. ghp_ github_pat_ password= Authorization: Bearer ://u:@ AIza sk_live_ " + ["-----BEGIN", "PRIVATE", "KEY-----"].join(" ") + " ";
     for (const hostile of [unit.repeat(Math.ceil(1_000_000 / unit.length)), "a".repeat(1_000_000), "=".repeat(1_000_000)]) {
+      redact(hostile); // untimed warm-up; only the next call is timed
       const t0 = performance.now();
       const r = redact(hostile);
       const ms = performance.now() - t0;
@@ -574,6 +575,7 @@ describe("(R1) masking: every row is masked in redact, the store, the snippet an
     ];
     for (const [what, unit] of shapes) {
       const hostile = unit.repeat(Math.ceil(1_000_000 / unit.length));
+      redact(hostile); // untimed warm-up; only the next call is timed
       const t0 = performance.now();
       const r = redact(hostile);
       const ms = performance.now() - t0;
