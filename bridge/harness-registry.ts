@@ -101,8 +101,32 @@ const DIALOG_FIELDS = ['name', 'kind', 'match', 'answer', 'highlight', 'key']
 const DIALOG_KINDS = ['trust', 'update', 'bypass']
 /** Select-mode markers; key mode's start form `[k] ` may follow one of them too. */
 export const HIGHLIGHTS = ['❯', '›', '>', '●', '▶']
-/** An answer naming a wider scope than this folder (refused on every kind). */
-const WIDE_TRUST = /parent|\ball\b|always|every/i
+/** An answer naming a wider scope than this folder (refused on every kind), read through scopeText:
+ *  `all` is a word of its own when no letter touches it (`all_folders`, `all-folders`, `all2`). */
+const WIDE_TRUST = /parent|(?<!\p{L})all(?!\p{L})|always|every/u
+/** Cyrillic and Greek letters drawn like the Latin letters of the scope words (lower case). */
+const LOOKALIKES: Record<string, string> = {
+  '\u0430': 'a', '\u03b1': 'a',
+  '\u0435': 'e', '\u03b5': 'e', '\u0454': 'e', '\u04bd': 'e',
+  '\u0440': 'p', '\u03c1': 'p',
+  '\u0433': 'r',
+  '\u043f': 'n', '\u03b7': 'n',
+  '\u0442': 't', '\u03c4': 't',
+  '\u04cf': 'l', '\u0456': 'l', '\u03b9': 'l',
+  '\u0461': 'w', '\u051d': 'w', '\u03c9': 'w',
+  '\u0443': 'y', '\u04af': 'y', '\u03b3': 'y', '\u03c5': 'y',
+  '\u0455': 's',
+  '\u0475': 'v', '\u03bd': 'v',
+}
+/** An answer as the scope-word check reads it: compatibility forms folded and combining marks dropped
+ *  (NFKD, which reads everything NFKC folds: fullwidth, styled and accented letters as plain ones),
+ *  lower case, lookalikes as Latin letters; read twice, as written and with a capital after a small
+ *  letter starting a new word (camelCase), so `PaReNt` and `trustAll` both count.
+ *  Stated limits: an all-capitals run (`TRUSTALL`), `I` or `1` drawn for `l`, other scripts. */
+function scopeText(answer: string): string {
+  const t = answer.normalize('NFKD').replace(/\p{M}/gu, '')
+  return `${t}\n${t.replace(/(\p{Ll})(?=\p{Lu})/gu, '$1 ')}`.toLowerCase().replace(/[\u0370-\u052f]/g, (c) => LOOKALIKES[c] ?? c)
+}
 const DIALOG_KEY = /^[a-z0-9]$/
 const SHELLS = new Set(('sh bash zsh dash ksh mksh yash csh tcsh fish nu xonsh elvish pwsh powershell cmd busybox env sudo doas ' +
   'su nohup nice timeout xargs script expect python pypy perl ruby php node nodejs bun deno lua luajit tclsh wish osascript ' +
@@ -169,8 +193,8 @@ function dialogsOf(raw: Table): Dialog[] | undefined {
     if (NEVER.test(answer)) fail(`${at}answer: a sign-in or purchase answer is never typed`)
     if (UPDATE_TEXT.test(answer)) fail(`${at}answer: an update is never started (an update dialog may only be skipped)`)
     if (kind === 'update' && !SKIPS_UPDATE.test(answer)) fail(`${at}answer: an update dialog may only be skipped (Skip, Not now, Later, No, Dismiss, Remind)`)
-    // Every kind, after NFKC folding (fullwidth and styled letters read as plain ones).
-    if (WIDE_TRUST.test(answer.normalize('NFKC'))) {
+    // Every kind, after folding (scopeText: fullwidth, styled, accented and lookalike letters, joined words).
+    if (WIDE_TRUST.test(scopeText(answer))) {
       fail(kind === 'trust'
         ? `${at}answer: a trust answer trusts this folder only (never parent, all, always or every)`
         : `${at}answer: an answer never names a wider scope (never parent, all, always or every)`)

@@ -1059,3 +1059,216 @@ process.stdin.on('data', (buf) => {
     }, 60_000);
   });
 });
+
+/**
+ * review-fix U-R1B-SCHEMA-DIALOGS-2 (audit): the scope words are also refused when joined to another
+ * word by `_`, `-`, `.` or a capital (camelCase), under a combining mark, or written with Cyrillic or
+ * Greek lookalike letters; zero-width characters were already refused as forbidden characters. Plus
+ * the audit's rows for the box form, the banner on an attacker-shaped screen, and the grace's polls.
+ * Stated limits: an all-capitals run (`TRUSTALL`), `I` or `1` drawn for `l`, other scripts.
+ */
+describe("review-fix U-R1B-SCHEMA-DIALOGS-2: the audit table", () => {
+  const FIX = readFileSync(join(DIALOGS, "gemini-trust-bordered-real.txt"), "utf8");
+  const gem = () => loadHarnesses({ ownerDir: "/nonexistent-r1a18b" }).harnesses.get("gemini")?.dialogs ?? [];
+  const names = (pane: string) => ts.shownDialogs(pane, gem()).map((d: any) => d.name);
+  const NOTICE = "Gemini CLI update available! 0.38.2 → 0.68.0";
+  const HINT = 'Installed via Homebrew. Please update with "brew upgrade gemini-cli".';
+  const boxed = (rows: string[]) => [`╭${"─".repeat(198)}╮`, ...rows.map((r) => `│ ${r}`.padEnd(199) + "│"), `╰${"─".repeat(198)}╯`].join("\n") + "\n";
+  const fixRow = (t: string) => ` ${`│ ${t}`.padEnd(197)}│`;
+
+  describe("the loader: scope words in disguise", () => {
+    const dir = join(BOX, "loader-r1bsd2-audit");
+    mkdirSync(dir);
+    let n = 0;
+    const load = (kind: string, answer: string) => {
+      const name = `z${n++}`;
+      const own = join(dir, name);
+      mkdirSync(own);
+      const row = { name: "r", kind, match: ["(?i)x"], answer, highlight: "●" };
+      writeFileSync(join(own, `${name}.toml`), `name = "${name}"\nprogram = "/bin/echo"\nhas_prompts = true\n${rowToml(row)}`);
+      const { harnesses, errors } = loadHarnesses({ installDir: own, ownerDir: "/nonexistent-r1a18b", path: "/usr/bin" });
+      return { errors: errors.map((e: any) => e.reason), loaded: harnesses.get(name)?.dialogs !== undefined };
+    };
+    const TRUST_ERR = "dialogs[0].answer: a trust answer trusts this folder only (never parent, all, always or every)";
+    const WIDE_ERR = "dialogs[0].answer: an answer never names a wider scope (never parent, all, always or every)";
+    const refused: [string, string][] = [
+      ["trust", "Trust all_folders"],
+      ["trust", "Trust all-folders"],
+      ["trust", "Trust all.folders"],
+      ["trust", "trust_all"],
+      ["trust", "trustAllFolders"],
+      ["trust", "TrustAll"],
+      ["trust", "Trust all2"],
+      ["bypass", "Accept all_edits"],
+      ["update", "Skip allVersions"],
+      ["trust", "Trust PaReNt folder"],
+      ["trust", "Trust ALL"],
+      ["trust", "Trust pa\u0301rent folder"], // a combining acute
+      ["trust", "Trust a\u034fll"], // the combining grapheme joiner
+      ["trust", "Trust \u00e9very folder"], // \u00e9
+      ["bypass", "Yes, alw\u00e4ys"], // \u00e4
+      ["trust", "Trust p\u0430rent folder"], // Cyrillic \u0430
+      ["trust", "Trust \u0440\u0430r\u0435nt folder"], // Cyrillic \u0440 \u0430 \u0435
+      ["trust", "Trust \u0430ll"], // Cyrillic \u0430
+      ["trust", "Trust a\u04cf\u04cf"], // Cyrillic palochka
+      ["trust", "Trust \u0410LL"], // Cyrillic capital \u0410
+      ["trust", "Trust \u0435v\u0435r\u0443 folder"], // Cyrillic \u0435 \u0443
+      ["trust", "Trust e\u0475ery folder"], // Cyrillic izhitsa
+      ["trust", "Trust \u03b1ll"], // Greek \u03b1
+      ["trust", "Trust \u03c1arent folder"], // Greek \u03c1
+      ["trust", "Trust e\u03bdery folder"], // Greek \u03bd
+      ["bypass", "Yes, \u03b1lwa\u03b3s"], // Greek \u03b1 \u03b3
+      ["update", "Skip \u0430ll"],
+    ];
+    it.each(refused)("a %s answer %j is refused with the scope-word error", (kind, answer) => {
+      expect(load(kind, answer)).toEqual({ errors: [kind === "trust" ? TRUST_ERR : WIDE_ERR], loaded: false });
+    });
+    // Format characters (zero-width space, joiners, word joiner, BOM, soft hyphen) never load at all.
+    it.each([["200B", "\u200b"], ["200C", "\u200c"], ["200D", "\u200d"], ["2060", "\u2060"], ["FEFF", "\ufeff"], ["00AD", "\u00ad"]])("a trust answer with U+%s inside a scope word is refused", (_hex, zw) => {
+      for (const answer of [`Trust pa${zw}rent folder`, `Trust a${zw}ll`]) {
+        expect(load("trust", answer)).toEqual({ errors: ["forbidden character in dialogs[0].answer"], loaded: false });
+      }
+    });
+    it.each([
+      ["bypass", "Allow once"],
+      ["bypass", "Yes, allow"],
+      ["trust", "Trust overall"],
+      ["trust", "Trust small folder"],
+      ["trust", "Trust folder (work)"],
+      ["update", "Not now, call me later"],
+      ["trust", "Yes, I trust this folder"],
+      ["trust", "\u0414\u043e\u0432\u0435\u0440\u044f\u0442\u044c \u044d\u0442\u043e\u0439 \u043f\u0430\u043f\u043a\u0435"], // Russian: trust this folder
+      ["trust", "Faire confiance \u00e0 ce dossier"],
+    ])("a %s answer %j still loads", (kind, answer) => {
+      expect(load(kind, answer)).toEqual({ errors: [], loaded: true });
+    });
+    it("every built-in file still loads, with every built-in answer", () => {
+      const built = readdirSync(fileURLToPath(new URL("../harnesses/", import.meta.url))).filter((f) => f.endsWith(".toml"));
+      const { harnesses, errors } = loadHarnesses({ ownerDir: "/nonexistent-r1a18b" });
+      expect(errors.filter((e: any) => built.some((f) => e.file.endsWith(`/${f}`)))).toEqual([]);
+      const answers = built.flatMap((f) => (harnesses.get(f.replace(/\.toml$/, ""))?.dialogs ?? []).map((d: any) => d.answer));
+      expect(answers).toEqual(expect.arrayContaining(["Skip", "Trust folder", "Trust this workspace", "Yes, I accept", "Yes, proceed"]));
+    });
+  });
+
+  describe("box rows", () => {
+    const d = () => gem()[0];
+    it("only a left border, on every row or on the answer row alone: not shown (as at BASE)", () => {
+      expect(names(FIX.split("\n").map((l) => l.replace(/│$/, "")).join("\n"))).toEqual([]);
+      expect(names(FIX.replace(/(│ ● 1\. Trust folder \(work\) +)│/, "$1 "))).toEqual([]);
+    });
+    it("a row inside two borders on each side is not an answer row", () => {
+      expect(names(FIX.replace(" │ ● 1. Trust folder (work)  ", "│ │ ● 1. Trust folder (work) │"))).toEqual([]);
+    });
+    it("a boxed row that only quotes the answer is not an answer row", () => {
+      for (const t of ["Choose ● 1. Trust folder (work)", "x ● 1. Trust folder", "│ Trust folder", "Trust folder │ more", "Trust folders", "1. Trust folder now"]) {
+        expect(names(FIX.replace(/ │ ● 1\. Trust folder \(work\) +│/, fixRow(t)))).toEqual([]);
+      }
+    });
+    it("the marker on a row whose right border is gone is not read: no key (never Enter)", () => {
+      const pane = FIX.replace("│ ● 1.", "│   1.").replace(/(│   2\. Trust parent folder \(tmp\) +)│/, (_m, a) => `${a.replace("│   2.", "│ ● 2.")} `);
+      expect(pane).toMatch(/│ ● 2\. Trust parent folder \(tmp\) +\n/);
+      expect(names(pane)).toEqual(["folder-trust"]);
+      expect(ts.dialogKey(pane, d())).toBeUndefined();
+    });
+    it("the marker on the parent row, boxed: Up, never Enter; on both rows: the answer row's own marker decides", () => {
+      const parent = FIX.replace("│ ● 1.", "│   1.").replace("│   2.", "│ ● 2.");
+      expect(ts.dialogKey(parent, d())).toBe("Up");
+      expect(ts.dialogKey(FIX.replace("│   3.", "│ ● 3."), d())).toBe("Enter");
+    });
+    it("every line of the fixture, boxed or with its borders cut off, names the same dialog rows", () => {
+      const cut = FIX.split("\n").map((l) => l.replace(/^ │/, "  ").replace(/│$/, " ")).join("\n");
+      expect(names(cut)).toEqual(["folder-trust"]);
+      expect(ts.dialogKey(cut, d())).toBe(ts.dialogKey(FIX, d()));
+    });
+  });
+
+  describe("update banners on an attacker-shaped screen", () => {
+    const strip = (pane: string) => ts.withoutUpdateBanners(pane);
+    const judged = (pane: string) => registry.UPDATE_TEXT.test(strip(pane));
+    it("the two real banner forms are removed whole and the trust dialog under them is still shown", () => {
+      for (const banner of [boxed([NOTICE, HINT]), `ℹ ${NOTICE}\n  ${HINT}\n`]) {
+        const pane = `${banner}\n${FIX}`;
+        expect(strip(pane)).toBe(`\n${FIX}`);
+        expect(names(pane)).toEqual(["folder-trust"]);
+        expect(ts.dialogKey(pane, gem()[0])).toBe("Enter");
+      }
+    });
+    it("removing banners never removes a dialog row: what is shown is read from the whole screen", () => {
+      // A banner-shaped box holding the dialog's question, and the notice as the trust box's heading.
+      const panes = [
+        `${boxed([NOTICE, "Do you trust the files in this folder?"])}\n${FIX}`,
+        FIX.replace("Do you trust the files in this folder?", "Update available: trust the files in this folder?".padEnd(38)),
+      ];
+      for (const pane of panes) {
+        for (const row of ["│ ● 1. Trust folder (work)", "│   2. Trust parent folder (tmp)", "│   3. Don't trust"]) expect(strip(pane)).toContain(row);
+      }
+      expect(names(panes[0]!)).toEqual(["folder-trust"]);
+    });
+    const kept: [string, string][] = [
+      ["the notice as the trust box's first row", FIX.split("\n").map((l, i) => (i === 0 ? fixRow(NOTICE) : l)).join("\n")],
+      ["the notice and hint as two rows of the trust box", FIX.split("\n").map((l, i) => (i === 5 ? fixRow(NOTICE) : i === 6 ? fixRow(HINT) : l)).join("\n")],
+      ["the plain notice directly above the trust box", `${NOTICE}\n${FIX}`],
+      ["a plain notice, a blank line, then the option rows (builder deviation 1)", `${NOTICE}\n\n● 1. Trust folder\n  2. Don't trust\n`],
+      ["a boxed notice, then the option rows (builder deviation 1)", `${boxed([NOTICE])}● 1. Trust folder\n  2. Don't trust\n`],
+      ["a boxed notice, blank lines, then a boxed option row (builder deviation 1)", `${boxed([NOTICE])}\n\n${fixRow("● 1. Trust folder (work)")}\n`],
+      ["a second, different update line outside the banner", `${boxed([NOTICE, HINT])}\n${FIX}\nInstall it now?\n`],
+      ["a box with only a left border", `╭──\n│ ${NOTICE}\n╰──\n${FIX}`],
+      ["a box with no bottom line", `╭──╮\n│ ${NOTICE} │\n${FIX}`],
+      ["an option row hidden as the box's second row", boxed([NOTICE, "> Update now"])],
+    ];
+    it.each(kept)("update text stays on the screen: %s", (_label, pane) => {
+      expect(judged(pane)).toBe(true);
+    });
+    it("sign-in text inside a banner still counts (NEVER reads the whole screen)", () => {
+      const pane = `${boxed([NOTICE, "Please log in to update"])}\n${FIX}`;
+      expect(registry.NEVER.test(pane)).toBe(true);
+    });
+  });
+
+  describe("the grace, through a real pane", () => {
+    const RND = Math.random().toString(36).slice(2, 8).replace(/[^a-z0-9]/g, "x");
+    const SD2 = join(BOX, "sd2-dialog.mjs"); // written by the (SCHEMA-DIALOGS-2) (d) describe above
+    it("a dialog that never leaves: one Enter, then needs owner after the grace, a few polls and no more", async () => {
+      const h = harness(`r1bsd2-${RND}-poll`, screen("r1bsd2-audit-poll.txt", FIX), 0, gem());
+      h.program = SD2;
+      h.programPath = SD2;
+      h.args = [h.args[0], logOf(h.name), "-1", "1"];
+      const proto = ts.TerminalSession.prototype;
+      const real = proto.capture;
+      const polls: number[] = [];
+      proto.capture = function (this: any) {
+        if (String(this.tmuxTarget).includes(h.name)) polls.push(Date.now());
+        return real.call(this);
+      };
+      let caught: unknown;
+      const from = Date.now();
+      try {
+        const s = await spawn(h, "safe");
+        await s.close();
+      } catch (e) {
+        caught = e;
+      } finally {
+        proto.capture = real;
+      }
+      const took = Date.now() - from;
+      expect(caught).toBeInstanceOf(ts.NeedsOwnerError);
+      expect((caught as Error).message).toContain("it is still shown after Tandem's answer");
+      expect(keys(logOf(h.name))).toEqual(["Enter"]);
+      expect(tmuxHas(h.name)).toBe(false);
+      // One read per poll plus one right before the key; polls are 750 ms apart, so never a hot loop.
+      expect(polls.length).toBeGreaterThanOrEqual(3);
+      expect(polls.length).toBeLessThanOrEqual(Math.ceil(took / 700) + 3);
+    }, 60_000);
+    it("the notice inside the trust box: needs owner, no key", async () => {
+      const pane = FIX.split("\n").map((l, i) => (i === 5 ? fixRow(NOTICE) : l)).join("\n");
+      const h = harness(`r1bsd2-${RND}-inbox`, screen("r1bsd2-audit-inbox.txt", pane), 0, gem());
+      h.program = SD2;
+      h.programPath = SD2;
+      h.args = [h.args[0], logOf(h.name), "0", "0"];
+      const err = await needsOwner(h, "safe");
+      expect(err.message).toContain("the screen asks about an update");
+      expect(keys(logOf(h.name))).toEqual([]);
+    }, 60_000);
+  });
+});

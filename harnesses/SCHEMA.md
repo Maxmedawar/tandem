@@ -116,8 +116,12 @@ Exactly one of `highlight` and `key`. Refused: an `answer` that matches NEVER
 (`bridge/harness-registry.ts`: sign-in, log-in, purchase, buy, subscription, payment, billing,
 credit card text), any `answer` containing `updat`, `install` or `upgrad` (any case), and an
 `update` answer that does not start with `Skip`, `Not now`, `Later`, `No`, `Dismiss` or `Remind`:
-an update dialog may only be skipped, and an answer of any kind matching `parent`, `all` (a whole
-word), `always` or `every` (any case, after NFKC folding, so fullwidth and styled letters count): a
+an update dialog may only be skipped, and an answer of any kind matching `parent`, `all` (with no
+letter touching it: `all_folders`, `all-folders` and `allFolders` count, `overall` and `Allow` do
+not), `always` or `every` (any case, after NFKC folding, so fullwidth and styled letters count;
+accents and other combining marks are dropped, and the Cyrillic and Greek letters drawn like the
+Latin ones in these words are read as them; not folded: an all-capitals run such as `TRUSTALL`, `I`
+or `1` drawn for `l`, other scripts): a
 `trust` answer fails with `a trust answer trusts this folder only (never parent, all, always or
 every)`, an `update` or `bypass` answer with `an answer never names a wider scope (never parent,
 all, always or every)`.
