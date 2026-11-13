@@ -670,3 +670,59 @@ describe("(ANCHOR-3 f) claude: the spinner and token layouts still read working 
     expect(decideInput("agent", "type", st)).toBe("held");
   });
 });
+
+// U-R1B-COPILOT-WORKING (G1 of the U-R1B-ANCHOR-4 audit): a working screen whose busy hint is still on
+// screen never reads idle because footer lines were added under it (agent text would be typed into a
+// busy agent). Every agent with both working and idle rules, each of its working sources, with 0..6
+// plain footer lines `status line <k>` (none of the agent's composer characters) appended: directly,
+// indented, or after a blank row. Each reads working or unknown (agents held), never idle.
+const FOOTER_AGENTS = agentsWithRules.filter((n) => (harnesses.get(n)!.states?.working ?? []).length > 0 && (harnesses.get(n)!.states?.idle ?? []).length > 0);
+const FOOTERS = { plain: (k: number) => Array.from({ length: k }, (_, i) => `status line ${i + 1}`), indented: (k: number) => Array.from({ length: k }, (_, i) => `  status line ${i + 1}`), "after a blank row": (k: number) => (k === 0 ? [] : ["", ...Array.from({ length: k }, (_, i) => `status line ${i + 1}`)]) };
+const W_ROWS = FOOTER_AGENTS.flatMap((name) =>
+  sourcesOf(name, "working").flatMap((file) => (Object.keys(FOOTERS) as (keyof typeof FOOTERS)[]).flatMap((how) => [0, 1, 2, 3, 4, 5, 6].map((k) => [`${name} ${file} + ${k} footer lines (${how})`, name, file, how, k] as const))),
+);
+describe("(footer) U-R1B-COPILOT-WORKING: a working screen with extra footer lines never reads idle", () => {
+  it("the table holds every agent with working and idle rules, copilot included", () => {
+    expect(FOOTER_AGENTS).toContain("copilot");
+    for (const name of FOOTER_AGENTS) expect(sourcesOf(name, "working").length, `${name} working sources`).toBeGreaterThan(0);
+  });
+  it.each(W_ROWS)("%s reads working or unknown", (_t, name, file, how, k) => {
+    const h = harnesses.get(name)!;
+    const st = readScreen(h, [...linesOf(read(file)), ...FOOTERS[how](k)].join("\n"));
+    if (k === 0) expect(st).toBe("working");
+    expect(["working", "unknown"]).toContain(st);
+    expect(decideInput("agent", "type", st)).toBe("held");
+  });
+});
+
+// U-R1B-COPILOT-WORKING (G2, G5 of the U-R1B-ANCHOR-4 audit): cline 3.0.74's real status bar (cli-v3.0.74 source,
+// components/status-bar.tsx 232-280, read as text): the `Plan`/`Act`/`(Tab)` row, the context row only when row 1
+// does not fit, the path row, the `Auto-approve all` row. The two fixtures are synthetic (no real user text).
+describe("(statusbar) U-R1B-COPILOT-WORKING: cline's real 3-row and 4-row status bar", () => {
+  const h = harnesses.get("cline")!;
+  const BARS = ["cline-screens/idle-statusbar-3row-src.txt", "cline-screens/idle-statusbar-4row-src.txt"];
+  it.each(BARS)("%s reads idle with an empty prompt", (file) => {
+    const lines = linesOf(read(file));
+    expect(lines.at(-1)).toMatch(/Auto-approve all (?:enabled|disabled) \(Shift\+Tab\)$/);
+    expect(readScreen(h, read(file))).toBe("idle");
+    expect(isPromptEmpty(h, read(file))).toBe(true);
+  });
+  it.each(BARS.flatMap((file) => sourcesOf("cline", "waiting_for_approval").flatMap((src) => VARIANTS.map((v) => [`${src} quoted above ${file} (${v})`, src, file, v] as const))))(
+    "%s reads idle (ANCHOR-4: an approval quote sits above the bar)",
+    (_t, src, file, variant) => {
+      const block = blockOf(h, read(src), "waiting_for_approval");
+      const q = quoted(block, variant, linesOf(read(file)));
+      expect(readScreen(h, q)).toBe("idle");
+      expect(isPromptEmpty(h, q)).toBe(true);
+      expect(decideInput("owner", "type", readScreen(h, q))).toBe("enter");
+    },
+  );
+  // G5 (stated limit, cline.toml header): an owner-opened dialog (here the command palette, command-palette.tsx text)
+  // is drawn by @opentui-ui/dialog over the chat; no cline package text proves where it sits, so a screen with the
+  // empty bar and status bar still visible below it reads idle.
+  it("(G5 stated limit) the command palette drawn over the chat, the empty bar and status bar below, reads idle", () => {
+    const pal = ["          Command Palette                              Ctrl+P", "          ╭" + "─".repeat(48) + "╮", "          │ Search actions...".padEnd(60) + "│", "          ╰" + "─".repeat(48) + "╯", "            Open Settings                        Opt+S", "            Review and edit CLI configuration"];
+    const bar = linesOf(read(BARS[0]!)).slice(-6);
+    expect(readScreen(h, ["❯ hello", "", "* Hello! How can I help?", ...pal, "", ...bar].join("\n"))).toBe("idle");
+  });
+});

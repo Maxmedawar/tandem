@@ -1,0 +1,11 @@
+❯ hello
+
+* Hello! How can I help?
+
+────────────────────────────────────────────────────────────
+❯ Ask anything...
+────────────────────────────────────────────────────────────
+ claude-sonnet-4-6                       ○ Plan ● Act (Tab)
+ ██████ (1,024) $0.01
+ work (main) | 1 file +3 -1
+ ⏵⏵ Auto-approve all enabled (Shift+Tab)

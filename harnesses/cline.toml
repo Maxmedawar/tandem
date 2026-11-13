@@ -26,6 +26,7 @@
 # No dialog row: Cline has no trust menu, and its onboarding and hub update menus are not dialogs
 # Tandem may answer. delivery is `notice`: Cline's hooks live in its own folders,
 # which Tandem never writes.
+# U-R1B-COPILOT-WORKING (G5, stated limit): a dialog the owner opens over the chat (command palette, pickers; drawn by @opentui-ui/dialog, whose layout no cline package text proves) with the empty bar and status bar visible below reads idle.
 name = "cline"
 program = "cline"
 args = ["--auto-approve", "false"]
