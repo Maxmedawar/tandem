@@ -190,12 +190,17 @@ else
     done
   fi
   { [ -n "$node_license" ] && [ -f "$node_license" ]; } || no_node "its LICENSE was not found" TANDEM_NODE_LICENSE
+  grep -q "Node.js is licensed" "$node_license" 2>/dev/null || no_node "its LICENSE is not a Node license" TANDEM_NODE_LICENSE
   echo "  node runtime"
   cp "$real" "$stage/libexec/node"
   chmod 0755 "$stage/libexec/node"
   cp "$node_license" "$stage/LICENSE.node.txt"
   bundled_node="libexec/node"
-  bundled_node_version=$("$real" -p "process.versions.node")
+  # Finding Node is not enough: a dynamically linked build (for example Homebrew)
+  # may lose its libraries when copied. Prove the copy runs before shipping it.
+  bundled_node_version=$("$stage/libexec/node" -p "process.versions.node" 2>/dev/null) ||
+    no_node "the bundled binary cannot run from the release" TANDEM_NODE_BINARY
+  [ -n "$bundled_node_version" ] || no_node "the bundled binary reports no version" TANDEM_NODE_BINARY
 fi
 
 # Tokens and cost per account come from ccusage (MIT), shipped as its unchanged native binary: the

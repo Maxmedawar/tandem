@@ -315,6 +315,47 @@ describe('(FIXNODE) bundling Node', { timeout: 900_000 }, () => {
     expect(readdirSync(out).filter(name => name.endsWith('.tar.gz'))).toEqual([])
   })
 
+  for (const explicit of [false, true]) {
+    it(`(FIXNODE) f4 rejects a non-Node LICENSE (${explicit ? 'explicit override' : 'discovered'})`, () => {
+      const name = explicit ? 'invalid-explicit' : 'invalid-discovered'
+      const link = fakeNode(name, true)
+      const license = join(box, name, 'real', 'LICENSE')
+      writeFileSync(license, 'MIT License for an unrelated component\n')
+      const out = join(box, `out-${name}`)
+      const r = build(link, out, explicit ? { TANDEM_NODE_LICENSE: license } : {})
+      expect(r.status, r.stdout).not.toBe(0)
+      expect(r.stderr).toContain('TANDEM_NODE_LICENSE')
+      expect(readdirSync(out).filter(name => name.endsWith('.tar.gz'))).toEqual([])
+    })
+  }
+
+  it('(FIXNODE) f6 a Node binary that cannot run from the release is refused', () => {
+    const link = fakeNode('non-portable', true)
+    const real = join(box, 'non-portable', 'real', 'bin', 'node')
+    const original = readFileSync(real, 'utf8')
+    writeFileSync(real, original.replace('#!/bin/sh\n', '#!/bin/sh\ncase "$0" in */libexec/node) echo "missing runtime library" >&2; exit 127 ;; esac\n'))
+    const out = join(box, 'out-non-portable')
+    const r = build(link, out)
+    expect(r.status, r.stdout).not.toBe(0)
+    expect(r.stderr).toContain('TANDEM_NODE_BINARY')
+    expect(r.stderr).toContain('TANDEM_BUNDLE_NODE=0')
+    expect(readdirSync(out).filter(name => name.endsWith('.tar.gz'))).toEqual([])
+  })
+
+  it('(FIXNODE) f5 a cross build still ships no host Node and needs target Node', () => {
+    const out = join(box, 'out-cross')
+    const target = process.platform === 'linux' ? 'darwin-arm64' : 'linux-x86_64'
+    const r = build(fakeNode('cross-bare', false), out, { TANDEM_TARGET: target })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stderr).toContain('node runtime (skipped: a cross build cannot bundle this machine\'s Node)')
+    const staged = stagedTree(out)
+    expect(existsSync(join(staged, 'libexec', 'node'))).toBe(false)
+    expect(existsSync(join(staged, 'LICENSE.node.txt'))).toBe(false)
+    const manifest = JSON.parse(readFileSync(join(staged, 'manifest.json'), 'utf8')) as { requiresSystemNode: boolean; platform: string }
+    expect(manifest.requiresSystemNode).toBe(true)
+    expect(manifest.platform).toBe(target)
+  })
+
   it('(FIXNODE) f3 TANDEM_BUNDLE_NODE=0 builds without Node and records that it needs one', () => {
     const out = join(box, 'out-f3')
     const r = build(fakeNode('bare-f3', false), out, { TANDEM_BUNDLE_NODE: '0' })

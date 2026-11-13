@@ -829,22 +829,24 @@ describe('(FIXNODE) s: status tells a running job from a crash-looping one', { t
     })
   }
 
-  it('(FIXNODE) s3 install without --no-start fails when no pid appears within 10 s', async () => {
-    resetHome()
-    clearMarks()
-    const darwin = !onLinux
-    writeFileSync(join(BOX, `crash-${newSvc(darwin)}`), '')
-    const started = Date.now()
-    const r = cutover(['install', '--archive', archive, '--port', String(await freePort())])
-    const took = Date.now() - started
-    expect(r.stderr).toMatch(/\ncutover: next NOT RUNNING \(last exit 1\); last log line: [^\n]*\n$/)
-    expect(r.status).toBe(1)
-    expect(r.stdout).not.toContain('cutover: installed\n')
-    expect(took).toBeGreaterThanOrEqual(9_000)
-    expect(took).toBeLessThan(60_000)
-    expect(stubLog()).toContain(darwin ? `launchctl list ${newSvc(darwin)}\n` : `systemctl --user show -p ActiveState,SubState,ExecMainStatus,MainPID ${newSvc(darwin)}\n`)
-    expect(stubLog()).not.toContain('com.tandem.runtime')
-    expect(cutover(['rollback', '--purge']).status).toBe(0)
-    clearMarks()
-  })
+  for (const shape of ['darwin', 'linux'] as const) {
+    it(`(FIXNODE) s3 ${shape}: install without --no-start fails when no pid appears within 10 s`, async () => {
+      resetHome()
+      clearMarks()
+      const darwin = shape === 'darwin'
+      writeFileSync(join(BOX, `crash-${newSvc(darwin)}`), '')
+      const started = Date.now()
+      const r = cutover(['install', '--archive', archive, '--port', String(await freePort())], env({}, shape))
+      const took = Date.now() - started
+      expect(r.stderr).toMatch(/\ncutover: next NOT RUNNING \(last exit 1\); last log line: [^\n]*\n$/)
+      expect(r.status).toBe(1)
+      expect(r.stdout).not.toContain('cutover: installed\n')
+      expect(took).toBeGreaterThanOrEqual(9_000)
+      expect(took).toBeLessThan(60_000)
+      expect(stubLog()).toContain(darwin ? `launchctl list ${newSvc(darwin)}\n` : `systemctl --user show -p ActiveState,SubState,ExecMainStatus,MainPID ${newSvc(darwin)}\n`)
+      expect(stubLog()).not.toContain('com.tandem.runtime')
+      expect(cutover(['rollback', '--purge'], env({}, shape)).status).toBe(0)
+      clearMarks()
+    })
+  }
 })
