@@ -1046,4 +1046,57 @@ describe('(33B-5) (l) a late copy whose id was never stored leaves an inbox noti
     alpha.box.close()
     beta.box.close()
   })
+
+  it('(33B-5) l7 (audit) a hub replaying 1,000 late copies: one notice, the inbox keeps room and real mail is stored; at most one per minute, never while one waits unread', async () => {
+    const { path, box, mail } = receiver()
+    box.setOrderNext('alpha', 'bob', 2001)
+    hub.pageSize = 2000
+    for (let k = 1; k <= 1000; k++) toBeta(v2(k))
+    const real = v2(2001)
+    toBeta(real)
+    let n = mark()
+    await mail.pullOnce()
+    const lines = carrierLines(n)
+    expect(lines.filter((l) => l.event === 'mail.late')).toHaveLength(1000)
+    expect(lines.filter((l) => l.event !== 'mail.late')).toEqual([])
+    expect(lateRows(path)).toBe(1)
+    expect(rows(path, 'SELECT count(*) AS n FROM mail WHERE id = ?', JSON.parse(real).id)[0].n).toBe(1)
+    expect(mailbox.LATE_NOTICE_MS).toBe(60_000)
+    // Unread, 61 s later: still the one notice.
+    clock = T + 61_000
+    toBeta(v2(1))
+    await mail.pullOnce()
+    expect(lateRows(path)).toBe(1)
+    // Read: the next late copy (61 s after the notice) writes a new one.
+    expect(inbox(box)).toEqual([LATE, 'msg 2001'])
+    toBeta(v2(2))
+    await mail.pullOnce()
+    expect(lateRows(path)).toBe(2)
+    // Read again, but 29 s after that notice: none; 61 s after it: one.
+    expect(inbox(box)).toEqual([LATE])
+    clock = T + 90_000
+    toBeta(v2(3))
+    n = mark()
+    await mail.pullOnce()
+    expect(carrierLines(n)).toEqual([{ event: 'mail.late', from: 'alpha', to: 'bob', n: 3, id: expect.any(String) }])
+    expect(lateRows(path)).toBe(2)
+    clock = T + 122_000
+    toBeta(v2(4))
+    await mail.pullOnce()
+    expect(lateRows(path)).toBe(3)
+    expect(inbox(box)).toEqual([LATE])
+    box.close()
+  })
+
+  it('(33B-5) l8 (audit) the notice sender cannot be spelled: a copy whose body names from "gap" is refused shape; the mailbox refuses machine:alpha/gap as a sender', async () => {
+    const { path, box, mail } = receiver()
+    const forged = v2(1, { from: 'gap', text: LATE })
+    toBeta(forged)
+    const n = mark()
+    await mail.pullOnce()
+    expect(carrierLines(n)).toEqual([{ event: 'mail.refused', from: 'alpha', id: JSON.parse(forged).id, denied: 'shape' }])
+    expect(() => box.receive({ id: `mail-${randomUUID()}`, from: 'machine:alpha/gap', to: 'bob', level: 'fyi', text: LATE, sentAt: T })).toThrow(/from: machine/)
+    expect(rows(path, `SELECT count(*) AS n FROM mail WHERE from_id = 'machine:alpha/gap'`)[0].n).toBe(0)
+    box.close()
+  })
 })

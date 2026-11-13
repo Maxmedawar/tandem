@@ -44,7 +44,8 @@
  * Stated limits: first contact is the baseline (a hub can withhold everything before the first
  * copy it hands over); a hub can still withhold everything (a gap shows only when a later copy from
  * that sender arrives); a `mail.late` copy whose id was never stored is dropped and leaves one
- * inbox notice from `machine:<computer>/gap` (skipped only at MAX_INBOX), and a resent copy of a
+ * inbox notice from `machine:<computer>/gap` (skipped at MAX_INBOX, while that notice waits unread,
+ * or within mailbox.LATE_NOTICE_MS of the last one, so late copies never fill the inbox), and a resent copy of a
  * message refused at store reads `mail.late` too; a fresh state.db at the receiver starts a new baseline;
  * all of one owner's computers run one release (an older receiver refuses v:2 bodies as `shape`;
  * a v:1 body from an older sender is stored with no order rule); the epoch protects only against a
