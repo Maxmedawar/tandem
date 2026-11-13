@@ -19,7 +19,6 @@ done
 here=$(CDPATH='' cd -- "$(dirname -- "$self")/.." && pwd)
 runtime="$here/runtime"
 state="${TANDEM_HOME:-$HOME/.tandem}"
-label="com.tandem.runtime"
 # The bundled Node is preferred over anything on PATH: a release that carries
 # its own runtime should not start behaving differently because the machine
 # happens to have another one, or a different version of it.
@@ -35,6 +34,17 @@ if [ -f "$state/tandem.env" ]; then
   . "$state/tandem.env"
   set +a
 fi
+# The service this home runs as (TANDEM_SERVICE, from the environment or tandem.env), so a second
+# install beside the first starts and stops only its own.
+service="${TANDEM_SERVICE-tandem}"
+case "$service" in
+  ''|[!abcdefghijklmnopqrstuvwxyz]*|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*) service="" ;;
+esac
+if [ -z "$service" ] || [ "${#service}" -gt 31 ]; then
+  echo "tandem: TANDEM_SERVICE must be a short lower-case name" >&2
+  exit 1
+fi
+label="com.$service.runtime"
 
 usage() {
   cat <<'USAGE'
@@ -91,7 +101,7 @@ case "${1:-}" in
       launchctl bootstrap "gui/$(id -u)" "$state/agents/$label.plist" 2>/dev/null ||
         launchctl kickstart "gui/$(id -u)/$label"
     else
-      systemctl --user start tandem.service
+      systemctl --user start "$service.service"
     fi
     echo "tandem: runtime started"
     ;;
@@ -99,7 +109,7 @@ case "${1:-}" in
     if [ "$(uname -s)" = "Darwin" ]; then
       launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
     else
-      systemctl --user stop tandem.service 2>/dev/null || true
+      systemctl --user stop "$service.service" 2>/dev/null || true
     fi
     echo "tandem: runtime stopped"
     ;;
