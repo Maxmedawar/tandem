@@ -52,7 +52,7 @@ function copyTree(): string {
 /** Runs the copy's build-release.sh into <copy>/out; status, output and the release tree. */
 function build(root: string) {
   const out = join(root, 'out')
-  const env = { ...process.env, TANDEM_SKIP_AUDIT: '1', TANDEM_BUNDLE_NODE: '0' }
+  const env: NodeJS.ProcessEnv = { ...process.env, TANDEM_SKIP_AUDIT: '1', TANDEM_BUNDLE_NODE: '0' }
   delete env.TANDEM_SIGNING_KEY
   const r = spawnSync('sh', [join(root, 'packaging', 'build-release.sh'), out], { cwd: root, env, encoding: 'utf8' })
   const staged = existsSync(out) ? readdirSync(out).filter(name => name.startsWith('tandem-') && statSync(join(out, name)).isDirectory()) : []
