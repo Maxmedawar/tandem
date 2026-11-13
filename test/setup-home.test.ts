@@ -37,6 +37,19 @@ describe("test setup isolates HOME and TANDEM_HOME", () => {
     expect(Object.keys(process.env).filter((k) => k.startsWith("CCM_"))).toEqual([]);
   });
 
+  // U-R1A-CCMNAMES: the TANDEM_ names of the renamed settings are not inherited either.
+  // A fresh node started with all four set keeps none; this process has none either.
+  it("no inherited TANDEM_CWD_ALLOWLIST, TANDEM_DEFAULT_CWD, TANDEM_FABRIC_DB_PATH or TANDEM_FABRIC_ENABLED is left", () => {
+    const names = ["TANDEM_CWD_ALLOWLIST", "TANDEM_DEFAULT_CWD", "TANDEM_FABRIC_DB_PATH", "TANDEM_FABRIC_ENABLED"];
+    const script = `await import(${JSON.stringify(SETUP)}); process.stdout.write(JSON.stringify(${JSON.stringify(names)}.filter((k) => k in process.env)));`;
+    const env: NodeJS.ProcessEnv = { ...process.env, TANDEM_LIVE: "1" };
+    for (const k of names) env[k] = "/nonexistent/r1accm";
+    const r = spawnSync(process.execPath, ["--experimental-strip-types", "--input-type=module", "-e", script], { env, encoding: "utf8" });
+    expect(r.status, "setup probe exit").toBe(0);
+    expect(JSON.parse(r.stdout)).toEqual([]);
+    expect(names.filter((k) => k in process.env)).toEqual([]);
+  });
+
   it("TANDEM_HOME is unset or outside the real home", () => {
     const th = process.env.TANDEM_HOME;
     if (th === undefined) return;

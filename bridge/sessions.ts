@@ -20,7 +20,7 @@
  *     and `..` escapes).
  *   - compare by the volume's own spelling (volumePath, realpath(3)): on a case-insensitive volume
  *     a case variant is the same folder, on a case-sensitive one a different one; nothing lower-cases.
- *   - no implicit roots: CCM_CWD_ALLOWLIST must explicitly name every allowed
+ *   - no implicit roots: TANDEM_CWD_ALLOWLIST must explicitly name every allowed
  *     root and an unset/blank value fails closed.
  *   - prefix match uses a TRAILING SEPARATOR so "/srv/code" does not match
  *     "/srv/code-evil" (prefix-confusion guard).
@@ -33,6 +33,7 @@ import { TmuxBusyError, type DrivableSession, type EngineId } from './drivable.t
 import { enabledEngineIds, loadedHarnesses } from './engine-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
 import { attachCommand, readSessionProvenance, tmux, tmuxSessionName, TMUX_FIELD_SEP } from './terminal-session.ts'
+import { setting } from '../src/legacy-env.ts'
 
 const HOME = homedir()
 const SESSION_PREFIX = 'ccm-'
@@ -110,7 +111,7 @@ export function volumePath(p: string, home = HOME): string {
 
 /** Build only explicit allowlist roots. Missing or blank configuration fails closed. */
 export function buildAllowlist(
-  envValue = process.env.CCM_CWD_ALLOWLIST,
+  envValue = setting(process.env, 'TANDEM_CWD_ALLOWLIST'),
   home = HOME,
 ): string[] {
   if (!envValue?.trim()) return []
