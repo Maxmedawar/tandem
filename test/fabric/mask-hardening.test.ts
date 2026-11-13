@@ -262,6 +262,32 @@ describe('(r) room event bodies are masked before either storage path', () => {
   })
 })
 
+describe('(r) a room event read out of the bus log is masked before it is stored', () => {
+  it('(47H) r5 bus: a payload an older writer left raw in the log is stored and read masked', async () => {
+    const s = secrets()
+    const bus = new FakeRoomBus()
+    const path = storeAt('r5')
+    const client = new SQLiteFabricClient({ databasePath: path, bus })
+    try {
+      const pid = await ownerProject(client)
+      const now = Date.now()
+      const record = {
+        id: 'event-r1a47h-r5', ownerId: 'owner-a', projectId: pid, room: 'r47h', type: 'message', fromAgentId: 'agent-old',
+        body: `r1a47h r5 old writer ${s.key} and ${s.gh}`, createdAt: new Date(now).toISOString(), createdAtMs: now,
+        expiresAtMs: now + 86_400_000, ttlHops: 8, deviceId: 'device-old',
+      }
+      bus.injectRaw('owner-a', pid, 'r47h', Buffer.from(JSON.stringify(record)).toString('base64'))
+      const read = await client.readRoom(owner(pid), { room: 'r47h' })
+      expect(read.events.length).toBe(1)
+      expect(read.events[0]!.body === 'r1a47h r5 old writer [secret:aws-key] and [secret:github-token]').toBe(true)
+    } finally {
+      client.close()
+    }
+    expect(holds(query(path, 'SELECT body FROM room_events'), [s.key, s.gh])).toEqual([false, false])
+    expect(atRest(path, [s.key, s.gh])).toEqual([false, false])
+  })
+})
+
 /* ---------------- (j) project fields masked at create ---------------- */
 
 describe('(j) a project\'s displayName and repoRef are masked at create', () => {
@@ -455,6 +481,63 @@ describe('(o) rows stored before a recorded mask_version are masked once when th
     expect(holds(rows, values(s))).toEqual([false, false, false])
     expect(JSON.stringify(query(path, 'SELECT body FROM room_events')) === JSON.stringify([{ body: 'o4 room [secret:aws-key]' }])).toBe(true)
     expect(query(path, 'SELECT mask_version FROM fabric_mask')).toEqual([{ mask_version: 1 }])
+  })
+})
+
+/**
+ * A store that records the version, with the values only in free pages: a table of rows holding them
+ * was written and dropped by a writer without secure_delete (what a masking pass leaves behind when
+ * the file was not rebuilt after it).
+ */
+async function staleCopies(name: string) {
+  const s = secrets()
+  const path = storeAt(name)
+  const client = new SQLiteFabricClient({ databasePath: path })
+  try {
+    const pid = await ownerProject(client)
+    await client.remember(owner(pid), { scope: 'project', kind: 'fact', text: 'r1a47h kept memory', importance: 0.5 })
+  } finally {
+    client.close()
+  }
+  const db = new DatabaseSync(path)
+  try {
+    db.exec('PRAGMA secure_delete = OFF; CREATE TABLE r1a47h_old (t TEXT)')
+    for (let n = 0; n < 200; n++) db.prepare('INSERT INTO r1a47h_old VALUES (?)').run(`${n} ${s.key} ${s.gh} ${'y'.repeat(500)}`)
+    db.exec('DROP TABLE r1a47h_old')
+  } finally {
+    db.close()
+  }
+  return { s, path }
+}
+const freePages = (path: string) => query<{ freelist_count: number }>(path, 'PRAGMA freelist_count')[0]!.freelist_count
+
+describe('(o) the file is rebuilt after a masking pass, on a later open when the first try did not finish', () => {
+  it('(47H) o5 a rebuild left pending (the first try could not run, or the process ended before it) is done by the next open', async () => {
+    const { s, path } = await staleCopies('o5')
+    const db = new DatabaseSync(path)
+    try { db.exec('CREATE TABLE fabric_mask_vacuum (pending INTEGER)') } finally { db.close() }
+    expect(atRest(path, [s.key, s.gh])).toEqual([true, true])
+    new SQLiteFabricClient({ databasePath: path }).close()
+    expect(hasTable(path, 'fabric_mask_vacuum')).toBe(false)
+    expect(atRest(path, [s.key, s.gh])).toEqual([false, false])
+    expect(query(path, 'SELECT text FROM memories')).toEqual([{ text: 'r1a47h kept memory' }])
+    expect(query(path, 'SELECT mask_version FROM fabric_mask')).toEqual([{ mask_version: 1 }])
+  })
+
+  it('(47H) o6 with nothing masked and no rebuild pending the file is not rebuilt (pin)', async () => {
+    const { path } = await staleCopies('o6')
+    const before = freePages(path)
+    expect(before > 0).toBe(true)
+    new SQLiteFabricClient({ databasePath: path }).close()
+    expect(freePages(path)).toBe(before)
+    expect(hasTable(path, 'fabric_mask_vacuum')).toBe(false)
+  })
+
+  it('(47H) o7 a pass that masked a row leaves no rebuild pending and no free page holding a value', async () => {
+    const { s, path } = await rawStore('o7')
+    new SQLiteFabricClient({ databasePath: path }).close()
+    expect(hasTable(path, 'fabric_mask_vacuum')).toBe(false)
+    expect(atRest(path, values(s))).toEqual([false, false, false])
   })
 })
 

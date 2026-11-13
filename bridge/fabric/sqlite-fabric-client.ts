@@ -1682,6 +1682,9 @@ export class SQLiteFabricClient implements FabricClient {
     // the author of the payload is the one able to say which room it was for.
     if (!isProjectableRecord(record, ownerId, projectId)) return
     const room = record.room
+    // U-R1A-47H: a payload this build published is already masked (redact() leaves it as it is); one
+    // an older writer left in the log is masked here, before it is stored, whatever its length.
+    const body = redact(record.body).text
 
     this.#database.prepare(`
       INSERT OR IGNORE INTO room_events (
@@ -1691,7 +1694,7 @@ export class SQLiteFabricClient implements FabricClient {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       record.id, ownerId, projectId, room, record.type, record.fromAgentId,
-      optional(record.toAgentId), optional(record.replyTo), optional(record.correlationId), record.body,
+      optional(record.toAgentId), optional(record.replyTo), optional(record.correlationId), body,
       record.artifactRefs === undefined ? null : JSON.stringify(record.artifactRefs), record.createdAt,
       record.createdAtMs, record.expiresAtMs, record.ttlHops, record.deviceId, optional(record.sessionId),
       sequence,
@@ -2557,6 +2560,11 @@ export class SQLiteFabricClient implements FabricClient {
    * recorded only on a store holding a row, so the migration's second open
    * (scripts/migrate-from-synergy.ts) masks the rows it copied into its empty store. Rows a raw writer adds after the version is recorded are
    * not looked at; a REDACT_VERSION rise masks everything again once.
+   *
+   * The VACUUM cannot run inside the transaction, so a pass that changed a row leaves an empty table
+   * fabric_mask_vacuum in the same transaction; it is dropped once the VACUUM has run. A VACUUM that
+   * cannot run now (another connection holds the file, no disk room, the process ends first) does not
+   * fail the open: the table stays and every later open tries again until one succeeds.
    */
   private maskOnce(): void {
     const recorded = (): number => {
@@ -2567,22 +2575,46 @@ export class SQLiteFabricClient implements FabricClient {
         return 0
       }
     }
-    if (recorded() >= REDACT_VERSION) return
+    if (recorded() < REDACT_VERSION) this.maskRows(recorded)
+    const pending = this.#database.prepare(`SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'fabric_mask_vacuum'`).get() !== undefined
+    if (!pending) return
+    // A writer without secure_delete (an older bridge, the migration's raw copy) leaves stale copies of
+    // rows in the unused space of pages it rebuilt; only a rebuild of the file drops them.
+    try {
+      this.#database.exec('VACUUM')
+      this.#database.exec('DROP TABLE IF EXISTS fabric_mask_vacuum')
+    } catch { /* the table stays: the next open tries again */ }
+  }
+
+  private maskRows(recorded: () => number): void {
     this.#database.exec('PRAGMA secure_delete = ON')
-    const changed = this.transaction((): number => {
+    this.transaction((): void => {
       this.#database.exec('CREATE TABLE IF NOT EXISTS fabric_mask (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), mask_version INTEGER NOT NULL)')
-      if (recorded() >= REDACT_VERSION) return 0
+      if (recorded() >= REDACT_VERSION) return
       const db = this.#database
       let changed = 0
       const memories = db.prepare('SELECT id, text, deleted_at FROM memories').all() as SqlRow[]
+      const setText = db.prepare('UPDATE memories SET text = ?, normalized_digest = ? WHERE id = ?')
+      const dropFts = db.prepare('DELETE FROM memory_fts WHERE rowid = ?')
+      const addFts = db.prepare('INSERT INTO memory_fts(memory_id, text) VALUES (?, ?)')
+      // memory_id is not indexed in memory_fts: a delete by it reads every row, once per changed
+      // memory. One read of the index's rowids keeps the pass (and the time the file is held) linear.
+      let ftsRows: Map<string, number[]> | undefined
       for (const row of memories) {
         const id = requiredString(row, 'id')
         const text = requiredString(row, 'text')
         const masked = redact(text).text
         if (masked === text) continue
-        db.prepare('UPDATE memories SET text = ?, normalized_digest = ? WHERE id = ?').run(masked, memoryDigest(masked), id)
-        db.prepare('DELETE FROM memory_fts WHERE memory_id = ?').run(id)
-        if (optionalString(row, 'deleted_at') === undefined) db.prepare('INSERT INTO memory_fts(memory_id, text) VALUES (?, ?)').run(id, masked)
+        if (ftsRows === undefined) {
+          ftsRows = new Map()
+          for (const fts of db.prepare('SELECT rowid AS fts_rowid, memory_id FROM memory_fts').all() as SqlRow[]) {
+            const memoryId = requiredString(fts, 'memory_id')
+            ftsRows.set(memoryId, [...(ftsRows.get(memoryId) ?? []), requiredNumber(fts, 'fts_rowid')])
+          }
+        }
+        setText.run(masked, memoryDigest(masked), id)
+        for (const ftsRowid of ftsRows.get(id) ?? []) dropFts.run(ftsRowid)
+        if (optionalString(row, 'deleted_at') === undefined) addFts.run(id, masked)
         this.#vectorStore.remove(id)
         changed++
       }
@@ -2608,14 +2640,13 @@ export class SQLiteFabricClient implements FabricClient {
         db.prepare('DELETE FROM idempotency WHERE rowid = ?').run(requiredNumber(row, 'id'))
         changed++
       }
-      if (changed > 0) db.exec(`INSERT INTO memory_fts(memory_fts) VALUES('optimize')`)
+      if (changed > 0) {
+        db.exec(`INSERT INTO memory_fts(memory_fts) VALUES('optimize')`)
+        db.exec('CREATE TABLE IF NOT EXISTS fabric_mask_vacuum (pending INTEGER)')
+      }
       const rows = db.prepare('SELECT (SELECT count(*) FROM memories) + (SELECT count(*) FROM room_events) + (SELECT count(*) FROM projects) AS n').get() as SqlRow
       if (requiredNumber(rows, 'n') > 0) db.prepare('INSERT OR REPLACE INTO fabric_mask (singleton, mask_version) VALUES (1, ?)').run(REDACT_VERSION)
-      return changed
     })
-    // A writer without secure_delete (an older bridge, the migration's raw copy) leaves stale copies of
-    // rows in the unused space of pages it rebuilt; only a rebuild of the file drops them.
-    if (changed > 0) this.#database.exec('VACUUM')
   }
 
   private backfillDefaultEmbeddings(): void {
