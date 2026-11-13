@@ -39,8 +39,9 @@
  * Stated limits (U-R1B-ANCHOR-4, the eight agents with no account, built from package text, not live-tested): the idle rules of
  * opencode, gemini, cursor-agent, copilot and cline end at the screen end after at most F non-blank lines under the prompt (the
  * most the agent's idle fixtures and package text draw, plus 1); a real idle screen with more lines under its prompt reads
- * unknown (agents held). cline's F comes from its fixtures (director J2): its 3.0.74 status bar draws 3 or 4 rows under the bar's
- * rule, so a real cline idle screen reads unknown. droid and goose are unchanged (no red row). gemini's approval rules follow the
+ * unknown (agents held). cline's idle rule ends with its 3.0.74 status bar instead (the `Plan`/`Act` row, then nothing or at most
+ * 2 rows and the `Auto-approve all` row; status-bar.tsx 232-280): built from package text, no fixture draws the 3 or 4 row bar;
+ * any other line under the bar reads unknown. droid and goose are unchanged (no red row). gemini's approval rules follow the
  * default layout (the composer is hidden while a tool awaits confirmation); with ui.collapseDrawerDuringApproval=false, or a
  * startup notice under the box, a real approval may read unknown (agents held, the owner types). opencode: LIMITS rows above.
  * pi: no dialog screen recorded from package text; its idle rule is not tied to the screen end (pi.toml is outside this unit).
