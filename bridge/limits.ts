@@ -12,7 +12,7 @@
  * What the hub may do here for MCP clients (U-R1A-17B), checked in bridge/hub-rpc.ts on hub frames
  * only (local MCP calls never pass there): `hub_commands` (true or false: typing and every other
  * command) and `hub_reads`, a table `{ screens, transcripts, memory }` of true or false. An absent
- * field or key means on; a missing or refused file or copy turns every hub command and read off.
+ * field or key means off, and so does a missing or refused file or copy (`tandem limits init` writes both on).
  *
  * Rights of another computer (U-R1A-36E): `open`, `send` (typing text), `close`, `read` (a poll:
  * send with empty text) and `ask` (Ask mail), each listed on its own in `control_from_open`,
@@ -88,9 +88,9 @@ export interface LimitsSnapshot {
   memory_scope: 'project' | 'all'
   /** How far an agent's transcript search reaches: its own session's folder, or this computer; "project" when absent, missing or refused. */
   transcript_scope: 'project' | 'computer'
-  /** Accept typing and other commands passed on by the hub from MCP clients; true when absent; false when the file is missing or refused. */
+  /** Accept typing and other commands passed on by the hub from MCP clients; false when absent and when the file is missing or refused. */
   hub_commands: boolean
-  /** What the hub may read here for MCP clients; each true when absent; all false when the file is missing or refused. */
+  /** What the hub may read here for MCP clients; each false when absent; all false when the file is missing or refused. */
   hub_reads: { screens: boolean; transcripts: boolean; memory: boolean }
   /** Why nothing is allowed (missing or refused file). */
   problem?: string
@@ -287,7 +287,7 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
   if (transcript_scope !== 'project' && transcript_scope !== 'computer') {
     fail('wrong type for transcript_scope: expected "project" or "computer" ("all" needs search across computers, which is not built)')
   }
-  const hub_commands = raw.hub_commands ?? true
+  const hub_commands = raw.hub_commands ?? false
   if (typeof hub_commands !== 'boolean') fail('wrong type for hub_commands: expected true or false')
   const reads = raw.hub_reads ?? {}
   if (!isTable(reads)) return fail('wrong type for hub_reads: expected a table { screens, transcripts, memory } of true or false')
@@ -295,7 +295,7 @@ function parseLimits(bytes: Buffer, fileDir: string): Omit<LimitsSnapshot, 'dige
     if (!(HUB_READS as readonly string[]).includes(k)) fail(`unknown field hub_reads.${k}`)
     if (typeof v !== 'boolean') fail(`wrong type for hub_reads.${k}: expected true or false`)
   }
-  const on = (k: (typeof HUB_READS)[number]) => (reads[k] ?? true) as boolean
+  const on = (k: (typeof HUB_READS)[number]) => (reads[k] ?? false) as boolean
   const hub_reads = { screens: on('screens'), transcripts: on('transcripts'), memory: on('memory') }
   const from = raw.interrupt_from
   const base = {

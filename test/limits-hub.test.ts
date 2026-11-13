@@ -52,7 +52,7 @@ const { routeFabricRpc } = await import('../bridge/fabric/rpc-router.ts')
 const { registerLive, unregisterLive } = await import('../bridge/sessions.ts')
 const { verifySignature } = await import('../bridge/device-keys.ts')
 const { main } = await import('../bridge/limits-cli.ts')
-const { writeLimits } = await import('./fixtures/limits.ts')
+const { writeLimits, writeLimitsAsGiven } = await import('./fixtures/limits.ts')
 const { CCM_FRAME_TYPES } = await import('../hub/src/protocol.ts')
 const { FABRIC_MCP_TRUST } = await import('../src/fabric/rpc-contract.ts')
 quiet.mockRestore()
@@ -91,9 +91,19 @@ async function captured<T>(run: () => Promise<T> | T): Promise<{ value: T; out: 
   }
 }
 
-/** `fields` written as limits.toml and applied as the owner's `tandem limits apply` does. */
-async function applied(fields: Record<string, unknown>) {
-  const file = writeLimits(TH, fields)
+/** `fields` with the hub fields a case does not name written ON (an absent field or key reads off). */
+const hubOn = (fields: Record<string, unknown>) => ({
+  ...fields,
+  hub_commands: fields.hub_commands ?? true,
+  hub_reads: { screens: true, transcripts: true, memory: true, ...(fields.hub_reads as object | undefined) },
+})
+
+/** `fields` (hub fields not named: on) written as limits.toml and applied as the owner's `tandem limits apply` does. */
+const applied = (fields: Record<string, unknown>) => appliedAsWritten(hubOn(fields))
+
+/** Exactly `fields` written as limits.toml and applied as the owner's `tandem limits apply` does. */
+async function appliedAsWritten(fields: Record<string, unknown>) {
+  const file = writeLimitsAsGiven(TH, fields)
   const { value } = await captured(() => limits.commitLimits(sha256(readFileSync(file))))
   expect(value).toBeUndefined()
 }
@@ -162,20 +172,64 @@ const fabricFrame = (path: string, headers: Record<string, string[]> = {}) =>
   ({ ...frame('POST', path, { body: { caller, input: {} }, headers }), trusted_surface: FABRIC_MCP_TRUST })
 
 describe('(17B) p: the two fields in the limits file', () => {
-  it('(17B) p1 hub_commands = false and hub_reads = { screens = false, memory = false } load with no problem', async () => {
-    await applied({ folders: [WORK], hub_commands: false, hub_reads: { screens: false, memory: false } })
+  it('(17B) p1 hub_commands = false and hub_reads = { screens = false, transcripts = true, memory = false } load with no problem', async () => {
+    await appliedAsWritten({ folders: [WORK], hub_commands: false, hub_reads: { screens: false, transcripts: true, memory: false } })
     const snap = limits.limitsSnapshot() as Json
     expect(snap.problem).toBeUndefined()
     expect(snap.hub_commands).toBe(false)
     expect(snap.hub_reads).toEqual({ screens: false, transcripts: true, memory: false })
   })
 
-  it('(17B) p2 a file with neither field: both on', async () => {
-    await applied({ folders: [WORK] })
+  it('(17B) p2 a file with neither field: both off (fail closed), and an absent hub_reads key reads off', async () => {
+    await appliedAsWritten({ folders: [WORK] })
     const snap = limits.limitsSnapshot() as Json
     expect(snap.problem).toBeUndefined()
-    expect(snap.hub_commands).toBe(true)
-    expect(snap.hub_reads).toEqual({ screens: true, transcripts: true, memory: true })
+    expect(snap.hub_commands).toBe(false)
+    expect(snap.hub_reads).toEqual({ screens: false, transcripts: false, memory: false })
+    await appliedAsWritten({ folders: [WORK], hub_reads: { memory: true } })
+    expect((limits.limitsSnapshot() as Json).problem).toBeUndefined()
+    expect((limits.limitsSnapshot() as Json).hub_commands).toBe(false)
+    expect((limits.limitsSnapshot() as Json).hub_reads).toEqual({ screens: false, transcripts: false, memory: true })
+  })
+
+  it('(17B) p8 an applied file written without the fields: every hub frame answers 403 until a file with the fields on is applied', async () => {
+    await appliedAsWritten({ folders: [WORK] })
+    ran.length = 0
+    search.open.mockClear()
+    const frames = [
+      ['POST', '/sessions/r1a17b-none/send', { body: { text: 'r1a17b-typed' } }, HUB.commands],
+      ['POST', '/sessions/open', { body: { name: 'r1a17b-new', engine: 'shell', cwd: WORK } }, HUB.commands],
+      ['POST', '/r1a17b-nowhere', {}, HUB.commands],
+      ['GET', '/sessions/r1a17b-none/read', {}, HUB.screens],
+      ['POST', '/sessions/r1a17b-none/send', { body: {} }, HUB.screens],
+      ['POST', '/transcripts/search', { body: { query: 'x' } }, HUB.transcripts],
+    ] as const
+    for (const [method, path, opts, text] of frames) {
+      expect(await hub(method, path, opts), `${method} ${path}`).toEqual({ status: 403, body: { error: text }, signed: false })
+    }
+    expect(answerOf(await handleHubRequest(fabricFrame('/fabric/memory/search'), host))).toEqual({ status: 403, body: { error: HUB.memory }, signed: false })
+    expect(ran).toEqual([])
+    expect(search.open).not.toHaveBeenCalled()
+    // The owner writes the fields on and applies: the same frames are no longer refused by the hub fields.
+    await appliedAsWritten({ folders: [WORK], hub_commands: true, hub_reads: { screens: true, transcripts: true, memory: true } })
+    for (const [method, path, opts] of frames.filter(([, path]) => path !== '/sessions/open' && path !== '/transcripts/search')) {
+      const got = await hub(method, path, opts)
+      expect(notHubText(got.body.error), `${method} ${path}`).toBe(true)
+    }
+    expect(notHubText(answerOf(await handleHubRequest(fabricFrame('/fabric/memory/search'), host)).body.error)).toBe(true)
+  })
+
+  it('(17B) p9 a refused frame with a 200 KB path grows the audit log by under 1 KB', async () => {
+    await applied({ folders: [WORK], ...ALL_OFF })
+    const size = () => (existsSync(LOG) ? readFileSync(LOG).length : 0)
+    const before = size()
+    const lines = auditLines().length
+    const path = `/r1a17b-long/${'p'.repeat(200_000)}`
+    expect(await hub('POST', path)).toEqual({ status: 403, body: { error: HUB.commands }, signed: false })
+    expect(size() - before).toBeLessThan(1024)
+    const [line] = auditLines().slice(lines)
+    expect(line).toMatchObject({ denied: 'hub_commands', hub: true })
+    expect(line.route).toBe(`${`POST ${path}`.slice(0, 200)}…`)
   })
 
   it.each([
@@ -480,7 +534,7 @@ describe('(17B) w: no widening, and A4.8\'s hub half', () => {
     expect(await hub('GET', '/sessions/r1a17b-none/read')).toEqual({ status: 403, body: { error: HUB.screens }, signed: false })
     expect(auditLines().slice(before)).toEqual([expect.objectContaining({ route: 'GET /sessions/r1a17b-none/read', denied: 'hub_reads.screens', hub: true })])
     // An agent's edit: screens back on, never applied.
-    const file = writeLimits(TH, { folders: [WORK, join(BOX, 'r1a17b-w2')], hub_reads: { screens: true } })
+    const file = writeLimits(TH, hubOn({ folders: [WORK, join(BOX, 'r1a17b-w2')] }))
     const asked = await captured(async () => [await hub('GET', '/sessions/r1a17b-none/read'), await hub('GET', '/sessions/r1a17b-none/read')])
     for (const a of asked.value) expect(a).toEqual({ status: 403, body: { error: HUB.screens + NOTICE }, signed: false })
     expect(asked.err).toBe('limits: the limits file changed on disk and is not applied; apply it at this computer\n')

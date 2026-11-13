@@ -19,7 +19,7 @@ import { dirname, join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { fileURLToPath } from 'node:url'
 import { parse } from 'smol-toml'
-import { agentEntry, writeLimits } from './fixtures/limits.ts'
+import { agentEntry, writeLimits, writeLimitsAsGiven } from './fixtures/limits.ts'
 
 type Json = any // eslint-disable-line @typescript-eslint/no-explicit-any
 
@@ -709,13 +709,19 @@ for await (const _ of rl) { const s = l.limitsSnapshot(); process.stdout.write(J
     }
   })
 
-  it("(k) A4.27: with a file like the fleet's, a hub command to an agent runs and is written to the local log", async () => {
+  it("(k) A4.27: a file like the fleet's without the hub fields refuses hub commands; with hub_commands on, a hub command to an agent runs and is written to the local log", async () => {
     noFiles()
     const FLEET = {
       folders: [WORK], permission_skip: [WORK], shell: true, agents: { 'fake-a': entry('fake-a'), 'fake-bash': entry('fake-bash') },
       session_cap: 12, interrupt_from: ['owner'], control_from: [], memory_scope: 'project', transcript_scope: 'project',
     }
-    await ownerApplies(FLEET)
+    // U-R1A-44 F1 (Q-21): an applied file without hub_commands reads it off, as a missing file does.
+    writeLimitsAsGiven(TH, FLEET)
+    await ownerApplies()
+    const off = uniq('k')
+    expect(await open(off, 'fake-bash', WORK)).toEqual({ status: 403, body: { error: limits.HUB_REFUSALS.commands } })
+    expect(lastAudit()).toMatchObject({ route: 'POST /sessions/open', denied: 'hub_commands', hub: true })
+    await ownerApplies({ ...FLEET, hub_commands: true })
     const name = uniq('k')
     const opened = await open(name, 'fake-bash', WORK)
     expect(opened.status, JSON.stringify(opened.body)).toBe(200)
