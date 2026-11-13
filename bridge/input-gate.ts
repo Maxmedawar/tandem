@@ -92,3 +92,18 @@ export async function admitInput(session: object, from: InputFrom, action: Input
     if (now - start >= first.debounceMs + 1000) return { verdict: 'held', state: 'idle' }
   }
 }
+
+/**
+ * The re-check right before the call that types the text and presses its one Enter (relay turns,
+ * mail notices): ONE fresh read. True only for an idle screen whose prompt is empty; unknown, any
+ * other state, a read that fails or a prompt with text is false. It does not cover the time inside
+ * that call (TerminalSession.typeAndSubmit's probe, typing and pause before Enter).
+ */
+export async function recheckInput(session: object): Promise<boolean> {
+  try {
+    const read = await readInput(session)
+    return read.state === 'idle' && emptyAt(session, read.screen)
+  } catch {
+    return false
+  }
+}

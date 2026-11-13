@@ -354,6 +354,11 @@ async function openNamed(name: string, req: RpcRequest): Promise<RpcResult> {
   } catch (e) {
     return engineError(e)
   }
+  // tmux turns '.' in a session name into '_' (the session would not answer to its name): a
+  // tmux-hosted engine (its harness file names no adapter) gets no '.'; an adapter agent's id keeps it.
+  if (harness.adapter === undefined && name.includes('.')) {
+    return err(400, `invalid session name (allowed: A-Z a-z 0-9 . _ -): ${name}`)
+  }
 
   // A new name equal to an open one ignoring case would share its delivery and transcript files
   // on a case-insensitive disk. Read after the engine is resolved (a refused engine runs no tmux)

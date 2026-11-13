@@ -49,6 +49,8 @@ function fakeSession(name: string, replies: string[], before?: (call: number) =>
       return { report: replies.shift() ?? 'DONE' }
     },
     async interrupt() {},
+    async inputState() { return { state: 'idle' as const, screen: '', debounceMs: 0 } },
+    promptEmpty: () => true,
   }
 }
 

@@ -32,7 +32,7 @@ import { basename, dirname, join, resolve, sep } from 'node:path'
 import { TmuxBusyError, type DrivableSession, type EngineId } from './drivable.ts'
 import { enabledEngineIds, loadedHarnesses } from './engine-registry.ts'
 import { makeOwnerIdProvider, type OwnerIdProvider } from './ownership.ts'
-import { attachCommand, readSessionProvenance, tmux, TMUX_FIELD_SEP } from './terminal-session.ts'
+import { attachCommand, readSessionProvenance, tmux, tmuxSessionName, TMUX_FIELD_SEP } from './terminal-session.ts'
 
 const HOME = homedir()
 const SESSION_PREFIX = 'ccm-'
@@ -45,7 +45,8 @@ function isTmuxEngineTag(tag: string): boolean {
   return harness !== undefined && harness.adapter === undefined
 }
 
-const SESSION_NAME_RE = /^[A-Za-z0-9._-]+$/
+/** A name as tmux keeps it: tmux turns '.' into '_', so a listed name never holds '.'. */
+const SESSION_NAME_RE = /^[A-Za-z0-9_-]+$/
 const RELAY_NAME_RE = /^relay-/
 
 export interface SessionInfo {
@@ -294,7 +295,8 @@ export async function listSessions(
       attachHint: session.attachHint(),
     }))
 
-  const registeredIds = new Set(registered.map((s) => s.id))
+  // Compared as tmux keeps the name: a registered `a.b` is the tmux session `ccm-a_b`, listed once.
+  const registeredIds = new Set(registered.map((s) => tmuxSessionName(s.id)))
   const adoptedCandidates: SessionInfo[] = live
     .filter(
       (s) =>

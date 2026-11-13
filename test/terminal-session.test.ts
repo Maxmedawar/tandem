@@ -615,8 +615,11 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
     const workerSaw: string[] = [];
     const statuses: string[] = [];
     const leadReplies = ["Run step one", "DONE"];
-    stub(lead, () => leadReplies[leadSaw.length - 1] ?? "DONE", (t) => leadSaw.push(t));
-    stub(worker, () => "step one finished", (t) => workerSaw.push(t));
+    // U-R1A-18C-2: a relay turn goes through the input gate (claude.toml's rules), so each sink pane ends
+    // in Claude's idle box with an empty prompt (the smallest form claude.toml reads idle and empty).
+    const CLAUDE_IDLE_BOX = `${"─".repeat(20)}\n❯ \n${"─".repeat(20)}`;
+    stub(lead, () => `${leadReplies[leadSaw.length - 1] ?? "DONE"}\n${CLAUDE_IDLE_BOX}`, (t) => leadSaw.push(t));
+    stub(worker, () => `step one finished\n${CLAUDE_IDLE_BOX}`, (t) => workerSaw.push(t));
     for (const s of [lead, worker]) {
       const send = s.send.bind(s);
       s.send = async (text: string) => {
@@ -627,12 +630,16 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
     }
     vi.spyOn(TerminalSession, "spawn").mockResolvedValueOnce(lead).mockResolvedValueOnce(worker);
     vi.stubEnv("TANDEM_ALLOW_BYPASS", "1");
+    const { stop: stopRelay } = await import("../bridge/relay.ts");
+    let loopId = "";
     try {
-      const { loopId } = await startRelay({ goal: "finish step one", cwd: box, allowlist: [box], idleTimeoutMs: 1 });
+      ({ loopId } = await startRelay({ goal: "finish step one", cwd: box, allowlist: [box], idleTimeoutMs: 1 }));
       const deadline = Date.now() + 20_000;
       while (relayInfo(loopId)?.running && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
       expect(relayInfo(loopId)?.running ?? false).toBe(false);
     } finally {
+      // Nothing keeps polling after this row (a held relay would run on into the next rows).
+      if (loopId) stopRelay(loopId);
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
     }
@@ -640,6 +647,39 @@ describe.skipIf(!REAL_TMUX)("TANDEM-B-SESSION (real tmux on a private socket)", 
     expect(workerSaw).toEqual(["Run step one"]);
     expect(leadSaw).toHaveLength(2);
     expect(leadSaw[1]).toContain("step one finished");
+  }, 30_000);
+
+  it.skipIf(!onPath("claude"))("h2) (18C2) the same relay whose sink screens read unknown is held: it stops with held: unknown and nothing is typed (needs claude on PATH)", async () => {
+    const quietEngine: EngineDescriptor = { id: "codex", executable: "codex", minStableMs: 0 };
+    sink("h2-lead");
+    sink("h2-worker");
+    const lead = session("h2-lead", quietEngine);
+    const worker = session("h2-worker", quietEngine);
+    const leadSaw: string[] = [];
+    const workerSaw: string[] = [];
+    stub(lead, () => "Run step one", (t) => leadSaw.push(t));
+    stub(worker, () => "step one finished", (t) => workerSaw.push(t));
+    vi.spyOn(TerminalSession, "spawn").mockResolvedValueOnce(lead).mockResolvedValueOnce(worker);
+    vi.stubEnv("TANDEM_ALLOW_BYPASS", "1");
+    const { stop: stopRelay, readSince } = await import("../bridge/relay.ts");
+    let loopId = "";
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
+    try {
+      ({ loopId } = await startRelay({ goal: "finish step one", cwd: box, allowlist: [box], idleTimeoutMs: 1 }));
+      for (let t = 0; t < 90_000 && relayInfo(loopId)?.running; t += 250) await vi.advanceTimersByTimeAsync(250);
+      vi.useRealTimers();
+      const deadline = Date.now() + 10_000;
+      while (!(readSince(loopId)?.text ?? "").includes("manager finished") && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+      expect(relayInfo(loopId)?.running ?? false).toBe(false);
+      expect(readSince(loopId)?.text ?? "").toContain("manager finished · reason: held: unknown");
+    } finally {
+      vi.useRealTimers();
+      if (loopId) stopRelay(loopId);
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+    }
+    expect(leadSaw).toEqual([]);
+    expect(workerSaw).toEqual([]);
   }, 30_000);
 
   for (const shell of HINT_SHELLS) {
