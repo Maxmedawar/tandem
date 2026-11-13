@@ -43,7 +43,11 @@ waiting_for_approval = [
 # hint row under the input; the -src fixtures draw it above).
 # U-R1B-COPILOT-LAYOUT: the lines after the busy hint start with none of `┃ ╻ ╹ ─` but the one `┃`
 # row of the old fixtures (the real busy row is under the composer, so nothing of it follows).
-working = ['ctrl\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,4}\z', 'esc (?:interrupt|stop agents|edit prompt)[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,4}\z', 'esc again to [^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,4}\z']
+# U-R1B-COPILOT-WORKING: the tail cap after the prompt row is 10, not 4 (G1 of the U-R1B-ANCHOR-4 audit): the idle
+# rule reaches the `/ commands` row and 3 lines under it, so a working screen with extra footer lines under that row
+# read idle once the old cap ran out first. 10 = the `/ commands` row, idle's 3 lines and 6 extra footer lines
+# (the probe needs 5); working precedes idle, so such a screen now reads working (agents held). A superset of BASE.
+working = ['ctrl\+c (?:interrupt|stop agents|clear input|exit shell mode)[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,10}\z', 'esc (?:interrupt|stop agents|edit prompt)[^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,10}\z', 'esc again to [^\n]*(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?)?(?:\n[ \t]*┃[^\n]*)?(?:\n[ \t]*(?:[^ \t┃╻╹─\n][^\n]*)?){0,10}\z']
 # U-R1B-ANCHOR: the hint row counts only when no prompt row (`┃`) follows it to the screen end, like empty_prompt.
 # U-R1B-COPILOT-LAYOUT: no composer row of form A (`┃ ╻ ╹`) or form B (a `─` rule) follows it either.
 # U-R1B-ANCHOR-4: the hint row, then at most 3 lines (1.0.109 cli-main.js draws only a status line under it; the {0,3} cap of
