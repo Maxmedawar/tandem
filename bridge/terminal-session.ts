@@ -677,22 +677,30 @@ function patternsOf(d: Dialog): RE2JS[] {
 
 const isAnswer = (t: string, d: Dialog) => t === d.answer || t.startsWith(`${d.answer} (`)
 
+/** A box row: the trimmed line starts and ends with `│` (both borders); its text between them,
+ *  trimmed. Any other line: trimmed. */
+function unbox(line: string): string {
+  const t = line.trim()
+  return isBoxRow(t) ? t.slice(1, -1).trim() : t
+}
+const isBoxRow = (t: string) => t.length >= 2 && t.startsWith('│') && t.endsWith('│')
+
 /** Key mode's start form: the trimmed line, after one optional HIGHLIGHTS marker and its spaces,
  *  starts `[k]` and spaces; the key and the rest, else undefined. */
 function startForm(line: string): { key: string; rest: string } | undefined {
-  let t = line.trim()
+  let t = unbox(line)
   const mark = HIGHLIGHTS.find((m) => t.startsWith(m))
   if (mark !== undefined) t = t.slice(mark.length).trimStart()
   const m = /^\[([a-z0-9])\]\s+(.*)$/.exec(t)
   return m ? { key: m[1]!, rest: m[2]! } : undefined
 }
 
-/** An option line of `d`: its text, trimmed, after an optional highlight marker and an optional
- *  `N. ` (key mode: before a trailing whitespace and the key), equals the answer or starts with
+/** An option line of `d`: its text, trimmed (a box row: the text between its borders, see unbox),
+ *  after an optional highlight marker and an optional `N. ` (key mode: before a trailing whitespace and the key), equals the answer or starts with
  *  the answer and ` (`. Key mode also reads the start form: `[key] ` (after an optional marker)
  *  then the answer. */
 function isAnswerLine(line: string, d: Dialog): boolean {
-  let t = line.trim()
+  let t = unbox(line)
   if (d.highlight !== undefined && t.startsWith(d.highlight)) t = t.slice(d.highlight.length).trimStart()
   t = t.replace(/^\d+\.\s*/, '')
   if (d.key !== undefined) {
@@ -718,18 +726,61 @@ export function dialogKey(pane: string, d: Dialog): string | undefined {
   const lines = pane.split('\n')
   const at = lines.findIndex((l) => isAnswerLine(l, d))
   if (at < 0) return undefined
-  const inBlock = (i: number) => (lines[i] ?? '').trim() !== '' && !/^\s*─/.test(lines[i]!)
+  // A box row holding only spaces is blank: it ends a block as a blank line does.
+  const inBlock = (i: number) => unbox(lines[i] ?? '') !== '' && !/^\s*─/.test(lines[i]!)
   if (d.key !== undefined) {
-    const shows = (i: number) => new RegExp(`\\s${d.key}$`).test(lines[i]!.trimEnd()) || startForm(lines[i]!)?.key === d.key
+    const end = new RegExp(`\\s${d.key}$`)
+    const shows = (i: number) => end.test(lines[i]!.trimEnd()) || end.test(unbox(lines[i]!)) || startForm(lines[i]!)?.key === d.key
     if (!shows(at)) return undefined
     for (let i = at - 1; inBlock(i); i--) if (shows(i)) return undefined
     for (let i = at + 1; inBlock(i); i++) if (shows(i)) return undefined
     return d.key
   }
-  const highlighted = (i: number) => lines[i]!.trimStart().startsWith(d.highlight!)
+  const highlighted = (i: number) => unbox(lines[i]!).startsWith(d.highlight!)
   for (let i = at; inBlock(i); i--) if (highlighted(i)) return i === at ? 'Enter' : 'Down'
   for (let i = at + 1; inBlock(i); i++) if (highlighted(i)) return 'Up'
   return undefined
+}
+
+/** A dialog's option row: after unbox, it starts with a HIGHLIGHTS marker, `N. ` or `[k] `, ends with
+ *  whitespace and one key character, or holds `y/n`. */
+function isOptionRow(line: string): boolean {
+  const t = unbox(line)
+  return HIGHLIGHTS.some((m) => t.startsWith(m)) || /^\d+\.\s/.test(t) || /^\[[a-z0-9]\]\s/.test(t) || /\s[a-z0-9]$/.test(t) || /y\/n/i.test(t)
+}
+
+/** The pane with every update banner's lines removed. A banner is a notice row holding `update
+ *  available` plus at most one more row, either boxed alone (a `╭` line, 1 or 2 `│ … │` rows, a `╰`
+ *  line) or plain (1 or 2 non-blank lines with a blank line or the pane's edge above and below),
+ *  with no option row in it and none as the next non-blank line under it (a dialog's own heading is
+ *  not a banner). It is never a dialog: nothing is typed for it. */
+export function withoutUpdateBanners(pane: string): string {
+  const lines = pane.split('\n')
+  const blank = (i: number) => (lines[i] ?? '').trim() === ''
+  const banner = (rows: number[]) => {
+    let next = rows[rows.length - 1]! + 1
+    if ((lines[next] ?? '').trim().startsWith('╰')) next++
+    while (next < lines.length && blank(next)) next++
+    return /update available/i.test(unbox(lines[rows[0]!]!)) && ![...rows, next].some((r) => r < lines.length && isOptionRow(lines[r]!))
+  }
+  const drop = new Set<number>()
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i]!.trim().startsWith('╭')) {
+      for (const n of [1, 2]) {
+        const rows = Array.from({ length: n }, (_, k) => i + 1 + k)
+        if (rows.every((r) => isBoxRow((lines[r] ?? '').trim())) && (lines[i + n + 1] ?? '').trim().startsWith('╰') && banner(rows)) {
+          for (let r = i; r <= i + n + 1; r++) drop.add(r)
+          break
+        }
+      }
+    }
+    if (blank(i) || !blank(i - 1)) continue
+    let end = i
+    while (end < lines.length && !blank(end)) end++
+    const rows = Array.from({ length: end - i }, (_, k) => i + k)
+    if (rows.length <= 2 && banner(rows)) for (const r of rows) drop.add(r)
+  }
+  return lines.filter((_, i) => !drop.has(i)).join('\n')
 }
 
 const allowsDialog = (answers: DialogAnswers, kind: Dialog['kind']) =>
@@ -737,6 +788,9 @@ const allowsDialog = (answers: DialogAnswers, kind: Dialog['kind']) =>
 
 /** At most this many arrows per dialog per start. */
 const MAX_DIALOG_ARROWS = 8
+/** An answered dialog still shown up to this long after its Enter or key gets no key and is not
+ *  `needs owner` (Gemini keeps its trust dialog up about 250 ms while it restarts). */
+const ANSWER_GRACE_MS = 1000
 
 /** Warmup's dialog progress for one start. */
 interface DialogWatch {
@@ -744,6 +798,8 @@ interface DialogWatch {
   movedOn?: string
   /** Dialogs that got their Enter or key. */
   answered: Set<string>
+  /** When each answered dialog got its Enter or key (Date.now()). */
+  answeredAt: Map<string, number>
   arrows: Map<string, number>
 }
 
@@ -1205,8 +1261,9 @@ export class TerminalSession {
    * for the screen to change or the answer to be highlighted). One key per poll, and no next key
    * until the screen changed since the last one; at most 8 arrows and one Enter or key per dialog.
    * Throws NeedsOwnerError, sending no key, when `dialogAnswers` does not allow the dialog's kind,
-   * when NEVER matches the screen, when the screen shows update text and the dialog is not an `update`
-   * one that skips, or when a dialog is still shown after its Enter or key. Two
+   * when NEVER matches the screen, when the screen shows update text (update banners removed) and the
+   * dialog is not an `update` one that skips, or when a dialog is still shown more than
+   * ANSWER_GRACE_MS after its Enter or key (within it: no key, wait). Two
    * dialogs at once get no key. The screen is read again right before the key: the key goes only when
    * that read shows the same one dialog with the same key, else nothing is sent and the next poll decides.
    */
@@ -1215,11 +1272,14 @@ export class TerminalSession {
     if (shown.length === 0) return false
     if (pane === watch.movedOn || shown.length > 1) return true
     const d = shown[0]!
-    if (watch.answered.has(d.name)) throw this.needsOwner(d, "it is still shown after Tandem's answer")
+    if (watch.answered.has(d.name)) {
+      if (Date.now() - (watch.answeredAt.get(d.name) ?? 0) <= ANSWER_GRACE_MS) return true
+      throw this.needsOwner(d, "it is still shown after Tandem's answer")
+    }
     if (!allowsDialog(this.dialogAnswers, d.kind)) throw this.needsOwner(d, `the limits file lets Tandem answer no ${d.kind} dialog here`)
     if (NEVER.test(pane)) throw this.needsOwner(d, 'the screen asks for a sign-in or a purchase')
     // Checked here too: a descriptor need not come from the loader. An update is only ever skipped.
-    if (UPDATE_TEXT.test(d.answer) || (UPDATE_TEXT.test(pane) && !(d.kind === 'update' && SKIPS_UPDATE.test(d.answer)))) {
+    if (UPDATE_TEXT.test(d.answer) || (UPDATE_TEXT.test(withoutUpdateBanners(pane)) && !(d.kind === 'update' && SKIPS_UPDATE.test(d.answer)))) {
       throw this.needsOwner(d, 'the screen asks about an update, which Tandem only skips')
     }
     const key = dialogKey(pane, d)
@@ -1236,6 +1296,7 @@ export class TerminalSession {
     if (arrow) watch.arrows.set(d.name, arrows + 1)
     else watch.answered.add(d.name)
     await sendKeys(['-t', this.tmuxTarget, key])
+    if (!arrow) watch.answeredAt.set(d.name, Date.now())
     watch.movedOn = pane
     return true
   }
@@ -1248,7 +1309,7 @@ export class TerminalSession {
 
   private async warmupMarkerBased(isReady: (pane: string) => boolean): Promise<void> {
     const deadline = Date.now() + SPAWN_WARMUP_MS
-    const watch: DialogWatch = { answered: new Set(), arrows: new Map() }
+    const watch: DialogWatch = { answered: new Set(), answeredAt: new Map(), arrows: new Map() }
     while (Date.now() < deadline) {
       const pane = await this.capture()
       if (await this.answerDialog(pane, watch)) {
@@ -1287,7 +1348,7 @@ export class TerminalSession {
     const deadline = Date.now() + SPAWN_WARMUP_MS
     let state = INITIAL_STABILITY_STATE
     const required = requiredStablePolls(this.descriptor)
-    const watch: DialogWatch = { answered: new Set(), arrows: new Map() }
+    const watch: DialogWatch = { answered: new Set(), answeredAt: new Map(), arrows: new Map() }
     while (Date.now() < deadline) {
       const pane = await this.capture()
       if (await this.answerDialog(pane, watch)) {

@@ -7,9 +7,12 @@
 # test/fixtures/screens/NOTICE) plus `No, suggest changes (esc)`. approve is Enter (the default
 # `Allow once`), deny is Escape. interrupt is one Escape; a second Escape rewinds, and Ctrl+C on an
 # empty input starts the quit. delivery is `notice`: hooks live in gemini's settings.json, which
-# Tandem never writes. The dialog row `folder-trust` answers the trusted-folders dialog (off by
-# default, `●` marks the selected row) with `Trust folder`, which trusts this folder only, never its
-# parent; it is typed only during start and only where the limits file allows `trust`.
+# Tandem never writes. The dialog row `folder-trust` answers the trusted-folders dialog as Gemini
+# draws it, a bordered box (real capture test/fixtures/dialogs/gemini-trust-bordered-real.txt; off
+# by default in 0.38.2, on where the owner turned folder trust on; `●` marks the selected row), with
+# `Trust folder`, which trusts this folder only, never its parent; it is typed only during start and
+# only where the limits file allows `trust`. Gemini's update notice is a banner, not a dialog, and
+# nothing is typed for it.
 name = "gemini"
 program = "gemini"
 has_prompts = true

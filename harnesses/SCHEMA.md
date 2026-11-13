@@ -116,8 +116,15 @@ Exactly one of `highlight` and `key`. Refused: an `answer` that matches NEVER
 (`bridge/harness-registry.ts`: sign-in, log-in, purchase, buy, subscription, payment, billing,
 credit card text), any `answer` containing `updat`, `install` or `upgrad` (any case), and an
 `update` answer that does not start with `Skip`, `Not now`, `Later`, `No`, `Dismiss` or `Remind`:
-an update dialog may only be skipped, and a `trust` answer matching `parent`, `all` (a whole word),
-`always` or `every` (any case): a trust answer trusts this folder only.
+an update dialog may only be skipped, and an answer of any kind matching `parent`, `all` (with no
+letter touching it: `all_folders`, `all-folders` and `allFolders` count, `overall` and `Allow` do
+not), `always` or `every` (any case, after NFKC folding, so fullwidth and styled letters count;
+accents and other combining marks are dropped, and the Cyrillic and Greek letters drawn like the
+Latin ones in these words are read as them; not folded: an all-capitals run such as `TRUSTALL`, `I`
+or `1` drawn for `l`, other scripts): a
+`trust` answer fails with `a trust answer trusts this folder only (never parent, all, always or
+every)`, an `update` or `bypass` answer with `an answer never names a wider scope (never parent,
+all, always or every)`.
 
 How Tandem uses them (`bridge/terminal-session.ts`):
 
@@ -127,8 +134,10 @@ How Tandem uses them (`bridge/terminal-session.ts`):
   `answer` and ` (`. In key mode a line is also an answer line in the start form: the trimmed
   line, after one optional marker from `❯` `›` `>` `●` `▶` and its following spaces, starts with
   `[<key>]` and one or more spaces, and the rest equals `answer` or starts with `answer` and ` (`;
-  a row whose bracket holds another key is not an answer line. Two dialogs shown at once are not
-  answered.
+  a row whose bracket holds another key is not an answer line. Box form: a line whose trimmed text
+  starts and ends with `│` is read as the text between them, trimmed (both borders needed; a
+  marker outside the box is not read); a box row holding only spaces is blank. Two dialogs shown
+  at once are not answered.
 - **The key** (`dialogKey(pane, dialog)`). A block is the run of non-blank lines, not starting
   `─`, around the answer line. Select mode: Enter only when the `highlight` marker is on the
   answer line, else one Down or Up toward it. Key mode: a line shows the key when it ends with
@@ -142,9 +151,13 @@ How Tandem uses them (`bridge/terminal-session.ts`):
   allows all three. A reused or adopted session never runs warmup, so nothing is answered. Outside
   warmup no dialog is ever answered.
 - **needs owner.** A shown dialog the start does not allow, a shown dialog while NEVER matches the
-  screen, a shown dialog while the screen holds update text (`updat`, `install`, `upgrad`) unless it
-  is an `update` dialog that skips, a dialog still shown after its Enter or key, or a dialog still
-  shown when warmup ends (two dialogs shown at once end this way, with no key):
+  screen (update banners included), a shown dialog while the screen holds update text (`updat`,
+  `install`, `upgrad`) unless it is an `update` dialog that skips, judged with update banners
+  removed (an update banner is a notice line holding `update available` plus at most one hint
+  line, boxed alone or set off by blank lines, with no option row in it or as the next non-blank
+  line under it; it is never a dialog and nothing is typed for it), a dialog still shown more than
+  1,000 ms after its Enter or key (within that time it gets no key and warmup waits), or a dialog
+  still shown when warmup ends (two dialogs shown at once end this way, with no key):
   the start kills its own tmux session and fails (`NeedsOwnerError`; an open answers 409
   `needs owner: <harness> shows its first-run <kind> dialog "<name>" in <cwd> (<reason>); Tandem
   typed no answer. Open it there yourself once, then open the session again.`; a relay start
