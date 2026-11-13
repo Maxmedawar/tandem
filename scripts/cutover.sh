@@ -274,15 +274,9 @@ printf 'made by scripts/cutover.sh at %s from %s\n' "$(date -u +%Y-%m-%dT%H:%M:%
   "$(git -C "$here" rev-parse HEAD 2>/dev/null || echo unknown)" > "$home/.cutover"
 chmod 0600 "$home/.cutover"
 
-if [ -z "$archive" ]; then
-  work=$(mktemp -d "${TMPDIR:-/tmp}/tandem-cutover.XXXXXX")
-  sh "$here/packaging/build-release.sh" "$work" >&2
-  archive=$(find "$work" -maxdepth 1 -name '*.tar.gz' | head -n 1)
-fi
-TANDEM_HOME="$home" TANDEM_SERVICE="$service" TANDEM_NO_START=1 TANDEM_NO_LIMITS=1 TANDEM_ARCHIVE="$archive" \
-  sh "$here/packaging/install.sh" </dev/null >&2
-
-# tandem.env: the launcher sources it after the environment, so these win over anything inherited
+# tandem.env first, before anything is installed: from the moment a launcher exists in this home it
+# reads TANDEM_SERVICE here, so an install stopped half way never leaves one that acts on the old
+# service. The launcher sources it after the environment, so these win over anything inherited
 # (a CCM_FABRIC_DB_PATH naming the old store included). The token goes from the file to this file
 # through the shell's own printf, never through an argument list.
 store="$home/fabric/fabric.sqlite3"
@@ -301,6 +295,14 @@ tmp="$home/.tandem.env.$$"
 } > "$tmp"
 chmod 0600 "$tmp"
 mv -f "$tmp" "$home/tandem.env"
+
+if [ -z "$archive" ]; then
+  work=$(mktemp -d "${TMPDIR:-/tmp}/tandem-cutover.XXXXXX")
+  sh "$here/packaging/build-release.sh" "$work" >&2
+  archive=$(find "$work" -maxdepth 1 -name '*.tar.gz' | head -n 1)
+fi
+TANDEM_HOME="$home" TANDEM_SERVICE="$service" TANDEM_NO_START=1 TANDEM_NO_LIMITS=1 TANDEM_ARCHIVE="$archive" \
+  sh "$here/packaging/install.sh" </dev/null >&2
 
 # The limits file and its applied copy: `limits init` is their only writer.
 eval "set -- $limit_args"

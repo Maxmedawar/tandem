@@ -18,7 +18,25 @@ while [ -L "$self" ]; do
 done
 here=$(CDPATH='' cd -- "$(dirname -- "$self")/.." && pwd)
 runtime="$here/runtime"
-state="${TANDEM_HOME:-$HOME/.tandem}"
+# The home: TANDEM_HOME when given; else the home this launcher is installed in
+# (<home>/current/bin/tandem, or <home>/versions/<version>/bin/tandem), so a second install beside
+# the first never acts on the first; else, run from anywhere else, ~/.tandem.
+state="${TANDEM_HOME:-}"
+if [ -z "$state" ]; then
+  case "$here" in
+    */current) own=${here%/current} ;;
+    */versions/*) own=${here%/versions/*} ;;
+    *) own="" ;;
+  esac
+  if [ -n "$own" ] && [ -d "$own/versions" ] && [ -e "$own/current" ] &&
+    { [ "$here" = "$own/current" ] || [ "$here" = "$own/versions/${here##*/}" ]; }; then
+    state=$own
+    # What this starts (status, limits, the runtime) must look at the same home.
+    export TANDEM_HOME="$state"
+  else
+    state="$HOME/.tandem"
+  fi
+fi
 # The bundled Node is preferred over anything on PATH: a release that carries
 # its own runtime should not start behaving differently because the machine
 # happens to have another one, or a different version of it.

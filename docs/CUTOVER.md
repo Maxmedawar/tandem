@@ -22,9 +22,9 @@ order; the next one starts only after the checks of the one before pass.
   token (mode 0600, 16 to 512 characters); `<FOLDER>` and `<AGENT>` are the folders and agents
   this computer allows (repeat `--folder` and `--agent` as needed); `<PUBLIC URL>` and
   `<PASSWORD FILE>` are the owner settings above.
-- Always run the new launcher with `TANDEM_HOME=~/.tandem-next` in front, exactly as written
-  below. Without it the launcher takes `~/.tandem` as its home, and its `start`, `stop` and
-  `restart` act on the old service.
+- The new launcher (`~/.tandem-next/current/bin/tandem`) works on the home it is installed in,
+  so its `start`, `stop` and `restart` act on `tandem-next` only; the commands below still name
+  `TANDEM_HOME=~/.tandem-next` in front, which says the same thing in full.
 - Each step can be undone with the commands under "Roll back".
 
 ## mini

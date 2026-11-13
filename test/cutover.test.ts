@@ -376,6 +376,98 @@ describe('(43) p: packaging', { timeout: 300_000 }, () => {
   })
 })
 
+describe('(43) g: the launcher works on the home it is installed in', { timeout: 300_000 }, () => {
+  const old = join(HOME, '.tandem')
+  const next = join(HOME, '.tandem-next')
+  const calls = () => stubLog().split('\n').filter((line) => line && !line.startsWith('uname '))
+  const NEXT_STOP = `launchctl bootout gui/${uid}/com.tandem-next.runtime`
+  const OLD_STOP = `launchctl bootout gui/${uid}/com.tandem.runtime`
+  /** No TANDEM_HOME, no TANDEM_SERVICE: only where the launcher sits can pick the home. */
+  const bare = () => env({}, 'darwin')
+
+  beforeAll(() => {
+    resetHome()
+    const base = { TANDEM_ARCHIVE: archive, TANDEM_NO_START: '1', TANDEM_NO_LIMITS: '1', TANDEM_PORT: '18797' }
+    expect(packaging('install.sh', [], env({ ...base, TANDEM_HOME: old }, 'darwin')).status).toBe(0)
+    expect(packaging('install.sh', [], env({ ...base, TANDEM_HOME: next, TANDEM_SERVICE: 'tandem-next' }, 'darwin')).status).toBe(0)
+    writeFileSync(join(next, 'tandem.env'), "TANDEM_SERVICE='tandem-next'\n")
+  }, 120_000)
+
+  it('(43) g1 the next launcher with no TANDEM_HOME stops only the next service', () => {
+    for (const cmd of ['stop', 'start', 'restart']) {
+      writeFileSync(LOG, '')
+      const r = sh(join(next, 'current', 'bin', 'tandem'), [cmd], bare())
+      expect(r.status, cmd).toBe(0)
+      expect(calls().length, cmd).toBeGreaterThan(0)
+      for (const line of calls()) expect(line, cmd).toContain('com.tandem-next.runtime')
+      expect(stubLog(), cmd).not.toContain('com.tandem.runtime')
+    }
+  })
+
+  it('(43) g2 so does its versions/<version> path, and a link to it from elsewhere', () => {
+    const version = readdirSync(join(next, 'versions')).find((name) => !name.startsWith('.'))!
+    mkdirSync(join(BOX, 'elsewhere'), { recursive: true })
+    const link = join(BOX, 'elsewhere', 'tn')
+    rmSync(link, { force: true })
+    symlinkSync(join(next, 'current', 'bin', 'tandem'), link)
+    const chained = join(BOX, 'elsewhere', 'tn2')
+    rmSync(chained, { force: true })
+    symlinkSync('tn', chained)
+    for (const launcher of [join(next, 'versions', version, 'bin', 'tandem'), link, chained]) {
+      writeFileSync(LOG, '')
+      expect(sh(launcher, ['stop'], bare()).status, launcher).toBe(0)
+      expect(calls(), launcher).toEqual([NEXT_STOP])
+    }
+  })
+
+  it('(43) g3 the default install\'s launcher and its ~/.local/bin link keep ~/.tandem and com.tandem.runtime', () => {
+    for (const launcher of [join(old, 'current', 'bin', 'tandem'), join(HOME, '.local', 'bin', 'tandem')]) {
+      writeFileSync(LOG, '')
+      expect(sh(launcher, ['stop'], bare()).status, launcher).toBe(0)
+      expect(calls(), launcher).toEqual([OLD_STOP])
+    }
+  })
+
+  it('(43) g4 an explicit TANDEM_HOME still wins, and a launcher outside an install keeps ~/.tandem', () => {
+    writeFileSync(LOG, '')
+    expect(sh(join(next, 'current', 'bin', 'tandem'), ['stop'], env({ TANDEM_HOME: old }, 'darwin')).status).toBe(0)
+    expect(calls()).toEqual([OLD_STOP])
+    writeFileSync(LOG, '')
+    expect(sh(join(old, 'current', 'bin', 'tandem'), ['stop'], env({ TANDEM_HOME: next }, 'darwin')).status).toBe(0)
+    expect(calls()).toEqual([NEXT_STOP])
+    writeFileSync(LOG, '')
+    expect(packaging('tandem', ['stop'], bare()).status).toBe(0)
+    expect(calls()).toEqual([OLD_STOP])
+  })
+
+  it('(43) g5 what the next launcher runs looks at the next home too (limits init, no TANDEM_HOME)', () => {
+    writeFileSync(LOG, '')
+    const r = sh(join(next, 'current', 'bin', 'tandem'), ['limits', 'init'], env())
+    expect(r.status, r.stderr).toBe(0)
+    expect(existsSync(join(next, 'limits.applied.toml'))).toBe(true)
+    expect(existsSync(join(old, 'limits.toml'))).toBe(false)
+    expect(existsSync(join(old, 'limits.applied.toml'))).toBe(false)
+  })
+
+  it('(43) g6 an install that stops before the program is in place already left tandem.env naming the next service', () => {
+    resetHome()
+    const broken = join(BOX, 'broken.tar.gz')
+    writeFileSync(broken, 'not an archive')
+    const r = cutover(['install', '--no-start', '--archive', broken, '--port', '18797'], env({}, 'darwin'))
+    expect(r.status).not.toBe(0)
+    expect(existsSync(join(next, 'current'))).toBe(false)
+    expect(readFileSync(join(next, 'tandem.env'), 'utf8')).toContain("TANDEM_SERVICE='tandem-next'\n")
+    expect(statSync(join(next, 'tandem.env')).mode & 0o777).toBe(0o600)
+    writeFileSync(LOG, '')
+    expect(packaging('tandem', ['stop'], env({ TANDEM_HOME: next }, 'darwin')).status).toBe(0)
+    expect(calls()).toEqual([NEXT_STOP])
+    // and rollback clears it
+    expect(cutover(['rollback', '--purge'], env({}, 'darwin')).status).toBe(0)
+    expect(existsSync(next)).toBe(false)
+    expect(stubLog()).not.toContain('com.tandem.runtime')
+  })
+})
+
 describe('(43) c: docs/CUTOVER.md', { timeout: 60_000 }, () => {
   const doc = () => readFileSync(join(repo, 'docs', 'CUTOVER.md'), 'utf8')
   /** The text of `## <name>` up to the next `## `. */
