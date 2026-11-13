@@ -152,47 +152,50 @@ find "$stage/runtime/node_modules" -type f \
 # TANDEM_NODE_BINARY names one to bundle; without it, the Node running this
 # build is used, which on macOS links only against system frameworks and is
 # therefore portable to any machine of the same architecture. A release built
-# with TANDEM_BUNDLE_NODE=0, or one whose Node licence was not found, records
-# that it needs one on the target, and the installer refuses to install it onto
-# a machine that has none. A cross build cannot copy this machine's Node, so it
-# ships none.
+# with TANDEM_BUNDLE_NODE=0 records that it needs one on the target, and the
+# installer refuses to install it onto a machine that has none. A cross build
+# cannot copy this machine's Node, so it ships none. Any other build that cannot
+# bundle Node stops: a launcher with no runtime beside it installs fine and then
+# never runs (the 2026-11-13 cutover on mini).
 bundled_node=""
 bundled_node_version=""
-if [ "${TANDEM_BUNDLE_NODE:-1}" != "0" ]; then
-  if [ "$cross" = "1" ]; then
-    echo "  node runtime (skipped: a cross build cannot bundle this machine's Node)" >&2
-  else
-    candidate=${TANDEM_NODE_BINARY:-$(command -v node || true)}
-    if [ -n "$candidate" ] && [ -x "$candidate" ]; then
-      # Redistributing Node means redistributing its licence, which aggregates
-      # V8, OpenSSL, ICU, libuv, zlib and others. A build that cannot find it
-      # does not ship Node - refusing here is the difference between a packaging
-      # gap and a licence violation.
-      node_license=${TANDEM_NODE_LICENSE:-}
-      if [ -z "$node_license" ]; then
-        node_dir=$(CDPATH='' cd -- "$(dirname -- "$candidate")" && pwd)
-        for guess in "$node_dir/../LICENSE" "$node_dir/LICENSE" "$node_dir/../share/doc/node/LICENSE"; do
-          # Existence is not evidence. A prefix can hold an unrelated LICENSE,
-          # and shipping that as Node's attribution is worse than none - it
-          # looks like attribution.
-          [ -f "$guess" ] && grep -q "Node.js is licensed" "$guess" 2>/dev/null &&
-            { node_license=$guess; break; }
-        done
-      fi
-      if [ -n "$node_license" ] && [ -f "$node_license" ]; then
-        echo "  node runtime"
-        cp "$candidate" "$stage/libexec/node"
-        chmod 0755 "$stage/libexec/node"
-        cp "$node_license" "$stage/LICENSE.node.txt"
-        bundled_node="libexec/node"
-        bundled_node_version=$("$candidate" -p "process.versions.node")
-      else
-        echo "  node runtime (skipped: its LICENSE was not found; set TANDEM_NODE_LICENSE)" >&2
-      fi
-    else
-      echo "  node runtime (skipped: none found to bundle)"
-    fi
+no_node() {
+  echo "release blocked: node runtime: $1; set $2, or TANDEM_BUNDLE_NODE=0 for a release that needs Node on the target" >&2
+  exit 1
+}
+if [ "${TANDEM_BUNDLE_NODE:-1}" = "0" ]; then
+  echo "  node runtime (not bundled: TANDEM_BUNDLE_NODE=0; the target needs its own Node)"
+elif [ "$cross" = "1" ]; then
+  echo "  node runtime (skipped: a cross build cannot bundle this machine's Node)" >&2
+else
+  candidate=${TANDEM_NODE_BINARY:-$(command -v node || true)}
+  { [ -n "$candidate" ] && [ -x "$candidate" ]; } || no_node "none found to bundle" TANDEM_NODE_BINARY
+  # The `node` on PATH is often a link or a shim (mini: ~/.local/bin/node -> ~/.hermes/node/bin/node;
+  # Homebrew: /opt/homebrew/bin/node -> ../Cellar/node/<v>/bin/node). Node names its real binary,
+  # and its LICENSE sits beside that one, so both are taken from there.
+  real=$("$candidate" -p 'process.execPath' 2>/dev/null) && [ -x "$real" ] || real=$candidate
+  # Redistributing Node means redistributing its licence, which aggregates
+  # V8, OpenSSL, ICU, libuv, zlib and others. A build that cannot find it
+  # does not ship Node - refusing here is the difference between a packaging
+  # gap and a licence violation.
+  node_license=${TANDEM_NODE_LICENSE:-}
+  if [ -z "$node_license" ]; then
+    node_dir=$(CDPATH='' cd -- "$(dirname -- "$real")" && pwd)
+    for guess in "$node_dir/../LICENSE" "$node_dir/LICENSE" "$node_dir/../share/doc/node/LICENSE"; do
+      # Existence is not evidence. A prefix can hold an unrelated LICENSE,
+      # and shipping that as Node's attribution is worse than none - it
+      # looks like attribution.
+      [ -f "$guess" ] && grep -q "Node.js is licensed" "$guess" 2>/dev/null &&
+        { node_license=$guess; break; }
+    done
   fi
+  { [ -n "$node_license" ] && [ -f "$node_license" ]; } || no_node "its LICENSE was not found" TANDEM_NODE_LICENSE
+  echo "  node runtime"
+  cp "$real" "$stage/libexec/node"
+  chmod 0755 "$stage/libexec/node"
+  cp "$node_license" "$stage/LICENSE.node.txt"
+  bundled_node="libexec/node"
+  bundled_node_version=$("$real" -p "process.versions.node")
 fi
 
 # Tokens and cost per account come from ccusage (MIT), shipped as its unchanged native binary: the

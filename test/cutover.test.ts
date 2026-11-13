@@ -44,8 +44,21 @@ function stub(dir: string, name: string, body: string): void {
   writeFileSync(join(dir, name), `#!/bin/sh\nprintf '%s %s\\n' ${name} "$*" >> '${LOG}'\n${body}\nexit 0\n`)
   chmodSync(join(dir, name), 0o755)
 }
-stub(STUBS, 'launchctl', `if [ "$1" = list ] && [ ! -e '${BOX}/loaded-'"$2" ]; then echo "Could not find service \\"$2\\" in domain for port" >&2; exit 113; fi`)
-stub(STUBS, 'systemctl', `if [ "$2" = is-active ] && [ ! -e '${BOX}/loaded-'"$4" ]; then echo inactive; exit 3; fi`)
+// FIXNODE: a job is running (pid 4242) while BOX/running-<name> exists and crash-looping (no pid,
+// last exit 1; launchd reports the wait status 256) while BOX/crash-<name> exists; crash wins.
+// systemctl start makes the unit running, stop/disable --now ends it, as systemd would.
+stub(STUBS, 'launchctl', `if [ "$1" = list ] && [ -e '${BOX}/crash-'"$2" ]; then printf '{\\n\\t"Label" = "%s";\\n\\t"LastExitStatus" = 256;\\n};\\n' "$2"; exit 0; fi
+if [ "$1" = list ] && [ -e '${BOX}/running-'"$2" ]; then printf '{\\n\\t"Label" = "%s";\\n\\t"LastExitStatus" = 0;\\n\\t"PID" = 4242;\\n};\\n' "$2"; exit 0; fi
+if [ "$1" = list ] && [ ! -e '${BOX}/loaded-'"$2" ]; then echo "Could not find service \\"$2\\" in domain for port" >&2; exit 113; fi`)
+stub(STUBS, 'systemctl', `eval "unit=\\\${$#}"
+case "$2" in start) : > '${BOX}/running-'"$unit" ;; stop) rm -f '${BOX}/running-'"$unit" ;; disable) [ "$3" = --now ] && rm -f '${BOX}/running-'"$unit" ;; esac
+if [ "$2" = show ]; then
+  if [ -e '${BOX}/crash-'"$unit" ]; then printf 'MainPID=0\\nActiveState=activating\\nSubState=auto-restart\\nExecMainStatus=1\\n'
+  elif [ -e '${BOX}/running-'"$unit" ]; then printf 'MainPID=4242\\nActiveState=active\\nSubState=running\\nExecMainStatus=0\\n'
+  else printf 'MainPID=0\\nActiveState=inactive\\nSubState=dead\\nExecMainStatus=0\\n'; fi
+  exit 0
+fi
+if [ "$2" = is-active ] && [ ! -e '${BOX}/loaded-'"$4" ]; then echo inactive; exit 3; fi`)
 stub(STUBS, 'wrangler', '')
 stub(STUBS, 'fleetbus', '')
 stub(DARWIN, 'uname', 'case "$1" in -m) echo arm64 ;; *) echo Darwin ;; esac')
@@ -771,5 +784,67 @@ describe.runIf(onLinux)('(43) l: lifecycle beside an old install, one local hub 
     expect(again.stdout).toBe('cutover: nothing to roll back\n')
     expect(again.status).toBe(0)
     expect(oldSnapshot()).toBe(snapshot)
+  })
+})
+
+describe('(FIXNODE) s: status tells a running job from a crash-looping one', { timeout: 120_000 }, () => {
+  const next = join(HOME, '.tandem-next')
+  const LAST = `tandem: the bundled runtime is missing; reinstall Tandem ${'x'.repeat(250)}`
+  const clearMarks = () => {
+    for (const name of readdirSync(BOX)) if (/^(crash|running)-/.test(name)) rmSync(join(BOX, name))
+  }
+  /** An installed next home as cutover leaves it, without the program. */
+  function fakeInstall(): void {
+    resetHome()
+    clearMarks()
+    mkdirSync(join(next, 'current'), { recursive: true })
+    writeFileSync(join(next, '.cutover'), 'made by scripts/cutover.sh\n')
+    writeFileSync(join(next, 'current', 'manifest.json'), '{\n  "version": "9.9.9"\n}\n')
+    writeFileSync(join(next, 'tandem.env'), "TANDEM_SERVICE='tandem-next'\nTANDEM_HUB_LINK_ID='box-next'\nTANDEM_PORT='18797'\n")
+    writeFileSync(join(next, 'runtime.log'), `an older line\n${LAST}\n`)
+  }
+  const notRunning = `cutover: next NOT RUNNING (last exit 1); last log line: ${LAST.slice(0, 200)}\n`
+
+  for (const shape of ['darwin', 'linux'] as const) {
+    const darwin = shape === 'darwin'
+    it(`(FIXNODE) s1 ${shape}: a crash-looping job (no pid, last exit 1) is NOT RUNNING with the log line, rc 1`, () => {
+      fakeInstall()
+      writeFileSync(join(BOX, `crash-${newSvc(darwin)}`), '')
+      const r = cutover(['status'], env({}, shape))
+      expect(r.stderr).toBe(notRunning)
+      expect(r.status).toBe(1)
+      expect(r.stdout).toContain(`cutover: next ${next}: installed 9.9.9; computer box-next; port 18797; hub none; ${newSvc(darwin)} not running\n`)
+      expect(stubLog()).toContain(darwin ? `launchctl list ${newSvc(darwin)}\n` : `systemctl --user show -p ActiveState,SubState,ExecMainStatus,MainPID ${newSvc(darwin)}\n`)
+      clearMarks()
+    })
+
+    it(`(FIXNODE) s2 ${shape}: a running job is running with its pid, rc 0`, () => {
+      fakeInstall()
+      writeFileSync(join(BOX, `running-${newSvc(darwin)}`), '')
+      const r = cutover(['status'], env({}, shape))
+      expect(r.stderr).toBe('')
+      expect(r.status).toBe(0)
+      expect(r.stdout).toContain(`; ${newSvc(darwin)} running (pid 4242)\n`)
+      clearMarks()
+    })
+  }
+
+  it('(FIXNODE) s3 install without --no-start fails when no pid appears within 10 s', async () => {
+    resetHome()
+    clearMarks()
+    const darwin = !onLinux
+    writeFileSync(join(BOX, `crash-${newSvc(darwin)}`), '')
+    const started = Date.now()
+    const r = cutover(['install', '--archive', archive, '--port', String(await freePort())])
+    const took = Date.now() - started
+    expect(r.stderr).toMatch(/\ncutover: next NOT RUNNING \(last exit 1\); last log line: [^\n]*\n$/)
+    expect(r.status).toBe(1)
+    expect(r.stdout).not.toContain('cutover: installed\n')
+    expect(took).toBeGreaterThanOrEqual(9_000)
+    expect(took).toBeLessThan(60_000)
+    expect(stubLog()).toContain(darwin ? `launchctl list ${newSvc(darwin)}\n` : `systemctl --user show -p ActiveState,SubState,ExecMainStatus,MainPID ${newSvc(darwin)}\n`)
+    expect(stubLog()).not.toContain('com.tandem.runtime')
+    expect(cutover(['rollback', '--purge']).status).toBe(0)
+    clearMarks()
   })
 })

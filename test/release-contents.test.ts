@@ -9,8 +9,8 @@
  * files someone remembered to exclude. A release is defined by what it is
  * allowed to contain.
  */
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -254,5 +254,76 @@ describe('the licence shipped with a bundled runtime', () => {
     for (const component of ['Node.js is licensed', 'OpenSSL', 'libuv', 'zlib']) {
       expect(license, `the bundled licence omits ${component}`).toContain(component)
     }
+  })
+})
+
+/**
+ * U-R1A-FIXNODE: the `node` a build finds is often a link (mini: ~/.local/bin/node ->
+ * ~/.hermes/node/bin/node, the LICENSE in ~/.hermes/node). A build that cannot ship Node stops,
+ * unless TANDEM_BUNDLE_NODE=0 asks for a release that needs Node on the target.
+ */
+describe('(FIXNODE) bundling Node', { timeout: 900_000 }, () => {
+  const box = mkdtempSync(join(tmpdir(), 'r1afixnode-'))
+  const LICENSE_TEXT = 'Node.js is licensed for use as follows:\n\nr1afixnode fake licence\n'
+  /** <box>/<name>/real/bin/node (answers process.execPath with its own path, else runs this Node), linked from <box>/<name>/link/node. */
+  function fakeNode(name: string, withLicense: boolean): string {
+    const real = join(box, name, 'real')
+    mkdirSync(join(real, 'bin'), { recursive: true })
+    mkdirSync(join(box, name, 'link'))
+    writeFileSync(join(real, 'bin', 'node'), `#!/bin/sh\nif [ "$1" = -p ] && [ "$2" = process.execPath ]; then echo '${join(real, 'bin', 'node')}'; exit 0; fi\nexec '${process.execPath}' "$@"\n`)
+    chmodSync(join(real, 'bin', 'node'), 0o755)
+    if (withLicense) writeFileSync(join(real, 'LICENSE'), LICENSE_TEXT)
+    symlinkSync(join(real, 'bin', 'node'), join(box, name, 'link', 'node'))
+    return join(box, name, 'link')
+  }
+  function build(link: string, out: string, extra: Record<string, string> = {}) {
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${link}:${process.env.PATH}`, TANDEM_SKIP_AUDIT: '1', ...extra }
+    for (const name of ['TANDEM_NODE_LICENSE', 'TANDEM_NODE_BINARY', 'TANDEM_BUNDLE_NODE']) if (!(name in extra)) delete env[name]
+    mkdirSync(out)
+    return spawnSync('sh', [join(repoRoot, 'packaging', 'build-release.sh'), out], { cwd: repoRoot, env, encoding: 'utf8' })
+  }
+  const stagedTree = (out: string) => join(out, readdirSync(out).find(name => name.startsWith('tandem-') && !name.includes('.tar.gz'))!)
+
+  afterAll(() => {
+    spawnSync('chmod', ['-R', 'u+w', box])
+    rmSync(box, { recursive: true, force: true })
+  })
+
+  it('(FIXNODE) f1 a linked node whose real folder holds the Node LICENSE is bundled', () => {
+    const out = join(box, 'out-f1')
+    const r = build(fakeNode('licensed', true), out)
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('  node runtime\n')
+    expect(r.stderr).not.toContain('node runtime (skipped')
+    const staged = stagedTree(out)
+    expect(existsSync(join(staged, 'libexec', 'node'))).toBe(true)
+    expect(readFileSync(join(staged, 'LICENSE.node.txt'), 'utf8')).toBe(LICENSE_TEXT)
+    const manifest = JSON.parse(readFileSync(join(staged, 'manifest.json'), 'utf8')) as { requiresSystemNode: boolean }
+    expect(manifest.requiresSystemNode).toBe(false)
+    const archive = readdirSync(out).find(name => name.endsWith('.tar.gz'))!
+    const listed = execFileSync('tar', ['-tzf', join(out, archive)], { encoding: 'utf8' }).split('\n')
+    expect(listed).toContain(`${archive.replace(/\.tar\.gz$/, '')}/libexec/node`)
+  })
+
+  it('(FIXNODE) f2 no Node LICENSE anywhere: the build exits non-zero naming both ways out', () => {
+    const out = join(box, 'out-f2')
+    const r = build(fakeNode('bare', false), out)
+    expect(r.status).not.toBe(0)
+    expect(r.stderr).toContain('its LICENSE was not found')
+    expect(r.stderr).toContain('TANDEM_NODE_LICENSE')
+    expect(r.stderr).toContain('TANDEM_BUNDLE_NODE=0')
+    expect(readdirSync(out).filter(name => name.endsWith('.tar.gz'))).toEqual([])
+  })
+
+  it('(FIXNODE) f3 TANDEM_BUNDLE_NODE=0 builds without Node and records that it needs one', () => {
+    const out = join(box, 'out-f3')
+    const r = build(fakeNode('bare-f3', false), out, { TANDEM_BUNDLE_NODE: '0' })
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toContain('  node runtime (not bundled: TANDEM_BUNDLE_NODE=0; the target needs its own Node)\n')
+    const staged = stagedTree(out)
+    expect(existsSync(join(staged, 'libexec', 'node'))).toBe(false)
+    expect(existsSync(join(staged, 'LICENSE.node.txt'))).toBe(false)
+    const manifest = JSON.parse(readFileSync(join(staged, 'manifest.json'), 'utf8')) as { requiresSystemNode: boolean }
+    expect(manifest.requiresSystemNode).toBe(true)
   })
 })
