@@ -42,7 +42,11 @@ setrun() {
 
 # One command in the run's home: an empty environment but for the names below, a PATH of the
 # run's own stubs (launchctl, systemctl) and links (node, npm, npx, tmux) plus the system folders,
-# a new process group recorded in <dir>/pgids, stdin closed, a 600 s limit. Output goes to $2.
+# a new process group recorded in <dir>/pgids, stdin closed, a 600 s limit, and the sandbox
+# profile <dir>/sandbox.sb (no reads, writes or unix sockets under /Users, /Volumes, /private/tmp
+# or /private/var/folders except the run folder and the node/tmux install; no launchctl, security,
+# osascript or sudo; signals stay open: each exec is its own sandbox, and a later call must stop
+# what an earlier one started, e.g. the README's `kill "$(cat hub.pid)"`). Output goes to $2.
 inbox() {
   path="$dir/stub-bin:$dir/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   got=$(env -i PATH="$path" /bin/sh -c 'command -v launchctl; command -v systemctl')
@@ -55,7 +59,7 @@ $dir/stub-bin/systemctl" ] || die "service-manager stubs not first on PATH: $got
       const fs = require("node:fs")
       const [cmd, out, pgids, cwd] = process.argv.slice(1)
       const fd = fs.openSync(out, "w")
-      const child = spawn("/bin/sh", ["-c", cmd], { cwd, detached: true, stdio: ["ignore", fd, fd] })
+      const child = spawn("/usr/bin/sandbox-exec", ["-f", pgids.replace(/pgids$/, "sandbox.sb"), "/bin/sh", "-c", cmd], { cwd, detached: true, stdio: ["ignore", fd, fd] })
       fs.appendFileSync(pgids, child.pid + "\n")
       const timer = setTimeout(() => {
         fs.appendFileSync(out, "check.sh: command stopped after 600 s\n")
@@ -94,6 +98,20 @@ prepare() {
     printf '#!/bin/sh\nprintf "%%s %%s\\n" "$(basename "$0")" "$*" >> "%s/stub-bin/calls.log"\nexit 0\n' "$dir" > "$dir/stub-bin/$t"
     chmod 0755 "$dir/stub-bin/$t"
   done
+  nodetop=$(dirname "$(dirname "$nodebin")")
+  tmuxtop=$(dirname "$(dirname "$(readlink "$dir/bin/tmux")")")
+  for t in "$nodetop" "$tmuxtop"; do
+    case "$t" in /) die "install folder $t would open the whole disk to the run" ;; esac
+    case "$HOME/" in "$t"/*) die "install folder $t would open this computer's home to the run" ;; esac
+  done
+  cat > "$dir/sandbox.sb" <<SB
+(version 1)
+(allow default)
+(deny file-read-data file-read-xattr file-write* network-outbound (subpath "/Users") (subpath "/Volumes") (subpath "/private/tmp") (subpath "/private/var/folders"))
+(allow file-read-data file-read-xattr (subpath "$nodetop") (subpath "$tmuxtop"))
+(allow file-read-data file-read-xattr file-write* network-outbound (subpath "$dir"))
+(deny process-exec (literal "/bin/launchctl") (literal "/usr/bin/security") (literal "/usr/bin/osascript") (literal "/usr/bin/sudo"))
+SB
   : > "$dir/log.txt"
   : > "$dir/pgids"
   start=$(date +%s)
@@ -132,16 +150,22 @@ judge() {
   seconds=$(($(date +%s) - $(cat "$dir/start")))
   [ "$seconds" -lt 900 ] || failed="$failed iv"
   commands=$(grep -c '^=== ' "$dir/log.txt" || true)
+  # Outside the run: a command naming a path outside the run folder, or one the sandbox refused.
+  # Never a README step, so it fails the run (the sandbox already kept the content out).
+  outside=$(awk -v d="$dir" '
+    /^\$ / { cmd = $0; c = cmd; while ((i = index(c, d)) > 0) c = substr(c, 1, i - 1) substr(c, i + length(d))
+             if (c ~ /(\/Users|\/Volumes|\/private|\/tmp|\/var\/folders|\/home|\/root)([\/[:space:]"'\'';&|)]|$)/) print cmd; next }
+    /Operation not permitted/ && cmd != "" { print cmd; cmd = "" }' "$dir/log.txt" | uniq)
+  [ -z "$outside" ] || failed="$failed outside"
   if [ -z "$failed" ]; then
     verdict="STRANGER-RUN $run PASS seconds=$seconds commands=$commands"
   else
     verdict="STRANGER-RUN $run FAIL$failed seconds=$seconds commands=$commands"
   fi
-  # For the director to rule on: commands that read a file of the clone (other than README.md is
-  # the director's call) or name a path outside the run's home. A list, not a verdict.
+  # For the director to rule on: commands that read a file of the clone (README.md or a file the
+  # README names is the director's call), then the outside commands above. A list, not a verdict.
   reads=$(grep '^\$ ' "$dir/log.txt" | grep -E '(^|[^[:alnum:]_-])(cat|less|more|head|tail|grep|sed|awk|vi|vim|nano|find|ls -R)([^[:alnum:]_-]|$)' |
     grep -E 'tandem([^-]|$)' || true)
-  outside=$(grep '^\$ ' "$dir/log.txt" | grep -E '(/Users|/Volumes|/home|/root)([/[:space:]"'\'';&|)]|$)' || true)
   report=$(printf '%s\nREADS:\n%s\n%s\n' "$verdict" "$reads" "$outside" | grep -v '^$')
   printf '%s\n' "$report"
   evid="${STRANGER_EVIDENCE:-$repo/../evidence}"
