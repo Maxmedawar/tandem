@@ -31,6 +31,11 @@
  * claude and codex approval fixtures are ccmanager samples, ANCHOR-1 audit G10), so the approval
  * rules are not anchored (not live-captured). antigravity has no approval source, so it has no (d)
  * row; its approval rules stay unanchored (ANCHOR-1 G2).
+ * Stated limit (director 2026-11-13, G-A of the U-R1B-ANCHOR-3 audit): a quoted spinner anywhere above holds
+ * agents. claude's spinner and token rules have no upper bound between the marker and the prompt box (a
+ * busy screen with a long todo list never reads idle), so a quoted spinner or token line anywhere above
+ * the real prompt box, with no border line between, reads working (E_LIMITS: agents held, the owner
+ * still types); only an indented spinner-glyph line (the rule starts at the line start) reads as the prompt.
  *
  * Pure: no session, no tmux, no network. Built-ins only; the owner folder is a missing folder.
  */
@@ -579,10 +584,23 @@ describe("(ANCHOR-3 d) a quoted approval above a real working screen reads worki
   });
 });
 
-describe("(ANCHOR-3 e) claude: a quoted spinner or token line above the real prompt reads as the prompt", () => {
+// Stated limit: a quoted spinner anywhere above holds agents (header comment). `<quote>|<bottom>|<variant>`: these rows read working.
+const E_LIMITS = new Set<string>(
+  ["✻ Cogitating… (12s)|verbatim", "⏺ Fixing the tests… done|verbatim", "(12k tokens)|verbatim", "(12k tokens)|indented", "⎿  Done (3 tool uses · 20s · 12k tokens)|verbatim", "⎿  Done (3 tool uses · 20s · 12k tokens)|indented"]
+    .flatMap((k) => ["EMPTY", "TYPED"].map((b) => k.replace("|", `|${b}|`))),
+);
+describe("(ANCHOR-3 e) claude: a quoted spinner or token line above the real prompt reads as the prompt (E_LIMITS: stated limit, reads working)", () => {
   const QUOTES = ["✻ Cogitating… (12s)", "⏺ Fixing the tests… done", "(12k tokens)", "  ⎿  Done (3 tool uses · 20s · 12k tokens)"];
-  const rows = QUOTES.flatMap((line) => (["EMPTY", "TYPED"] as const).flatMap((bottom) => VARIANTS.map((variant) => [`claude "${line.trim()}" above ${bottom} (${variant}): reads idle`, line, bottom, variant] as const)));
-  it.each(rows)("%s", (_t, line, bottom, variant) => {
+  const rows = QUOTES.flatMap((line) => (["EMPTY", "TYPED"] as const).flatMap((bottom) => VARIANTS.map((variant) => {
+    const limit = E_LIMITS.has(`${line.trim()}|${bottom}|${variant}`);
+    return [`claude "${line.trim()}" above ${bottom} (${variant}): reads ${limit ? "working (stated limit)" : "idle"}`, line, bottom, variant, limit] as const;
+  })));
+  it("e0 every E_LIMITS key names an (e) row", () => {
+    const keys = new Set(rows.map((r) => `${r[1].trim()}|${r[2]}|${r[3]}`));
+    for (const k of E_LIMITS) expect(keys.has(k), k).toBe(true);
+    expect(E_LIMITS.size).toBe(12);
+  });
+  it.each(rows)("%s", (_t, line, bottom, variant, limit) => {
     const h = harnesses.get("claude")!;
     const whole = bottomOf("claude", bottom);
     const lines = linesOf(whole).slice(-37);
@@ -591,10 +609,11 @@ describe("(ANCHOR-3 e) claude: a quoted spinner or token line above the real pro
     expect(isPromptEmpty(h, trimmed)).toBe(isPromptEmpty(h, whole));
     const q = quoted([line], variant, lines);
     expect(q.split("\n").length).toBeLessThanOrEqual(40);
-    expect(readScreen(h, q)).toBe(readScreen(h, trimmed));
-    expect(readScreen(h, q)).toBe("idle");
+    expect(readScreen(h, q)).toBe(limit ? "working" : readScreen(h, trimmed));
+    expect(readScreen(h, q)).toBe(limit ? "working" : "idle");
     expect(isPromptEmpty(h, q)).toBe(isPromptEmpty(h, trimmed));
     expect(decideInput("owner", "type", readScreen(h, q))).toBe("enter");
+    if (limit) expect(decideInput("agent", "type", readScreen(h, q))).toBe("held");
   });
 });
 
@@ -603,12 +622,18 @@ describe("(ANCHOR-3 f) claude: the spinner and token layouts still read working 
   const SPIN = "✻ Cogitating… (12s · ↓ 1.2k tokens)";
   const typed = BOX.map((l) => (l.startsWith("❯") ? "❯ " + T : l));
   const steps = Array.from({ length: 8 }, (_, i) => `  ⎿  ☐ step ${i + 1}`);
+  const many = (n: number) => Array.from({ length: n }, (_, i) => `  ⎿  ☐ step ${i + 1}`);
+  const idleWhole = linesOf(read("screens/claude-idle-real.txt"));
   it.each([
     ["f1 the spinner, a blank line, the prompt box and its footer", [SPIN, "", ...BOX]],
     ["f2 the spinner, 8 todo lines, a blank line, the prompt box and its footer", [SPIN, ...steps, "", ...BOX]],
     ["f3 the spinner and a running line, no box", [SPIN, "  ⎿  Running…"]],
     ["f4 the spinner, a blank line, typed text in the prompt box", [SPIN, "", ...typed]],
     ["f5 the token line alone, a blank line, the prompt box", ["  ⎿  Waiting… (3s · ↑ 120 tokens)", "", ...BOX]],
+    ["f6 the spinner 13 lines above the prompt box, no esc to interrupt footer", [SPIN, ...many(12), "", ...BOX]],
+    ["f7 the spinner 20 lines above the prompt box, no esc to interrupt footer", [SPIN, ...many(19), "", ...BOX]],
+    ["f8 the spinner 30 lines above the prompt box, no esc to interrupt footer", [SPIN, ...many(29), "", ...BOX]],
+    ["f9 a quoted spinner far above the real idle box (stated limit: a quoted spinner anywhere above holds agents)", ["✻ Cogitating… (12s)", "  That is the screen I saw.", "", ...idleWhole.slice(-37)]],
   ] as const)("%s reads working", (_t, lines) => {
     expect(BOX[1]!.replace(/\u00a0/g, " ")).toBe('❯ Try "refactor <filepath>"');
     expect(BOX.join("\n")).not.toMatch(/interrupt/i);
