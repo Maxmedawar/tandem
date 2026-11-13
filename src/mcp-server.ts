@@ -10,9 +10,9 @@
  * and audit log all live in the router and apply identically to both paths.
  *
  * IMPORT-ORDER CAVEAT: importing this module pulls in the router, which builds
- * the cwd ALLOWLIST from env at module load. Entrypoints must bridge the
- * TANDEM_* env vars to the engine's CCM_* names BEFORE importing this module
- * (both entrypoints use a dynamic `await import(...)` after env setup).
+ * the cwd ALLOWLIST from env at module load (TANDEM_CWD_ALLOWLIST, read through
+ * src/legacy-env.ts). Entrypoints must finish their env setup (.env loading)
+ * BEFORE importing this module (both use a dynamic `await import(...)` after it).
  *
  * The tool surface contains seven tools. read_session is folded into
  * send_to_session (empty text = poll mode); the four relay tools are folded into
