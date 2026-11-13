@@ -12,7 +12,7 @@
  * reads gives no second line.
  */
 import { audit } from './audit.ts'
-import { admitInput, readInput } from './input-gate.ts'
+import { admitInput, readInput, recheckInput } from './input-gate.ts'
 import { killSwitchOn } from './kill-switch.ts'
 import { MailError, type Mailbox } from './mailbox.ts'
 import { getLive, liveSessionNames } from './sessions.ts'
@@ -54,6 +54,15 @@ export async function noticePass(box: Mailbox, interruptGapMs = 0): Promise<{ ty
       }
       const { verdict } = await admitInput(session, 'agent', 'type')
       if (verdict !== 'enter') {
+        held.push(name)
+        continue
+      }
+      // One fresh read right before the line is typed: a prompt that got text (or a screen that left
+      // idle) since admitInput's last read holds the line, and it is not recorded as sent. Only
+      // synchronous code runs from here to session.send.
+      // Remaining window: inside send (typeAndSubmit: its has-session probe, the typing, and the 200 ms
+      // pause before Enter) a person's keys typed then go out with the line (terminal-session.ts).
+      if (!(await recheckInput(session))) {
         held.push(name)
         continue
       }

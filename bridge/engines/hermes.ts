@@ -28,8 +28,9 @@
  *   - every agent id is validated against a strict bounded charset/length
  *     rule BEFORE any network call;
  *   - the base URL is canonicalized and restricted to a loopback host
- *     (127.0.0.1, [::1], localhost, or a true *.localhost subdomain), with
- *     credentials/query/fragment rejected outright;
+ *     (exactly 127.0.0.1, [::1] or localhost; a *.localhost name is refused,
+ *     it can resolve off the machine), with credentials/query/fragment
+ *     rejected outright;
  *   - a redirect is never followed (it could name a host that is not loopback);
  *   - every fetch (login, send, read, and the one 401 retry) is raced against
  *     an AbortSignal timeout — a slow/wedged Hermes gateway can never hang a
@@ -54,6 +55,8 @@ import type { DrivableSession, EngineId, ReadOptions, ReadResult, SendOptions, S
 import type { AdapterOpenResult } from '../harness-registry.ts'
 
 const DEFAULT_TIMEOUT_MS = 15_000
+/** One open's answer check (login and session read) ends within this, whatever the request timeout. */
+const HERMES_OPEN_MS = 30_000
 const DEFAULT_MAX_RESPONSE_BYTES = 256 * 1024 // 256 KiB — a chat reply, not a file transfer
 const MAX_PROMPT_LENGTH = 8_000
 const MAX_CURSOR = 1_000_000
@@ -104,9 +107,10 @@ export function buildHermesWritableAgents(envValue = process.env.TANDEM_HERMES_W
 }
 
 /** Canonicalize + validate a Hermes base URL: http/https only, loopback host
- *  only, no credentials/query/fragment. Rejects hostname-suffix tricks (only
- *  an EXACT "localhost" or a TRUE "*.localhost" suffix qualifies — a host like
- *  "notlocalhost.example" does not merely because it contains the substring). */
+ *  only, no credentials/query/fragment. The host must be EXACTLY 127.0.0.1,
+ *  [::1] or localhost after the URL parser's own normal form (127.1 parses to
+ *  127.0.0.1, LOCALHOST to localhost): any *.localhost name, "localhost." and
+ *  hostname-suffix tricks ("notlocalhost.example") are refused. */
 export function canonicalizeHermesBaseUrl(raw: string): string {
   let url: URL
   try {
@@ -132,13 +136,9 @@ export function canonicalizeHermesBaseUrl(raw: string): string {
   // expose the bare address. Normalize only that syntactic wrapper before the
   // exact loopback comparison.
   const normalizedHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
-  const isLoopback =
-    normalizedHost === '127.0.0.1' ||
-    normalizedHost === '::1' ||
-    normalizedHost === 'localhost' ||
-    normalizedHost.endsWith('.localhost')
+  const isLoopback = normalizedHost === '127.0.0.1' || normalizedHost === '::1' || normalizedHost === 'localhost'
   if (!isLoopback) {
-    throw new Error('Hermes base URL host must be loopback (127.0.0.1, [::1], localhost, or *.localhost)')
+    throw new Error('Hermes base URL host must be loopback (127.0.0.1, [::1] or localhost)')
   }
   const path = url.pathname.replace(/\/+$/, '')
   return `${url.origin}${path}`
@@ -564,7 +564,9 @@ export class HermesSession implements DrivableSession {
  * `name` and check that it answers. Tandem starts nothing there. Refusals carry the HTTP status,
  * a short error (no password, cookie or URL) and the audit line's `denied`; nothing is registered
  * by a refusal. The answer check is one login and one session read, each under the request
- * timeout, and is blocked by TANDEM_HERMES_DISABLE_LIVE.
+ * timeout, and is blocked by TANDEM_HERMES_DISABLE_LIVE. The whole check ends within HERMES_OPEN_MS
+ * (30 s): past it the open answers 503 `open-timeout` and a late result is dropped (nothing is
+ * registered), so the router's per-name chain of opens always drains (k queued opens: k x 30 s).
  */
 export async function openHermes(name: string): Promise<AdapterOpenResult> {
   let config: HermesConfig | undefined
@@ -578,6 +580,12 @@ export async function openHermes(name: string): Promise<AdapterOpenResult> {
     return { status: 403, error: `Hermes agent "${name}" is not on the writable-agent allowlist`, denied: 'not-writable-allowlisted' }
   }
   const session = HermesSession.attach({ agentId: name, config })
-  if (!(await session.isAlive())) return { status: 503, error: `Hermes agent "${session.id}" did not answer`, denied: 'no-answer' }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<'late'>((resolve) => {
+    timer = setTimeout(() => resolve('late'), HERMES_OPEN_MS)
+  })
+  const alive = await Promise.race([session.isAlive(), late]).finally(() => clearTimeout(timer))
+  if (alive === 'late') return { status: 503, error: `Hermes agent "${session.id}" did not answer within 30 s`, denied: 'open-timeout' }
+  if (!alive) return { status: 503, error: `Hermes agent "${session.id}" did not answer`, denied: 'no-answer' }
   return { session }
 }

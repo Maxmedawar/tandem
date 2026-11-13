@@ -73,6 +73,8 @@ const SESSION_PREFIX = 'ccm-'
 
 /** Session names must be tmux/file safe. */
 const SESSION_NAME_RE = /^[A-Za-z0-9._-]+$/
+/** A NEW session name: no '.', which tmux turns into '_' (the session would not answer to its name). */
+const NEW_SESSION_NAME_RE = /^[A-Za-z0-9_-]+$/
 
 /** The footer string Claude Code shows ONLY while a turn is running (used only
  *  by report-cleaning below; the authoritative check is CLAUDE_DESCRIPTOR). */
@@ -287,7 +289,34 @@ function sleep(ms: number): Promise<void> {
  *  exact session name; pane/window commands also need the trailing `:` so
  *  tmux reads the name as a session. */
 function sessionTarget(name: string): string {
-  return `=${SESSION_PREFIX}${name}`
+  return `=${tmuxSessionName(SESSION_PREFIX + name)}`
+}
+
+/** The name tmux keeps for a session: it turns '.' into '_' (an existing session opened by an older
+ *  version under a name with '.' answers only to that). */
+export function tmuxSessionName(name: string): string {
+  return name.replace(/\./g, '_')
+}
+
+/** tmux reads an argument that ENDS in ';' as a command separator and drops the ';'; `x\;` reads back
+ *  as `x;`. Every caller-supplied tmux argument (typed text and keys, the start folder, the program's
+ *  argv) goes through here, so a trailing ';' stays text. */
+function literal(arg: string): string {
+  return arg.endsWith(';') ? `${arg.slice(0, -1)}\\;` : arg
+}
+
+/** new-session's `-c` is a tmux format: each `#` doubled (`##` reads back `#`), except a run of `#`
+ *  right before `[`, which the format pass leaves as is. So a start folder holding `#`, `#{...}` or
+ *  `#(...)` is the folder started in, never a format (unescaped, `##` started in the home folder). */
+function noFormat(arg: string): string {
+  return arg.replace(/(#+)(\[?)/g, (_m, hashes: string, bracket: string) => (bracket ? hashes + bracket : hashes + hashes))
+}
+
+/** new-session's command: a one-element argv would go to `sh -c` as shell text, so it is run as
+ *  `sh -c 'exec "$0"' <program>` (the program name is data); every element through literal(). */
+function commandArgv(argv: readonly string[]): string[] {
+  const cmd = argv.length === 1 ? ['sh', '-c', 'exec "$0"', argv[0]!] : [...argv]
+  return cmd.map(literal)
 }
 
 function paneTarget(name: string): string {
@@ -478,7 +507,7 @@ async function scrubServerSecrets(): Promise<void> {
  */
 async function sendKeys(args: string[]): Promise<void> {
   try {
-    await tmux(['send-keys', ...args])
+    await tmux(['send-keys', ...args.map(literal)])
   } catch (e) {
     const code = (e as { code?: unknown }).code
     const neverStarted = typeof code === 'string' && !code.startsWith('ERR_')
@@ -973,7 +1002,7 @@ export class TerminalSession {
     const { name, allowlist } = opts
     const requestedCwd = opts.cwd
     const descriptor = opts.descriptor ?? CLAUDE_DESCRIPTOR
-    if (!SESSION_NAME_RE.test(name)) {
+    if (!NEW_SESSION_NAME_RE.test(name)) {
       throw new Error(`invalid session name: ${name}`)
     }
     // The kill switch (bridge/kill-switch.ts): nothing starts while it is on (opens and both relay sessions spawn here).
@@ -1049,8 +1078,9 @@ export class TerminalSession {
         '-y',
         String(PANE_HEIGHT),
         '-c',
-        startCwd,
-        ...engineArgv,
+        literal(noFormat(startCwd)),
+        '--',
+        ...commandArgv(engineArgv),
         // In the same tmux call: the pane's process has the token by now, so it leaves the session
         // environment, where `tmux show-environment -t` would hand it to any process of this user.
         ';',

@@ -354,6 +354,11 @@ async function openNamed(name: string, req: RpcRequest): Promise<RpcResult> {
   } catch (e) {
     return engineError(e)
   }
+  // tmux turns '.' in a session name into '_' (the session would not answer to its name): a
+  // tmux-hosted engine (its harness file names no adapter) gets no '.'; an adapter agent's id keeps it.
+  if (harness.adapter === undefined && name.includes('.')) {
+    return err(400, `invalid session name (allowed: A-Z a-z 0-9 . _ -): ${name}`)
+  }
 
   // A new name equal to an open one ignoring case would share its delivery and transcript files
   // on a case-insensitive disk. Read after the engine is resolved (a refused engine runs no tmux)
@@ -406,8 +411,9 @@ async function handleOpenAdapter(engine: EngineId, name: string, req: RpcRequest
   // A tmux-hosted session may have survived a bridge restart without yet being
   // re-adopted into the in-memory registry. Never let an adapter attachment claim
   // that live session's name and hide/misroute it. Any ccm-<name> collision is a
-  // conflict, including an untagged one.
-  if (await TerminalSession.exists(name)) {
+  // conflict, including an untagged one. An id with '.' is no tmux session's name (tmux keeps none,
+  // and TerminalSession reads `a.b` as the legacy session `ccm-a_b`): it never meets the session `a_b`.
+  if (!name.includes('.') && (await TerminalSession.exists(name))) {
     const existingEngine = await TerminalSession.engineTagOf(name)
     audit({
       route: 'POST /sessions/open',
