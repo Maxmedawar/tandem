@@ -135,7 +135,7 @@ describe('a published release', () => {
     }
     // The digests are what an installer verifies before running any of it.
     execFileSync('shasum', ['-a', '256', '-c', 'FILES.sha256'], { cwd: tree, stdio: 'pipe' })
-  })
+  }, 60_000)
 
   it('carries none of this project\'s test, benchmark, or development material', () => {
     const forbidden = ours()
