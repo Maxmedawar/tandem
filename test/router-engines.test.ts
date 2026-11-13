@@ -38,6 +38,7 @@ function fakeSession(engine: EngineId, id: string): DrivableSession {
     id,
     engine,
     cwd: "/tmp/fake",
+    ...{ skipTag: "0" },
     isAlive: async () => true,
     isWorking: async () => false,
     send: async () => ({ status: "done", report: "ok", cursor: 1 }),

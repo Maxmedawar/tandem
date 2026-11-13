@@ -30,6 +30,8 @@ export interface HarnessSpawnOptions {
   skipPrompts?: boolean
   /** Which of the file's `[[dialogs]]` warmup may answer (terminal-session.ts SpawnOptions); absent = `none`. */
   dialogAnswers?: DialogAnswers
+  /** The binding folder re-check right before new-session (terminal-session.ts SpawnOptions). */
+  folderCheck?: (realCwd: string) => string | undefined
 }
 
 /**
@@ -72,6 +74,11 @@ export class HarnessSession extends TerminalAdapterSession {
     this.reader = createStateReader(harness)
     const keys = harness.keys?.interrupt
     this.interruptKeys = typeof keys === 'string' ? [keys] : keys
+  }
+
+  /** The terminal's start-flag tag: '1', '0', or undefined (untagged). */
+  get skipTag(): '1' | '0' | undefined {
+    return (this.screenSource as { skipTag?: '1' | '0' }).skipTag
   }
 
   /** The file's `keys.interrupt` when set, else the terminal's default (Escape, then C-c); a hook agent's turn file then goes. */

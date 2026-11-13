@@ -66,7 +66,7 @@
 
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
-import { validateModel, validateEffort, NeedsOwnerError, TerminalSession } from './terminal-session.ts'
+import { validateModel, validateEffort, FolderRefusedError, NeedsOwnerError, TerminalSession } from './terminal-session.ts'
 import { SendOutcomeUnknownError, TmuxBusyError, type DrivableSession, type EngineId } from './drivable.ts'
 import { TerminalAdapterSession } from './engines/terminal-adapter.ts'
 import { ADAPTERS, type AdapterOpenResult, type Harness } from './harness-registry.ts'
@@ -87,6 +87,7 @@ import {
   listSessions,
   liveSessionNames,
   listLiveTmuxSessions,
+  volumePath,
 } from './sessions.ts'
 import * as relay from './relay.ts'
 import { emitCompletion, summarize } from './events.ts'
@@ -438,6 +439,13 @@ async function handleOpenAdapter(engine: EngineId, name: string, req: RpcRequest
   return ok({ name: opened.session.id, engine, attachHint: opened.session.attachHint() })
 }
 
+/** A reused or adopted session keeps the start flags it began with: one whose start-flag tag is 0 is
+ *  fine; one tagged 1, or untagged, only while its folder is in permission_skip now. Else the refusal. */
+function needsOwnerForSkip(session: DrivableSession, gate: ReturnType<typeof limitsGate>): string | undefined {
+  if ((session as { skipTag?: string }).skipTag === '0' || gate.skipPrompts(session.cwd)) return undefined
+  return `needs owner: session "${session.id}" started with its prompts off or has no start-flag tag, and its folder ${session.cwd} is not in the limits file's permission_skip now; nothing was reused`
+}
+
 /** open_session for harness engines (claude, codex and shell included): the shared tmux
  *  lifecycle, generalized from Phase 1's Claude-only path. model/effort remain Claude-only. */
 async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, harness: Harness): Promise<RpcResult> {
@@ -458,10 +466,19 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
     if (req.body['effort'] !== undefined) return err(400, `effort is not supported for engine "${engine}"`)
   }
 
+  // The limits file (bridge/limits.ts) is the ceiling over the env switches below: one gate per open,
+  // taken before the reuse so a reused session is re-checked against permission_skip too.
+  const gate = limitsGate()
+
   // Idempotent: reuse a session already live under this name (engine already
   // confirmed to match by the caller, handleOpen).
   const existing = getLive(name)
   if (existing) {
+    const skipRefused = needsOwnerForSkip(existing, gate)
+    if (skipRefused) {
+      audit({ route: 'POST /sessions/open', name, engine, cwd: existing.cwd, denied: 'skip-tag' })
+      return err(409, skipRefused)
+    }
     audit({ route: 'POST /sessions/open', name, engine, cwd: existing.cwd, reused: true })
     return ok({ name: existing.id, engine, cwd: existing.cwd, attachHint: existing.attachHint(), reused: true })
   }
@@ -476,10 +493,12 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
   }
   const cwd = safeResolve(cwdInput)
 
-  // The limits file (bridge/limits.ts) is the ceiling over the env switches above: the agent
-  // (pinned program, an owner file's sha256, shell) and the folder, before any tmux call.
-  const gate = limitsGate()
-  const denied = gate.agent(harness) ?? gate.folder(cwd)
+  // The program's real path, checked and then run: the gate checks the path the start runs.
+  const checked: Harness = { ...harness, programPath: volumePath(harness.programPath!) }
+
+  // The limits file: the agent (pinned program, an owner file's sha256, shell) and the folder,
+  // before any tmux call.
+  const denied = gate.agent(checked) ?? gate.folder(cwd)
   if (denied) {
     audit({ route: 'POST /sessions/open', name, engine, cwd, denied: 'limits' })
     return err(403, denied)
@@ -503,6 +522,11 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
     if (outside) {
       audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, denied: 'limits' })
       return err(403, outside)
+    }
+    const skipRefused = needsOwnerForSkip(adopted, gate)
+    if (skipRefused) {
+      audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, denied: 'skip-tag' })
+      return err(409, skipRefused)
     }
     registerLive(adopted)
     audit({ route: 'POST /sessions/open', name, engine, cwd: adopted.cwd, adopted: true })
@@ -532,8 +556,13 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
     // The folder check passed above, so warmup may answer trust and update dialogs here, and a
     // bypass dialog only where the agent starts with its prompts off (permission_skip).
     const skipPrompts = gate.skipPrompts(cwd)
-    const session = await HarnessSession.spawn(harness, {
+    const session = await HarnessSession.spawn(checked, {
       name, cwd, allowlist: ALLOWLIST, model, effort, skipPrompts, dialogAnswers: skipPrompts ? 'safe-and-bypass' : 'safe',
+      // Run again right before new-session on the real start folder, with the limits file as applied then.
+      folderCheck: (c) => {
+        const now = limitsGate()
+        return now.folder(c) ?? (skipPrompts ? now.permissionSkip(c) : undefined)
+      },
     })
     registerLive(session)
     audit({ route: 'POST /sessions/open', name: session.id, engine, cwd, model, effort, ready: session.ready })
@@ -556,6 +585,10 @@ async function handleOpenTmux(engine: EngineId, name: string, req: RpcRequest, h
     if (e instanceof NeedsOwnerError) {
       audit({ route: 'POST /sessions/open', name, engine, cwd, denied: 'dialog' })
       return err(409, e.message)
+    }
+    if (e instanceof FolderRefusedError) {
+      audit({ route: 'POST /sessions/open', name, engine, cwd, denied: 'limits' })
+      return err(403, e.message)
     }
     return err(500, `failed to open session: ${e instanceof Error ? e.message : String(e)}`)
   } finally {

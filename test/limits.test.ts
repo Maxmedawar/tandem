@@ -399,7 +399,7 @@ describe("limits file: each field through handleHubRequest (private tmux socket)
     // A ccm- session that outlived a bridge restart: the tmux side is stubbed (adoption itself is
     // terminal-session.test.ts's), so only the router's limits check on the adopted cwd is tested.
     const survivor = (name: string, cwd: string) => ({
-      id: name, engine: "fake-a", cwd, attachHint: () => `tmux attach -t '=ccm-${name}'`, close: async () => {},
+      id: name, engine: "fake-a", cwd, skipTag: "0", attachHint: () => `tmux attach -t '=ccm-${name}'`, close: async () => {},
     });
     vi.spyOn(TerminalSession, "engineTagOf").mockResolvedValue("fake-a");
     const adopt = vi.spyOn(HarnessSession, "attachExisting");
