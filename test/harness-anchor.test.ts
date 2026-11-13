@@ -673,13 +673,14 @@ describe("(ANCHOR-3 f) claude: the spinner and token layouts still read working 
 
 // U-R1B-COPILOT-WORKING (G1 of the U-R1B-ANCHOR-4 audit): a working screen whose busy hint is still on
 // screen never reads idle because footer lines were added under it (agent text would be typed into a
-// busy agent). Every agent with both working and idle rules, each of its working sources, with 0..6
+// busy agent). Every agent with both working and idle rules, each of its working sources, with 0..12 (U-R1B-CLAUDE-MENU G4; was 0..6)
 // plain footer lines `status line <k>` (none of the agent's composer characters) appended: directly,
 // indented, or after a blank row. Each reads working or unknown (agents held), never idle.
 const FOOTER_AGENTS = agentsWithRules.filter((n) => (harnesses.get(n)!.states?.working ?? []).length > 0 && (harnesses.get(n)!.states?.idle ?? []).length > 0);
 const FOOTERS = { plain: (k: number) => Array.from({ length: k }, (_, i) => `status line ${i + 1}`), indented: (k: number) => Array.from({ length: k }, (_, i) => `  status line ${i + 1}`), "after a blank row": (k: number) => (k === 0 ? [] : ["", ...Array.from({ length: k }, (_, i) => `status line ${i + 1}`)]) };
+const K12 = Array.from({ length: 13 }, (_, k) => k);
 const W_ROWS = FOOTER_AGENTS.flatMap((name) =>
-  sourcesOf(name, "working").flatMap((file) => (Object.keys(FOOTERS) as (keyof typeof FOOTERS)[]).flatMap((how) => [0, 1, 2, 3, 4, 5, 6].map((k) => [`${name} ${file} + ${k} footer lines (${how})`, name, file, how, k] as const))),
+  sourcesOf(name, "working").flatMap((file) => (Object.keys(FOOTERS) as (keyof typeof FOOTERS)[]).flatMap((how) => K12.map((k) => [`${name} ${file} + ${k} footer lines (${how})`, name, file, how, k] as const))),
 );
 describe("(footer) U-R1B-COPILOT-WORKING: a working screen with extra footer lines never reads idle", () => {
   it("the table holds every agent with working and idle rules, copilot included", () => {
@@ -692,6 +693,41 @@ describe("(footer) U-R1B-COPILOT-WORKING: a working screen with extra footer lin
     if (k === 0) expect(st).toBe("working");
     expect(["working", "unknown"]).toContain(st);
     expect(decideInput("agent", "type", st)).toBe("held");
+  });
+});
+
+// U-R1B-CLAUDE-MENU (G2 of the U-R1B-COPILOT-WORKING audit): an approval menu with footer lines added under it never
+// reads idle with an empty prompt (agent text would be typed under an open menu). Every agent with waiting_for_approval,
+// idle and empty_prompt rules, each of its waiting_for_approval sources, with 0..12 footer lines in the (footer) forms
+// (k = 0, the file unchanged, once). Each reads waiting_for_approval or unknown, or idle with a prompt that is not empty.
+const MENU_AGENTS = agentsWithRules.filter((n) => (["waiting_for_approval", "idle", "empty_prompt"] as const).every((k) => (harnesses.get(n)!.states?.[k] ?? []).length > 0));
+const M_ROWS = MENU_AGENTS.flatMap((name) =>
+  sourcesOf(name, "waiting_for_approval").flatMap((file) => (Object.keys(FOOTERS) as (keyof typeof FOOTERS)[]).flatMap((how) => K12.filter((k) => k > 0 || how === "plain").map((k) => [`${name} ${file} + ${k} footer lines (${how})`, name, file, how, k] as const))),
+);
+describe("(menu) U-R1B-CLAUDE-MENU: an approval menu with extra footer lines never reads idle with an empty prompt", () => {
+  it("the table holds every agent with approval, idle and empty-prompt rules, claude included (antigravity: no approval source)", () => {
+    expect(MENU_AGENTS).toContain("claude");
+    expect(MENU_AGENTS.filter((name) => sourcesOf(name, "waiting_for_approval").length === 0)).toEqual(["antigravity"]);
+  });
+  it.each(M_ROWS)("%s never reads idle and empty", (_t, name, file, how, k) => {
+    const h = harnesses.get(name)!;
+    const screen = [...linesOf(read(file)), ...FOOTERS[how](k)].join("\n");
+    const st = readScreen(h, screen);
+    if (k === 0) expect(st).toBe("waiting_for_approval");
+    if (st === "idle") expect(isPromptEmpty(h, screen)).toBe(false);
+    else expect(["waiting_for_approval", "unknown"]).toContain(st);
+  });
+  // The footer branch needs the menu's last row directly above the box: a reply quoting a menu above the real box (a blank
+  // row above it) with no placeholder still reads idle, so the owner is not refused.
+  const bare = linesOf(read("screens/claude-idle-real.txt")).map((l) => (l.startsWith("❯") ? "❯" : l));
+  it.each(sourcesOf("claude", "waiting_for_approval").flatMap((src) => VARIANTS.map((v) => [`claude ${src} quoted above the real box with no placeholder (${v}) reads idle`, src, v] as const)))("%s", (_t, src, variant) => {
+    const h = harnesses.get("claude")!;
+    const block = blockOf(h, read(src), "waiting_for_approval");
+    const q = quoted(block, variant, bare.slice(-(38 - block.length)));
+    expect(readScreen(h, bare.join("\n"))).toBe("idle");
+    expect(readScreen(h, q)).toBe("idle");
+    expect(isPromptEmpty(h, q)).toBe(true);
+    expect(decideInput("owner", "type", readScreen(h, q))).toBe("enter");
   });
 });
 

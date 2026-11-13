@@ -28,5 +28,7 @@ unknown-onboarding-src.txt: the first-run screen with no provider (`Welcome to C
 unknown-question-src.txt: a question from the agent (`Cline is asking a question`, choices,
 `Type a response...`); the input bar is replaced.
 unknown-hubupdate-src.txt: the hub update dialog (`Cline Hub update required`, `Update Now`).
+idle-statusbar-3row-src.txt: synthetic, built from cline cli-v3.0.74 apps/cli/src/tui status-bar.tsx 232-280 (archive sha256 93a9b203c217627713adc6ebe45f47644b5c9cde9b2fe85161d381329ca8a99f); U-R1B-COPILOT-WORKING
+idle-statusbar-4row-src.txt: synthetic, built from cline cli-v3.0.74 apps/cli/src/tui status-bar.tsx 232-280 (archive sha256 93a9b203c217627713adc6ebe45f47644b5c9cde9b2fe85161d381329ca8a99f); U-R1B-COPILOT-WORKING
 
 None of these is a real screen. A real screen added here by a live run is named *-real.txt.

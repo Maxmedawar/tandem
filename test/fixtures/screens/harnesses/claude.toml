@@ -10,7 +10,8 @@ has_prompts = true
 [states]
 waiting_for_approval = [
   # U-R1B-ANCHOR: the menu ends the screen: no line after it starts a border (the menu replaces the prompt box), except the one empty box of the ccmanager samples, then \z.
-  '(?i)(?:do you want|would you like).+(?:\n(?:[^─\n][^\n]*)?)*?\n(?:[^─\n][^\n]*)?(?:yes|❯)[^\n]*(?:\n(?:[^─\n][^\n]*)?)*(?:\n─{20,}[ \t]*\n❯[ \t]*\n─{20,}[ \t]*)?\z',
+  # U-R1B-CLAUDE-MENU: when the menu's last row sits directly above the empty box (no blank row; a real idle box has one above it), 1 to 12 non-blank footer lines may follow the box (idle allows 4), so a menu with footer lines reads waiting first, never idle with an empty prompt (G2 of the U-R1B-COPILOT-WORKING audit).
+  '(?i)(?:do you want|would you like).+(?:\n(?:[^─\n][^\n]*)?)*?\n(?:[^─\n][^\n]*)?(?:yes|❯)[^\n]*(?:\n(?:[^─\n][^\n]*)?)*(?:\n─{20,}[ \t]*\n❯[ \t]*\n─{20,}[ \t]*|[^\s─][ \t]*\n─{20,}[ \t]*\n❯[ \t]*\n─{20,}[ \t]*(?:\n[^─\n][^\n]*){1,12})?\z',
   # U-R1B-ANCHOR: the dialog's own footer, then no line that starts a border (no prompt box) to \z.
   '(?i)esc to cancel[^\n]*(?:\n(?:[^─\n][^\n]*)?)*\z',
   # U-R1B-ANCHOR: the menu's deny row, then no line that starts a border (no prompt box) to \z.
