@@ -550,6 +550,24 @@ export function openMailbox(options: { path?: string; now?: () => number } = {})
         throw e
       }
     },
+    /**
+     * A copy from computer `from` to session `to` came after its number was passed and its id was
+     * never stored (hub-mail `mail.late`): in ONE transaction, one fyi notice in `to`'s inbox from
+     * `machine:<from>/gap` (none when the inbox holds MAX_INBOX queued already). The order row is not moved.
+     */
+    lateNotice(from: string, to: string): void {
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        if (Number((queuedCount.get(to) as { n: number }).n) < MAX_INBOX) {
+          const t = now()
+          insert.run(`mail-${randomUUID()}`, `machine:${from}/gap`, to, 'fyi', `a message from ${from} arrived out of order and was dropped`, t, null, t)
+        }
+        db.exec('COMMIT')
+      } catch (e) {
+        db.exec('ROLLBACK')
+        throw e
+      }
+    },
     /** The hub take cursor kept with the hub queue's epoch; undefined before the first. */
     hubCursor(): { epoch: string; cursor: number } | undefined {
       const r = cursorRow.get() as { epoch: string; cursor: number } | undefined

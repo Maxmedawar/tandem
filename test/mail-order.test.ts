@@ -324,7 +324,7 @@ describe('(33B-4) (o) the sender numbers each destination; the receiver stores i
     seen.length = 0
     expect(await mail.pullOnce()).toBe(1)
     expect(carrierLines(n)).toEqual([{ event: 'mail.late', from: 'alpha', to: 'bob', n: 2, id: JSON.parse(lateBody).id }])
-    expect(inbox(box)).toEqual([])
+    expect(inbox(box)).toEqual(['a message from alpha arrived out of order and was dropped'])
     expect(takeBodies().at(-1).ack).toBe(late.seq)
     box.close()
   })
@@ -870,5 +870,180 @@ describe('(33B-4) (a) audit: a number in use is never given twice; the order tab
     expect(box.orderNext('alpha', 's1')).toBeUndefined()
     expect(box.orderNext('gamma', 'bob')).toBe(7)
     box.close()
+  })
+})
+
+describe('(33B-5) (l) a late copy whose id was never stored leaves an inbox notice', () => {
+  const LATE = 'a message from alpha arrived out of order and was dropped'
+  const lateRows = (path: string) => rows(path, `SELECT count(*) AS n FROM mail WHERE from_id = 'machine:alpha/gap' AND text = ?`, LATE)[0].n
+  const putNs = () => putBodies().map((p) => JSON.parse(JSON.parse(p.body).body).n)
+  const sender = () => {
+    const path = dbPath()
+    const box: Json = boxAt(path)
+    return { path, box, mail: hubMail(cfg('alpha'), { box, key: A, now }) }
+  }
+  const sendBob = (box: Json, text: string) => box.send({ from: 'owner', to: 'beta:bob', level: 'fyi', text }).id as string
+
+  it('(33B-5) l1 (RED at BASE) G-1: the hub answers the first put of X queue_full yet hands X on; Y carries X\'s n, is dropped as mail.late and bob gets one notice', async () => {
+    const alpha = sender()
+    const beta = receiver()
+    sendBob(alpha.box, 'one')
+    expect(await alpha.mail.pushOnce()).toBe(1)
+    await beta.mail.pullOnce()
+    expect(inbox(beta.box)).toEqual(['one'])
+    const x = sendBob(alpha.box, 'x')
+    hub.onPut = (put) => {
+      hubPut('beta', { id: put.id, from: 'alpha', kind: 'message', body: put.body })
+      return { status: 200, body: { results: [{ to: 'beta', error: 'queue_full' }] } }
+    }
+    expect(await alpha.mail.pushOnce()).toBe(1)
+    expect(alpha.box.sent('owner', 10).find((m: Json) => m.id === x).state).toBe('queue_full')
+    hub.onPut = undefined
+    const y = sendBob(alpha.box, 'y')
+    seen.length = 0
+    expect(await alpha.mail.pushOnce()).toBe(1)
+    expect(putNs()).toEqual([2])
+    const n = mark()
+    await beta.mail.pullOnce()
+    expect(carrierLines(n)).toEqual([{ event: 'mail.late', from: 'alpha', to: 'bob', n: 2, id: y }])
+    expect(beta.box.read('bob', 500).map((m: Json) => [m.from, m.text, m.level])).toEqual([
+      ['machine:alpha/owner', 'x', 'fyi'],
+      ['machine:alpha/gap', LATE, 'fyi'],
+    ])
+    expect(lateRows(beta.path)).toBe(1)
+    alpha.box.close()
+    beta.box.close()
+  })
+
+  it('(33B-5) l2 (RED at BASE) o3\'s flow: after the gap notice for n 2 and msg 3, the late n 2 gives one notice; the take is acked to its seq', async () => {
+    const { path, box, mail } = receiver()
+    toBeta(v2(1))
+    toBeta(v2(3))
+    await mail.pullOnce()
+    clock = T + GAP
+    await mail.pullOnce()
+    expect(inbox(box)).toEqual(['msg 1', notice('alpha', 2, 2), 'msg 3'])
+    const lateBody = v2(2)
+    const late = toBeta(lateBody)
+    const n = mark()
+    seen.length = 0
+    expect(await mail.pullOnce()).toBe(1)
+    expect(carrierLines(n)).toEqual([{ event: 'mail.late', from: 'alpha', to: 'bob', n: 2, id: JSON.parse(lateBody).id }])
+    expect(box.read('bob', 500).map((m: Json) => [m.from, m.text, m.level])).toEqual([['machine:alpha/gap', LATE, 'fyi']])
+    expect(lateRows(path)).toBe(1)
+    expect(takeBodies().at(-1).ack).toBe(late.seq)
+    box.close()
+  })
+
+  it('(33B-5) l3 the same late envelope handed twice: one notice, the second is mail.repeat; a late copy whose id is stored writes no notice', async () => {
+    const { path, box, mail } = receiver()
+    const firstBody = v2(1)
+    toBeta(firstBody)
+    toBeta(v2(2))
+    await mail.pullOnce()
+    expect(box.orderNext('alpha', 'bob')).toBe(3)
+    const lateBody = v2(1)
+    const c = toBeta(lateBody)
+    hubPut('beta', { id: c.id, from: 'alpha', kind: 'message', body: c.body })
+    let n = mark()
+    expect(await mail.pullOnce()).toBe(2)
+    expect(carrierLines(n)).toEqual([
+      { event: 'mail.late', from: 'alpha', to: 'bob', n: 1, id: c.id },
+      { event: 'mail.repeat', from: 'alpha', id: c.id },
+    ])
+    expect(lateRows(path)).toBe(1)
+    // A new signature over the stored body (a new nonce, the same id): mail.repeat, no notice.
+    const again = toBeta(firstBody)
+    n = mark()
+    expect(await mail.pullOnce()).toBe(1)
+    expect(carrierLines(n)).toEqual([{ event: 'mail.repeat', from: 'alpha', id: again.id }])
+    expect(lateRows(path)).toBe(1)
+    expect(inbox(box)).toEqual(['msg 1', 'msg 2', LATE])
+    box.close()
+  })
+
+  it('(33B-5) l4 bob\'s inbox at MAX_INBOX queued: the late copy writes no notice, the mail.late line is written, nothing throws', async () => {
+    const { path, box, mail } = receiver()
+    toBeta(v2(1))
+    toBeta(v2(2))
+    await mail.pullOnce()
+    const db = new DatabaseSync(path)
+    try {
+      db.exec('BEGIN')
+      const add = db.prepare(`INSERT INTO mail (id, from_id, to_name, level, text, sent_at_ms, reply_by_ms, state, state_at_ms) VALUES (?, 'owner', 'bob', 'fyi', 'fill', ?, NULL, 'queued', ?)`)
+      for (let k = 2; k < mailbox.MAX_INBOX; k++) add.run(`mail-${randomUUID()}`, T, T)
+      db.exec('COMMIT')
+    } finally {
+      db.close()
+    }
+    expect(box.pending('bob').fyi).toBe(mailbox.MAX_INBOX)
+    const lateBody = v2(1)
+    toBeta(lateBody)
+    const n = mark()
+    expect(await mail.pullOnce()).toBe(1)
+    expect(carrierLines(n)).toEqual([{ event: 'mail.late', from: 'alpha', to: 'bob', n: 1, id: JSON.parse(lateBody).id }])
+    expect(lateRows(path)).toBe(0)
+    expect(box.pending('bob').fyi).toBe(mailbox.MAX_INBOX)
+    box.close()
+  })
+
+  it('(33B-5) l5 the order row is unchanged by a late notice; later copies still store in order', async () => {
+    const { path, box, mail } = receiver()
+    toBeta(v2(1))
+    toBeta(v2(2))
+    await mail.pullOnce()
+    const before = box.orderNext('alpha', 'bob')
+    expect(before).toBe(3)
+    toBeta(v2(1))
+    await mail.pullOnce()
+    expect(lateRows(path)).toBe(1)
+    expect(box.orderNext('alpha', 'bob')).toBe(before)
+    toBeta(v2(3))
+    toBeta(v2(4))
+    const n = mark()
+    await mail.pullOnce()
+    expect(carrierLines(n)).toEqual([])
+    expect(inbox(box)).toEqual(['msg 1', 'msg 2', LATE, 'msg 3', 'msg 4'])
+    expect(box.orderNext('alpha', 'bob')).toBe(5)
+    box.close()
+  })
+
+  it('(33B-5) l6 a2\'s mixed run: zero mail.late lines and zero late notices', async () => {
+    const alpha = sender()
+    const beta = receiver()
+    beta.box.setOrderNext('alpha', 'bob', 1)
+    const full = { status: 200, body: { results: [{ to: 'beta', error: 'queue_full' }] } }
+    const store = (put: Json) => void hubPut('beta', { id: put.id, from: 'alpha', kind: 'message', body: put.body })
+    for (let round = 0; round < 6; round++) {
+      const t = (k: string) => `r${round} ${k}`
+      sendBob(alpha.box, t('full'))
+      hub.onPut = () => full
+      await alpha.mail.pushOnce()
+      sendBob(alpha.box, t('ghost'))
+      hub.onPut = (put) => (store(put), 'drop')
+      await alpha.mail.pushOnce()
+      hub.onPut = () => ({ status: 403, body: { error: 'not_in_roster' } })
+      await alpha.mail.pushOnce()
+      hub.onPut = undefined
+      sendBob(alpha.box, t('ok'))
+      await alpha.mail.pushOnce()
+      const first = sendBob(alpha.box, t('first'))
+      const later = alpha.box.send({ from: 'owner', to: 'beta:bob', level: 'fyi', text: t('later') })
+      hub.onPut = () => 'drop'
+      await alpha.mail.pushOnce()
+      const body = (n: number) => JSON.stringify({ v: 2, kind: 'mail', id: later.id, from: 'owner', to: 'bob', level: 'fyi', text: t('later'), sentAt: later.sentAt, n })
+      alpha.box.keepNumbered(later.id, 'beta:bob', (n: number) => JSON.stringify(signEnvelope(A, { from: 'alpha', to: 'beta', body: body(n) }, clock)))
+      hub.onPut = (put) => (put.id === first ? { status: 400, body: { error: 'mail_invalid' } } : undefined)
+      await alpha.mail.pushOnce()
+      hub.onPut = undefined
+    }
+    const n = mark()
+    await beta.mail.pullOnce()
+    clock = T + GAP
+    await beta.mail.pullOnce()
+    expect(carrierLines(n).filter((l) => l.event === 'mail.late')).toEqual([])
+    expect(lateRows(beta.path)).toBe(0)
+    alpha.box.close()
+    beta.box.close()
   })
 })
