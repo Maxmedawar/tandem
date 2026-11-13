@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tandem setup: Tailscale-first hub, tailnet device, or local stdio.
+# Tandem setup: the R1a hub on Cloudflare (r1a), or the old Tailscale hub, device, or local stdio.
 set -euo pipefail
 umask 077
 
@@ -20,6 +20,10 @@ die()  { printf '\033[1;31m%s\033[0m\n' "$*" >&2; exit 1; }
 usage() {
   printf '%s\n' \
     "Usage:" \
+    "  ./setup.sh r1a --name tandem-<name> [--dry-run] [--secrets-dir <dir>]" \
+    "                                 deploy your own hub under a new Worker name (packaging/hub-deploy.sh)" \
+    "" \
+    "The old Tailscale path:" \
     "  ./setup.sh hub                 configure the always-on OAuth/Tailscale hub" \
     "  ./setup.sh invite              create an independent device invitation" \
     "  ./setup.sh device [bundle]     enroll this Tailscale device once" \
@@ -31,6 +35,7 @@ usage() {
 
 ROLE="${1:-${TANDEM_SETUP_MODE:-}}"
 case "$ROLE" in
+  r1a) ROLE="r1a" ;;
   ""|h|hub|tailscale|t) ROLE="hub" ;;
   invite|i) ROLE="invite" ;;
   device|d) ROLE="device" ;;
@@ -42,6 +47,9 @@ case "$ROLE" in
   *) usage >&2; die "unknown setup role '${ROLE}'" ;;
 esac
 
+case "$ROLE" in
+  hub|invite|device) printf '%s\n' "setup: this is the old Tailscale path; the R1a path is ./setup.sh r1a (see README)" >&2 ;;
+esac
 say "tandem setup: ${ROLE}"
 
 command -v node >/dev/null 2>&1 || die "Node 22.6 or newer is required."
@@ -401,7 +409,18 @@ setup_device() {
   die "Device registration failed. The invitation was burned and no fleet credential was retained. Create a new invitation on the hub."
 }
 
+setup_r1a() {
+  shift
+  [ "$#" -ge 1 ] || die "Usage: ./setup.sh r1a --name tandem-<name> [--dry-run] [--secrets-dir <dir>]"
+  sh "${ROOT}/packaging/hub-deploy.sh" "$@"
+  printf '%s\n' \
+    "Next, on each computer: install Tandem and link it to this hub (README, \"Add a computer\"):" \
+    '  sh packaging/build-release.sh "$HOME/tandem-release"' \
+    '  TANDEM_ARCHIVE="$(ls "$HOME"/tandem-release/*.tar.gz)" TANDEM_NO_START=1 TANDEM_NO_LIMITS=1 sh packaging/install.sh'
+}
+
 case "$ROLE" in
+  r1a) setup_r1a "$@" ;;
   hub) setup_hub ;;
   invite) setup_invite "$@" ;;
   device) setup_device "$@" ;;
